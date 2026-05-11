@@ -345,7 +345,7 @@ Rationale:
 본인 사용. 과금 무관.
 
 Consequences:
-- production_docs/14-pricing.md는 reference만
+- production_docs_donotuse/14-pricing.md는 reference만
 - workspace.plan 컬럼은 future-proof로 'free' 고정
 
 ---
@@ -649,7 +649,7 @@ Consequences:
 
 전환 절차: `15-future-saas-migration.md`.
 
-production_docs/13-adr.md의 ADR-011 (Logto), ADR-012 (AWS KMS), ADR-013 (tools-only), ADR-014 (sampling reject), ADR-022 (DCR), ADR-016 (tool_aliases), ADR-017 (RLS), ADR-018 (3-tier cache), ADR-019 (dot naming), ADR-021 (JWT RS256), ADR-023 (region), ADR-024 (pricing), ADR-025 (license) 중 일부는 본 ADR-011/012/013/014/015/016/017/020/021/022로 매핑되었다.
+production_docs_donotuse/13-adr.md의 ADR-011 (Logto), ADR-012 (AWS KMS), ADR-013 (tools-only), ADR-014 (sampling reject), ADR-022 (DCR), ADR-016 (tool_aliases), ADR-017 (RLS), ADR-018 (3-tier cache), ADR-019 (dot naming), ADR-021 (JWT RS256), ADR-023 (region), ADR-024 (pricing), ADR-025 (license) 중 일부는 본 ADR-011/012/013/014/015/016/017/020/021/022로 매핑되었다.
 
-production_docs/13-adr.md의 ADR-008 (No Token Passthrough), ADR-014 (sampling reject)는 본 ADR-004와 ADR-014로 연속 적용 중. 본 문서팩에 신규 추가된 ADR-029~035는 P0 검토 결과 보완분.
+production_docs_donotuse/13-adr.md의 ADR-008 (No Token Passthrough), ADR-014 (sampling reject)는 본 ADR-004와 ADR-014로 연속 적용 중. 본 문서팩에 신규 추가된 ADR-029~035는 P0 검토 결과 보완분.
 ADR-036 (CIMD)은 AUTH_MODE=oauth 활성 시점에 발효되며, 그 전까지는 latent state.

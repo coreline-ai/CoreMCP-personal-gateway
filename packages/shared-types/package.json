@@ -1,0 +1,17 @@
+{
+  "name": "@coremcp/shared-types",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "lint": "tsc --noEmit",
+    "test": "echo 'shared-types: no tests yet'"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.0"
+  }
+}

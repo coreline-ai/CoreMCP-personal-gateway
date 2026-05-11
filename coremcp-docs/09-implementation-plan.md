@@ -162,7 +162,7 @@ coremcp/
 │       ├── rotate-token.sh
 │       └── backup.sh
 ├── coremcp-docs/                    # 본 문서팩
-├── production_docs/                 # SaaS 청사진
+├── production_docs_donotuse/                 # SaaS 청사진
 └── pnpm-workspace.yaml
 ```
 

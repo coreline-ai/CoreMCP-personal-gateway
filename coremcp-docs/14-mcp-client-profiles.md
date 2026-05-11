@@ -60,7 +60,7 @@ P2에서 OAuth로 추가 client 지원.
 ### 3.1 Mac mini 로컬 등록
 ```bash
 claude mcp add --transport http coremcp http://localhost:8787/mcp \
-  --header "Authorization: Bearer $(cat ~/.coremcp/token)"
+  --header "Authorization: Bearer $(cat ~/.coremcp/admin-token)"
 ```
 
 ### 3.2 MacBook via Tailscale

@@ -1,0 +1,19 @@
+{
+  "name": "coremcp-personal-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Personal MCP Toolbox + Authenticated MCP Gateway",
+  "scripts": {
+    "test": "pnpm -r --if-present test",
+    "lint": "pnpm -r --if-present lint",
+    "build": "pnpm -r --if-present build",
+    "dev:web": "pnpm --filter @coremcp/web dev",
+    "dev:api": "cd apps/api && uv run uvicorn coremcp.main:app --host 127.0.0.1 --port 8787 --reload",
+    "dev:fake-mcp": "cd apps/fake-mcp && uv run uvicorn fake_mcp.main:app --host 127.0.0.1 --port 8790 --reload"
+  },
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=18.18.0",
+    "pnpm": ">=9.0.0"
+  }
+}

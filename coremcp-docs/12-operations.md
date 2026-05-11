@@ -391,7 +391,7 @@ audit log 확인:
 
 ## 10. 개인 컨텍스트라 제외하는 운영 영역
 
-production_docs/12-operations-observability.md의 다음은 본 프로젝트에 적용 안 됨:
+production_docs_donotuse/12-operations-observability.md의 다음은 본 프로젝트에 적용 안 됨:
 - Multi-region failover
 - Cross-region backup
 - Incident Response severity matrix (SEV1~4)

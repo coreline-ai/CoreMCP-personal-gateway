@@ -3,7 +3,7 @@
 문서 버전: v1.0
 작성일: 2026-05-11
 
-본 문서는 개인 프로젝트로 시작한 CoreMCP를 다인 사용 SaaS로 확장하기로 결정할 경우의 절차를 정의한다. 현재는 trigger 미발생 상태이며, 결정 시 본 문서 + `production_docs/`를 reference로 작업한다.
+본 문서는 개인 프로젝트로 시작한 CoreMCP를 다인 사용 SaaS로 확장하기로 결정할 경우의 절차를 정의한다. 현재는 trigger 미발생 상태이며, 결정 시 본 문서 + `production_docs_donotuse/`를 reference로 작업한다.
 
 ---
 
@@ -36,7 +36,7 @@
 | ADR-028 Single Process | Superseded | 새 ADR: Multi-process Kubernetes |
 | ADR-036 CIMD First, DCR Fallback | Active in SaaS | 현재는 latent (AUTH_MODE=oauth 비활성), SaaS 전환 시 활성 |
 
-production_docs/13-adr.md의 ADR-011, 012, 017, 022, 023, 024, 025 적용.
+production_docs_donotuse/13-adr.md의 ADR-011, 012, 017, 022, 023, 024, 025 적용.
 
 ---
 
@@ -137,7 +137,7 @@ production_docs/13-adr.md의 ADR-011, 012, 017, 022, 023, 024, 025 적용.
 - [ ] Stripe Tax (KR VAT)
 
 ### 3.9 Pricing
-- [ ] 가격 결정 (production_docs/14-pricing.md 활성)
+- [ ] 가격 결정 (production_docs_donotuse/14-pricing.md 활성)
 - [ ] Free → Pro → Team → Enterprise
 - [ ] quota 매트릭스
 - [ ] fair use policy
@@ -257,8 +257,8 @@ freemium 구조에서 break-even은 paid user 약 15-20명.
 ---
 
 ## 8. 참고
-- `production_docs/`: SaaS 청사진 17개 문서 모두 reference
-- `production_docs/13-adr.md`: 원본 25개 ADR
-- `production_docs/16-compliance.md`: GDPR/SOC2 로드맵
-- `production_docs/14-pricing.md`: 가격 정책 후보
-- `production_docs/_v1-personal-implementation.md`: 본 프로젝트 이전 초안 (역사적 reference)
+- `production_docs_donotuse/`: SaaS 청사진 17개 문서 모두 reference
+- `production_docs_donotuse/13-adr.md`: 원본 25개 ADR
+- `production_docs_donotuse/16-compliance.md`: GDPR/SOC2 로드맵
+- `production_docs_donotuse/14-pricing.md`: 가격 정책 후보
+- `production_docs_donotuse/_v1-personal-implementation.md`: 본 프로젝트 이전 초안 (역사적 reference)

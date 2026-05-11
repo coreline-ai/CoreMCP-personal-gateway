@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.coremcp.api</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/env</string>
+    <string>bash</string>
+    <string>-lc</string>
+    <string>cd "$HOME/project_202605/CoreMCP/apps/api" &amp;&amp; uv run uvicorn coremcp.main:app --host 127.0.0.1 --port 8787</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>$HOME/.coremcp/logs/api.log</string>
+  <key>StandardErrorPath</key>
+  <string>$HOME/.coremcp/logs/api.err.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>AUTH_MODE</key>
+    <string>static_bearer</string>
+    <key>COREMCP_ADMIN_TOKEN_FILE</key>
+    <string>$HOME/.coremcp/admin-token</string>
+  </dict>
+</dict>
+</plist>

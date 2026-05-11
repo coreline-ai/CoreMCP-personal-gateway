@@ -98,7 +98,7 @@ CoreMCP Web UI는 service / tool icons를 다음 정책으로 렌더링한다:
 ```jsx
 // 권장 패턴
 <img
-  src={tool.icons?.[0]?.url ?? defaultIconUrl}
+  src={tool.icons?.[0]?.src ?? defaultIconUrl}
   alt={tool.title}
   onError={(e) => { e.currentTarget.src = defaultIconUrl }}
   loading="lazy"
@@ -256,7 +256,7 @@ MCP를 추가하면 Claude Code와 ChatGPT에서 바로 사용할 수 있습니�
 #### Claude Code (Mac mini local)
 ```bash
 claude mcp add --transport http coremcp http://localhost:8787/mcp \
-  --header "Authorization: Bearer $(cat ~/.coremcp/token)"
+  --header "Authorization: Bearer $(cat ~/.coremcp/admin-token)"
 ```
 "Copy" 버튼.
 
@@ -576,7 +576,7 @@ Phase P3+ 옵션:
 
 ## 9. 제외 화면 (개인 컨텍스트)
 
-production_docs/08-frontend-ux.md에 있지만 본 프로젝트에 제외:
+production_docs_donotuse/08-frontend-ux.md에 있지만 본 프로젝트에 제외:
 - Landing / Marketing
 - Sign up / Login (정적 token으로 대체)
 - Email verify

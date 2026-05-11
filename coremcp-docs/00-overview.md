@@ -97,4 +97,4 @@ CoreMCP는 본인이 Mac mini에서 운영하는 protected MCP gateway다. 외�
 
 ## 8. 문서 우선순위
 
-본 문서팩이 충돌 시 정본. `production_docs/`는 미래 SaaS 확장 시 참고용.
+본 문서팩이 충돌 시 정본. `production_docs_donotuse/`는 미래 SaaS 확장 시 참고용.

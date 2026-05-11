@@ -398,7 +398,7 @@ CoreMCP는 두 종류의 personal token을 사용한다 (ADR-030):
 - SQLite → PostgreSQL
 
 ### 8.3 장기: SaaS 전환
-- `production_docs/` 참고
+- `production_docs_donotuse/` 참고
 - `15-future-saas-migration.md` 절차
 
 ## 9. Architecture Decisions (개인 컨텍스트)

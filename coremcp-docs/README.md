@@ -24,8 +24,8 @@
 |---|---|
 | 적용 범위 | 개인 사용 (본인 1명, Mac mini 단일 호스트) |
 | 언어 | 한국어 우선 |
-| 현재 Phase | **Phase 0 — Vertical Slice 준비** |
-| 문서 버전 | v1.0 (2026-05-11) |
+| 현재 Phase | **Phase 0 — Scaffold 구현 완료 / Vertical Slice smoke 통과** |
+| 문서 버전 | v1.0 (2026-05-11), P0 scaffold 반영 |
 | ADR 개수 | 36 (ADR-001 ~ ADR-036) |
 | MCP Spec | 2025-11-25 + 2025-06-18 병행 (ADR-029) |
 | Token Model | Dual — admin file + client DB hash (ADR-030) |
@@ -33,6 +33,14 @@
 
 > 본 문서팩이 **실제 구현의 정본**이다.
 > 프로덕션 SaaS 청사진은 `../production_docs_donotuse/`에 보관되어 있으며, 본 프로젝트에는 적용하지 않는다.
+
+### 구현 반영 상태 — 2026-05-11
+
+- `apps/api`: FastAPI P0 MCP gateway scaffold 구현.
+- `apps/fake-mcp`: P0/P1 테스트용 downstream MCP fixture 구현.
+- `apps/web`: P2 Web Admin UI 초기 scaffold 구현.
+- `TESTING.md`: 자체 테스트 명령과 현재 통과 결과 정리.
+- 다음 우선순위: P1 registry persistence, client token, credential vault, SSRF guard.
 
 ---
 

@@ -3,7 +3,7 @@
 문서 버전: v1.0
 작성일: 2026-05-11
 
-본 문서는 개인 Mac mini 환경에서 실제로 발생 가능한 risk만 추린다. SaaS급 ATO 방어, refresh token theft, compliance violation 등은 `production_docs/11-risk-review.md` 참조.
+본 문서는 개인 Mac mini 환경에서 실제로 발생 가능한 risk만 추린다. SaaS급 ATO 방어, refresh token theft, compliance violation 등은 `production_docs_donotuse/11-risk-review.md` 참조.
 
 ---
 
@@ -323,7 +323,7 @@ admin token 회전 + client token 일괄 revoke 누락 시 보안 hole. 또는 e
 
 ## 18. 개인 컨텍스트라 제외하는 Risk
 
-production_docs/11-risk-review.md의 다음 risk는 본 프로젝트에 적용 안 됨:
+production_docs_donotuse/11-risk-review.md의 다음 risk는 본 프로젝트에 적용 안 됨:
 - R-004 User isolation failure (단일 사용자)
 - R-008 Client compatibility (Claude Code 우선이라 단순)
 - R-009 Marketplace abuse (marketplace 없음)

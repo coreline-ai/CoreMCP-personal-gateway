@@ -686,7 +686,7 @@ downstream MCP 호출은 HTTPS 강제 (localhost 예외 §7.4).
 
 ## 15. 개인 컨텍스트라 제외하는 영역
 
-production_docs/06-security-auth.md에 있지만 본 프로젝트에 제외:
+production_docs_donotuse/06-security-auth.md에 있지만 본 프로젝트에 제외:
 
 - MFA / Email verify / Password reset (가입자 없음)
 - Account Takeover Defense (본인 머신)

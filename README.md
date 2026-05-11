@@ -11,7 +11,7 @@
 [![SQLite](https://img.shields.io/badge/SQLite-3.35+-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
 [![macOS](https://img.shields.io/badge/macOS-Mac%20mini-000000?logo=apple&logoColor=white)](https://www.apple.com/mac-mini/)
 [![License](https://img.shields.io/badge/License-Private-red.svg)](#-license)
-[![Status](https://img.shields.io/badge/Status-Docs%20Ready-yellow.svg)](#-phase-plan)
+[![Status](https://img.shields.io/badge/Status-P0%20Scaffold-yellow.svg)](#-phase-plan)
 [![Docs](https://img.shields.io/badge/Docs-17%20files-blue.svg)](./coremcp-docs/)
 
 내 Mac mini에서 모든 MCP를 한 곳에 모아 어디서든 쓴다.
@@ -66,15 +66,23 @@ CoreMCP는 본인 1명이 Mac mini에서 운영하는 protected MCP gateway다. 
 
 **한 줄 가치**: AI 클라이언트마다 MCP를 따로 등록하지 않고, 한 곳에 모아 어디서나 동일한 도구함을 쓴다.
 
+### Implementation Status — 2026-05-11
+
+- Root monorepo scaffold, `apps/api`, `apps/fake-mcp`, `apps/web`, `packages/*`, `infra/*`가 생성되었습니다.
+- P0 backend scaffold는 admin bearer, `/mcp` JSON-RPC, protocol negotiation, session, fake downstream proxy, token boundary test까지 구현되었습니다.
+- Fake downstream MCP fixture는 `initialize`, `tools/list`, `tools/call`, `ping`을 지원합니다.
+- Web Admin UI는 한 페이지 scaffold와 admin token localStorage/API wrapper/icon renderer를 포함합니다.
+- P1의 per-client token, real registry persistence, credential vault, SSRF guard는 다음 구현 단계입니다.
+
 ---
 
 ## 📦 Features
 
 | 영역 | 기능 | 상태 |
 |---|---|---|
-| **MCP Gateway** | `/mcp` Streamable HTTP, initialize/tools/list/tools/call, Mcp-Session-Id, GET SSE | Phase P0 |
-| **Protocol** | MCP 2025-11-25 + 2025-06-18 병행 지원 (ADR-029) | Phase P0 |
-| **Authentication** | Dual token (Admin file + Per-client DB hash, ADR-030) | Phase P0/P1 |
+| **MCP Gateway** | `/mcp` Streamable HTTP, initialize/tools/list/tools/call, Mcp-Session-Id, GET SSE | P0 scaffold implemented |
+| **Protocol** | MCP 2025-11-25 + 2025-06-18 병행 지원 (ADR-029) | implemented + tested |
+| **Authentication** | Admin file bearer implemented. Per-client DB hash remains P1 | P0 partial |
 | **MCP Registry** | private service 등록, validation, schema cache, drift detection | Phase P1 |
 | **Toolbox** | per-user toolbox, item enable/disable, dynamic catalog | Phase P1 |
 | **Tool Alias** | `service_slug.tool_name` 매핑, slug rename grace (ADR-016) | Phase P1 |

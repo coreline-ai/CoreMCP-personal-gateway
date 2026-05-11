@@ -287,7 +287,7 @@ Expected:
 - [ ] icons size > 32KB 시 truncate + warning
 - [ ] icons content-type allowlist (image/png, image/svg+xml)
 - [ ] inputSchema에 `$schema: "https://json-schema.org/draft/2020-12/schema"` 미명시 시 2020-12 가정
-- [ ] tasks/* 메서드 downstream 요청 시 -32601 응답
+- [ ] client가 CoreMCP에 tasks/* 메서드 요청 시 -32601 응답
 - [ ] tool name이 길이 64자 초과 시 reject (등록 단계)
 - [ ] tools/list 응답에서 tool의 icons 필드가 top-level
 - [ ] tool.annotations 안에 icons가 없음
@@ -646,7 +646,7 @@ GitHub Actions 또는 로컬:
 
 ## 13. 개인 컨텍스트라 제외하는 테스트
 
-production_docs/10-qa-test-plan.md에 있지만 본 프로젝트에서 제외:
+production_docs_donotuse/10-qa-test-plan.md에 있지만 본 프로젝트에서 제외:
 - right-to-erasure E2E (자체 rm)
 - data export E2E (자체 SQLite 접근)
 - RLS cross-user isolation (단일 사용자)

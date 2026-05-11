@@ -18,3 +18,7 @@ build/
 # Local runtime data
 .coremcp/
 *.log
+*.egg-info/
+.ruff_cache/
+.coverage
+htmlcov/

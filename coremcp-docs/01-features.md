@@ -3,13 +3,13 @@
 문서 버전: v1.0
 대상: 본인 1명, Mac mini
 
-본 문서는 `production_docs/`에 정의된 기능 중 개인용 컨텍스트에서 **무엇을 어떻게 지원하는지** 명시한다. "포함"이면 단순화되어도 핵심 동작은 유지된다.
+본 문서는 `production_docs_donotuse/`에 정의된 기능 중 개인용 컨텍스트에서 **무엇을 어떻게 지원하는지** 명시한다. "포함"이면 단순화되어도 핵심 동작은 유지된다.
 
 ---
 
 ## 1. 인증 / 인가
 
-출처: `production_docs/06-security-auth.md`, `production_docs/01-prd.md` §인증
+출처: `production_docs_donotuse/06-security-auth.md`, `production_docs_donotuse/01-prd.md` §인증
 
 | 기능 | 상태 | 개인용 적용 |
 |---|---|---|
@@ -38,7 +38,7 @@
 
 ## 2. MCP Service Registry
 
-출처: `production_docs/01-prd.md` §registry, `production_docs/07-mcp-proxy-spec.md`
+출처: `production_docs_donotuse/01-prd.md` §registry, `production_docs_donotuse/07-mcp-proxy-spec.md`
 
 | 기능 | 상태 | 개인용 적용 |
 |---|---|---|
@@ -64,7 +64,7 @@
 
 ## 3. Toolbox
 
-출처: `production_docs/01-prd.md` §toolbox, `production_docs/05-database-schema.md` §toolboxes
+출처: `production_docs_donotuse/01-prd.md` §toolbox, `production_docs_donotuse/05-database-schema.md` §toolboxes
 
 | 기능 | 상태 | 개인용 적용 |
 |---|---|---|
@@ -77,7 +77,7 @@
 
 ## 4. MCP Gateway
 
-출처: `production_docs/07-mcp-proxy-spec.md`, `production_docs/04-api-spec.md` §/mcp
+출처: `production_docs_donotuse/07-mcp-proxy-spec.md`, `production_docs_donotuse/04-api-spec.md` §/mcp
 
 | 기능 | 상태 | 개인용 적용 |
 |---|---|---|
@@ -99,7 +99,7 @@
 
 ## 5. Downstream Proxy
 
-출처: `production_docs/07-mcp-proxy-spec.md`
+출처: `production_docs_donotuse/07-mcp-proxy-spec.md`
 
 | 기능 | 상태 | 개인용 적용 |
 |---|---|---|
@@ -117,7 +117,7 @@
 
 ## 6. Observability
 
-출처: `production_docs/12-operations-observability.md`
+출처: `production_docs_donotuse/12-operations-observability.md`
 
 | 기능 | 상태 | 개인용 적용 |
 |---|---|---|
@@ -134,7 +134,7 @@
 
 ## 7. Frontend (Web Admin)
 
-출처: `production_docs/08-frontend-ux.md`
+출처: `production_docs_donotuse/08-frontend-ux.md`
 
 | 기능 | 상태 | 개인용 적용 |
 |---|---|---|
@@ -160,7 +160,7 @@
 
 ## 8. Infra / Ops
 
-출처: `production_docs/03-architecture.md`, `production_docs/12-operations-observability.md`
+출처: `production_docs_donotuse/03-architecture.md`, `production_docs_donotuse/12-operations-observability.md`
 
 | 기능 | 상태 | 개인용 적용 |
 |---|---|---|
@@ -181,7 +181,7 @@
 
 ## 9. Security 추가
 
-출처: `production_docs/06-security-auth.md`, `production_docs/11-risk-review.md`
+출처: `production_docs_donotuse/06-security-auth.md`, `production_docs_donotuse/11-risk-review.md`
 
 | 기능 | 상태 | 개인용 적용 |
 |---|---|---|
