@@ -1,0 +1,20 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.env
+.env.*
+
+# Node
+node_modules/
+.next/
+dist/
+build/
+
+# Local runtime data
+.coremcp/
+*.log
