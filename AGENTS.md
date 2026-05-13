@@ -12,7 +12,7 @@ Project-specific instructions for CoreMCP implementation agents. These rules com
 
 Build the personal CoreMCP gateway in phases:
 
-1. P0: Claude Code/admin token → CoreMCP `/mcp` → fake downstream MCP → tool result.
+1. P0: Codex CLI `exec`/client token → CoreMCP `/mcp` → fake downstream MCP → tool result.
 2. P1: real service registry, per-client tokens, credential vault, SSRF guard.
 3. P2: Web Admin UI.
 4. P3: launchd operations and optional OAuth/CIMD.
@@ -44,6 +44,8 @@ Root convenience commands:
 make test
 make lint
 make build
+make codex-install
+make codex-smoke
 ```
 
 ## Editing rules
@@ -51,4 +53,5 @@ make build
 - Keep changes surgical and tied to the active dev-plan phase.
 - Match existing document terms: “도구함”, “연결된 AI client”, “MCP 추가/등록”.
 - Do not add external LLM API dependencies. CoreMCP is a gateway, not an LLM service.
+- Treat new SaaS-oriented pattern notes (including `coremcp-design-patterns-to-absorb.md`) as reference/backlog only. Do not implement team/workspace/marketplace/publisher/billing features unless the user explicitly requests them and an active dev-plan phase/ADR includes them.
 - Update docs and dev-plan checkboxes when implementation state changes.

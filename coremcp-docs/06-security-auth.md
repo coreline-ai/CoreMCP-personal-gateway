@@ -113,7 +113,7 @@ def verify_client_bearer(presented: str) -> ExternalConnection | None:
 ### 3.6 보관 안전
 - admin token 파일: chmod 600 + `.gitignore`
 - client token 평문은 발급 1회 + 사용자에 안전 보관 책임
-- Web UI localStorage에는 admin token만 (XSS 차단 — CSP)
+- Web UI sessionStorage에는 admin token만 저장한다. nonce 기반 CSP와 `dangerouslySetInnerHTML` 금지로 XSS 탈취면을 줄인다.
 - Tailscale 외부 노출 시 HTTPS 강제
 
 ---
@@ -321,7 +321,7 @@ token = keyring.get_password("coremcp", f"svc:{service_id}:bearer")
 from cryptography.fernet import Fernet
 from pathlib import Path
 
-key = Path("~/.coremcp/secret.key").expanduser().read_bytes()
+key = Path("~/.coremcp/data/secrets.key").expanduser().read_bytes()
 f = Fernet(key)
 ciphertext = f.encrypt(b"ghp_xxx")
 # DB의 secret_ref는 "fernet:<row_id>", 별도 secrets_blob 테이블에 ciphertext 저장
@@ -658,8 +658,8 @@ downstream MCP 호출은 HTTPS 강제 (localhost 예외 §7.4).
 - [ ] tool metadata scanner regex 매칭
 - [ ] Unicode NFKC + zero-width strip
 - [ ] session id가 bearer 없이는 무효
-- [ ] one-time token hash 저장
-- [ ] one-time token 1회 사용 후 invalid
+- [x] one-time token hash 저장
+- [x] one-time token 1회 사용 후 invalid
 - [ ] audit events 빠짐없이 기록
 - [ ] rate limit (global) 작동
 - [ ] Origin / CORS 정책 적용

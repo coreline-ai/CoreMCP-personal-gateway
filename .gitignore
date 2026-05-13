@@ -14,6 +14,7 @@ node_modules/
 .next/
 dist/
 build/
+.playwright-cli/
 
 # Local runtime data
 .coremcp/

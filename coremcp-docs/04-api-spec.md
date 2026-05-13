@@ -702,8 +702,8 @@ soft-delete.
 {
   "items": [{
     "id": "ext_...",
-    "client_type": "claude_code",
-    "client_name": "Claude Code (Mac mini)",
+    "client_type": "codex_cli",
+    "client_name": "Codex CLI exec (local)",
     "status": "active",
     "last_used_at": "...",
     "created_at": "..."
@@ -714,7 +714,7 @@ soft-delete.
 ### POST /v1/external-connections
 client 수동 등록 (정적 bearer 모드에서 metadata 저장용).
 ```json
-{ "client_type": "claude_code", "client_name": "Claude Code (MacBook)" }
+{ "client_type": "codex_cli", "client_name": "Codex CLI exec (local)" }
 ```
 
 ### POST /v1/external-connections/one-time-token

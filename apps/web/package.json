@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "next dev --port 3000",
+    "start": "next start",
     "build": "next build",
     "lint": "eslint . --max-warnings=0",
     "test": "echo 'web: no tests yet'"

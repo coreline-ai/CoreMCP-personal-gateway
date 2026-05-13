@@ -24,8 +24,8 @@
 |---|---|
 | 적용 범위 | 개인 사용 (본인 1명, Mac mini 단일 호스트) |
 | 언어 | 한국어 우선 |
-| 현재 Phase | **Phase 0 — Scaffold 구현 완료 / Vertical Slice smoke 통과** |
-| 문서 버전 | v1.0 (2026-05-11), P0 scaffold 반영 |
+| 현재 Phase | **P1 Core + P2 Route Smoke + OAuth Local Flow + Ops Polish** |
+| 문서 버전 | v1.2 (2026-05-13), fake-mcp/logrotate/ops smoke 반영 |
 | ADR 개수 | 36 (ADR-001 ~ ADR-036) |
 | MCP Spec | 2025-11-25 + 2025-06-18 병행 (ADR-029) |
 | Token Model | Dual — admin file + client DB hash (ADR-030) |
@@ -34,13 +34,25 @@
 > 본 문서팩이 **실제 구현의 정본**이다.
 > 프로덕션 SaaS 청사진은 `../production_docs_donotuse/`에 보관되어 있으며, 본 프로젝트에는 적용하지 않는다.
 
-### 구현 반영 상태 — 2026-05-11
+### 구현 반영 상태 — 2026-05-13
 
-- `apps/api`: FastAPI P0 MCP gateway scaffold 구현.
-- `apps/fake-mcp`: P0/P1 테스트용 downstream MCP fixture 구현.
-- `apps/web`: P2 Web Admin UI 초기 scaffold 구현.
-- `TESTING.md`: 자체 테스트 명령과 현재 통과 결과 정리.
-- 다음 우선순위: P1 registry persistence, client token, credential vault, SSRF guard.
+- `apps/api`: FastAPI MCP gateway, SQLite/Alembic, per-client token, registry/toolbox, Keychain/Fernet encrypted vault, SSRF/redirect guard, OAuth local full flow, one-time token exchange, optional `/metrics`, cancellation downstream forward 구현.
+- `apps/fake-mcp`: P0/P1 테스트용 downstream MCP fixture + cancellation/schema-change/cimd-test/dcr-test/icons-rich fixture 구현, 12개 테스트 통과.
+- `apps/web`: P2 Web Admin route split, sessionStorage token, nonce CSP/security headers, Playwright CLI route smoke script, `cm-*` semantic design primitive 기반 UI 일관화 구현.
+- `../docs/design`: Web Admin design system, code-level audit, component pattern, token JSON/CSS/SVG asset 정리.
+- `infra`: launchd API/Web/backup/logrotate actual load smoke, backup/restore/log rotation helper, `com.coremcp.logrotate` plist, api/web/backup/logrotate ops label logic 구현.
+- `Codex CLI`: `make codex-install`/`make codex-smoke`/`infra/scripts/codex-exec-coremcp.sh`로 Codex CLI `exec` 연결 경로 구현.
+- `TESTING.md`: unit/integration/e2e/ops smoke 명령과 현재 통과 결과 정리.
+- 다음 우선순위: 실제 reboot 후 자동 복귀, Tailscale CLI 설치/로그인 후 외부 접근, 실제 OAuth client compatibility.
+
+
+### 잔여 항목 구분 — 2026-05-13
+
+| 구분 | 항목 |
+|---|---|
+| 목적 부합 코드 미구현 | 없음 — P0/P1 및 client 연결 편의 기능 구현 완료 |
+| 외부환경 검증 필요 | actual macOS reboot recovery, Tailscale CLI install/login/Serve/ACL smoke, real external OAuth client compatibility |
+| 선택 Polish | 실제 모바일 기기 visual QA, 장기 운영 관측 튜닝 |
 
 ---
 
@@ -79,7 +91,7 @@
 | 11 | [Risk Notes](./11-risk-notes.md) | R-101 ~ R-115 위험 + mitigation |
 | 12 | [Operations](./12-operations.md) | launchd, backup, runbook 8개, SLO |
 | 13 | [ADR](./13-adr.md) | **36개 아키텍처 의사결정 기록** |
-| 14 | [MCP Client Profiles](./14-mcp-client-profiles.md) | Claude Code 우선, ChatGPT/Cursor 호환성 |
+| 14 | [MCP Client Profiles](./14-mcp-client-profiles.md) | Codex CLI exec 우선, Claude Code/ChatGPT/Cursor 호환성 |
 | 15 | [Future SaaS Migration](./15-future-saas-migration.md) | SaaS 전환 trigger + 절차 |
 
 ---
@@ -98,9 +110,10 @@ chmod 600 ~/.coremcp/admin-token
 cd apps/api && uv sync && uv run alembic upgrade head
 uv run uvicorn coremcp.main:app --host 127.0.0.1 --port 8787
 
-# 3. Claude Code 등록
-claude mcp add --transport http coremcp http://localhost:8787/mcp \
-  --header "Authorization: Bearer $(cat ~/.coremcp/admin-token)"
+# 3. Codex CLI exec 등록
+make codex-install
+make codex-smoke
+infra/scripts/codex-exec-coremcp.sh "CoreMCP MCP 도구 목록을 확인해줘"
 ```
 
 > Per-client token (Phase P1+)은 Web UI Settings → Tokens 또는 `POST /v1/settings/client-tokens`로 발급.
@@ -123,7 +136,7 @@ claude mcp add --transport http coremcp http://localhost:8787/mcp \
 
 | Phase | 기간 | 목표 | Exit Criteria |
 |:---:|:---:|---|---|
-| **P0** | 1주 | admin token → fake-mcp → Claude Code | invocation log 1줄, token boundary 검증 |
+| **P0** | 1주 | client token → fake-mcp → Codex CLI exec | invocation log 1줄, token boundary 검증 |
 | **P1** | 1.5주 | per-client token + 실제 MCP + vault | Mac mini/MacBook 분리 동작, 한쪽 revoke 검증 |
 | **P2** | 1~2주 | Web Admin UI 완성 | Settings/Tokens dual model UI |
 | **P3** | 1주 | launchd + Tailscale + (옵션) OAuth/CIMD | 무인 운영 1주 안정 |
@@ -186,7 +199,7 @@ CoreMCP는 단일 사용자 환경이지만 **SaaS급 보안 원칙**을 적용�
 - [MCP Spec 2025-06-18](https://modelcontextprotocol.io/specification/2025-06-18)
 - [MCP Transports](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports)
 - [MCP Security Best Practices](https://modelcontextprotocol.io/docs/tutorials/security/security_best_practices)
-- [Claude Code MCP](https://code.claude.com/docs/en/mcp)
+- [OpenAI Codex CLI Reference](https://developers.openai.com/codex/cli/reference)
 - [PlayMCP (벤치마크)](https://playmcp.kakao.com)
 
 ### OAuth / Auth RFCs (Phase P3+ 시)

@@ -67,7 +67,7 @@ DB 내부는 UUID(Postgres) 또는 TEXT(SQLite, lower(hex(randomblob(16)))).
 -- CHECK (status IN ('not_connected', 'connected', 'expired', 'revoked', 'error'))
 
 -- external_client_type
--- CHECK (client_type IN ('claude_code', 'claude', 'claude_desktop', 'chatgpt', 'openclaw', 'cursor', 'windsurf', 'other'))
+-- CHECK (client_type IN ('codex_cli', 'claude_code', 'claude', 'claude_desktop', 'chatgpt', 'openclaw', 'cursor', 'windsurf', 'other'))
 
 -- invocation_status
 -- CHECK (status IN ('success', 'error', 'timeout', 'cancelled', 'policy_denied', 'auth_failed', 'rate_limited'))
@@ -341,7 +341,7 @@ CREATE TABLE external_connections (
   user_id TEXT NOT NULL REFERENCES users(id),
   toolbox_id TEXT REFERENCES toolboxes(id),
   client_type TEXT NOT NULL
-    CHECK (client_type IN ('claude_code', 'claude', 'claude_desktop', 'chatgpt', 'openclaw', 'cursor', 'windsurf', 'other')),
+    CHECK (client_type IN ('codex_cli', 'claude_code', 'claude', 'claude_desktop', 'chatgpt', 'openclaw', 'cursor', 'windsurf', 'other')),
   client_name TEXT,
   oauth_client_id TEXT,
   protocol_version TEXT,

@@ -7,7 +7,7 @@
 
 ## 1. 테스트 목표
 
-1. MCP `/mcp` endpoint가 Claude Code와 호환된다.
+1. MCP `/mcp` endpoint가 Codex CLI exec와 호환된다.
 2. tools/list가 toolbox 변경에 정확히 반영된다.
 3. tools/call이 downstream 성공/실패/timeout/cancellation을 처리한다.
 4. token boundary가 깨지지 않는다 (CoreMCP token이 downstream으로 누설 X).
@@ -23,9 +23,9 @@
 |---|---|
 | Unit | parser, validator, ssrf, scanner, alias, schema hash, normalizer |
 | Integration | DB + API + MCP gateway + fake-mcp |
-| E2E | Web UI + Claude Code + fake-mcp 또는 실제 MCP |
+| E2E | Web UI + Codex CLI exec + fake-mcp 또는 실제 MCP |
 | Security | bearer/SSRF/token leakage/scanner |
-| Compatibility | Claude Code 시나리오 (14-mcp-client-profiles) |
+| Compatibility | Codex CLI exec 우선 시나리오 (14-mcp-client-profiles) |
 | Load | 단일 사용자 한도 (옵션) |
 
 ---
@@ -45,7 +45,7 @@ SSRF allowlist 정책 검증 (ADR-033, 06-security-auth §7.2).
 - [ ] IPv4/IPv6 케이스
 - [ ] 169.254.169.254 (cloud metadata) 차단
 - [ ] 100.64.0.0/10 (CGNAT) 기본 거부
-- [ ] `ALLOW_TAILSCALE_DOWNSTREAM=true` 시 100.64.x.x 허용
+- [x] `ALLOW_TAILSCALE_DOWNSTREAM=true` 시 100.64.x.x 허용
 - [ ] `ALLOWED_PRIVATE_CIDRS=10.0.0.0/8` 명시 시 10.x 허용
 - [ ] 169.254.169.254는 어떤 옵션으로도 거부
 - [ ] `ALLOW_LOOPBACK_DOWNSTREAM=false` 시 localhost http 거부
@@ -112,7 +112,7 @@ SSRF allowlist 정책 검증 (ADR-033, 06-security-auth §7.2).
 
 ### 3.6 Credential Vault
 - [ ] Keychain backend: set/get/delete
-- [ ] Fernet backend: encrypt/decrypt
+- [x] Fernet backend: encrypt/decrypt + legacy base64 read compatibility
 - [ ] 잘못된 key로 decrypt 실패
 - [ ] masked_value 형식
 - [ ] secret_ref만 DB에 저장 확인
@@ -176,6 +176,8 @@ Expected: downstream original name 전달, arguments 전달, normalized result, 
 ### 4.5 Downstream Timeout
 fake-mcp가 35s sleep.
 Expected: result.isError=true, error_code=downstream_timeout, invocation_status=timeout.
+
+2026-05-13: direct `DownstreamMcpClient` timeout mapping + `/mcp tools/call` E2E timeout regression 추가. Gateway는 `result.isError=true`, `_meta.coremcp.error_code=downstream_timeout`, invocation `status=timeout`을 기록한다.
 
 ### 4.6 Downstream Error
 fake-mcp가 JSON-RPC error.
@@ -334,7 +336,7 @@ ALLOW_PRIVATE_DOWNSTREAM / ALLOW_TAILSCALE_DOWNSTREAM / ALLOWED_PRIVATE_CIDRS �
 - 10.0.0.1 (private) — 차단
 - DNS rebinding fixture (다른 IP로 resolve) — 차단
 - 100.64.42.1 (Tailscale CGNAT) 기본 거부
-- `ALLOW_TAILSCALE_DOWNSTREAM=true` 설정 후 동일 IP 허용
+- [x] `ALLOW_TAILSCALE_DOWNSTREAM=true` 설정 후 동일 IP 허용
 - ALLOWED_PRIVATE_CIDRS에 명시 안 한 다른 사설 IP는 여전히 거부
 
 ### 6.6 Bearer Static Token
@@ -354,17 +356,19 @@ ALLOW_PRIVATE_DOWNSTREAM / ALLOW_TAILSCALE_DOWNSTREAM / ALLOWED_PRIVATE_CIDRS �
 
 ### 6.10 (옵션) OAuth Tests
 OAuth 활성 시:
-- PKCE S256 강제 (plain reject)
-- Resource Indicator strict
-- redirect_uri exact match
-- code 1회 사용
-- refresh rotation
-- revocation 후 401
+- [x] PKCE S256 강제 및 invalid verifier reject
+- [x] Resource Indicator strict
+- [x] redirect_uri exact match
+- [x] code 1회 사용
+- [x] refresh rotation 및 refresh token reuse reject
+- [x] revocation 후 401
+- [x] DCR invalid scope/redirect reject
+- [x] CIMD byte-exact `client_id` match, redirect/content-type/size/host mismatch reject
 
 ### 6.11 AUTH_MODE 보안
 
-- [ ] static_bearer 모드에서 /oauth/* 호출 시 404 또는 503
-- [ ] oauth 모드에서도 admin token은 `/v1/*` 계속 동작
+- [x] static_bearer 모드에서 /oauth/* 호출 시 404 또는 503
+- [x] oauth 모드에서도 admin token은 `/v1/*` 계속 동작
 - [ ] AUTH_MODE 변경 audit_log 기록
 
 ### 6.12 Token Brute Force
@@ -377,12 +381,12 @@ OAuth 활성 시:
 
 ## 7. E2E Test Scenarios
 
-### E2E-001 Claude Code Mac mini Local
+### E2E-001 Codex CLI exec Mac mini Local
 ```text
 Given fake-mcp running on localhost:9999
 And CoreMCP running on localhost:8787 with fake service in toolbox
-When user runs `claude mcp add ... --header "Authorization: Bearer <token>"`
-Then Claude Code sees fake.echo and fake.add tools
+When user runs `make codex-install && make codex-smoke`
+Then Codex CLI MCP config sees CoreMCP tools
 And calling fake.add(1,2) returns 3
 ```
 
@@ -390,17 +394,17 @@ And calling fake.add(1,2) returns 3
 ```text
 Given user registered GitHub MCP with PAT
 And added to toolbox
-When user asks Claude Code "GitHub에 이슈 만들어줘"
-Then Claude Code calls github.create_issue
+When user asks Codex CLI exec "GitHub에 이슈 만들어줘"
+Then Codex calls github.create_issue through CoreMCP
 And issue is created in GitHub
 And invocation log records success
 ```
 
 ### E2E-003 Toolbox Disable Reflects in tools/list
 ```text
-Given Claude Code connected
+Given Codex CLI exec connected
 When user disables service in Web UI
-And Claude Code requests tools/list
+And Codex requests tools/list
 Then disabled service tools not returned
 And listChanged emitted to active SSE
 ```
@@ -432,6 +436,8 @@ Then CoreMCP API responds within 5min
 And Claude Code reconnects automatically
 ```
 
+2026-05-12 상태: `infra/scripts/coremcp-launchctl.sh load` + `infra/scripts/ops-smoke.sh`로 API/Web/backup launchd load는 통과. 실제 reboot는 `infra/scripts/ops-smoke.sh --post-reboot`로 재부팅 직후 수동 검증 필요.
+
 ### E2E-007 Tailscale Access from MacBook
 ```text
 Given Tailscale set up
@@ -439,6 +445,8 @@ When MacBook Claude Code connects to https://macmini.ts.net/mcp
 Then tools/list returns same catalog as Mac mini local
 And tools/call works identically
 ```
+
+2026-05-12 상태: 검증 머신에 `tailscale` CLI가 없어 access 401/200은 미수행. `infra/scripts/ops-smoke.sh --require-tailscale`로 설치/로그인 후 재검증한다.
 
 ### E2E-008 One-Time Token (OpenClaw)
 ```text
@@ -495,9 +503,9 @@ And old soft-deleted row remains for audit
 
 | 시나리오 | 우선순위 |
 |---|---|
-| Claude Code (Mac mini local, admin token) end-to-end | P0 |
+| Codex CLI exec (Mac mini local, client token) end-to-end | P0 |
 | admin token으로 /mcp tools/call 성공 | P0 |
-| Claude Code (MacBook via Tailscale) | P0 |
+| Claude Code (optional, MacBook via Tailscale) | P1 |
 | Protocol version downgrade (2025-11-25 → 2025-06-18) | P0 |
 | Protocol version fallback (헤더 누락 → 2025-06-18) | P0 |
 | listChanged 자동 반영 | P1 |
@@ -584,6 +592,8 @@ Target:
 12. `dcr-test` fake client (옵션, P3 OAuth용)
 13. `icons-rich` fake MCP: 다양한 icons 형식 (URL, data URI, 큰 size, 잘못된 content-type, SVG XSS payload)
 
+2026-05-13 현재 fake fixture 포함: `cancellation`, `schema-change`, `cimd-test`, `dcr-test`, `icons-rich`.
+
 ### Sample Tools
 - echo (text in/out)
 - add (number)
@@ -602,12 +612,30 @@ GitHub Actions 또는 로컬:
 - Next.js: `pnpm build`, `pnpm test`
 - E2E는 main 푸시 시 fake-mcp matrix
 
+
+## 11.1 현재 자동/운영 검증 스냅샷 — 2026-05-13
+
+| 영역 | 결과 | 비고 |
+|---|---:|---|
+| API pytest | 46 passed | `cd apps/api && uv run pytest -q`; downstream timeout + SVG icon default block regression 포함 |
+| fake-mcp pytest | 12 passed | cancellation/schema-change/cimd-test/dcr-test/icons-rich fixture 명시 테스트 포함 |
+| launchd plist lint | 5 OK | fake-mcp/api/web/backup/logrotate |
+| ops-smoke label logic | pass | mocked `launchctl list`로 api/web/backup/logrotate label 확인 로직 검증 |
+
+잔여 항목 구분:
+
+| 구분 | 항목 |
+|---|---|
+| 목적 부합 코드 미구현 | 없음 — one-time token, `/metrics`, service detail, cancellation downstream forward 포함 구현 완료 |
+| 외부환경 검증 필요 | actual reboot recovery, Tailscale CLI install/login/Serve/ACL, real external OAuth client compatibility |
+| 선택 Polish | 실제 모바일 기기 visual QA, 장기 운영 관측 튜닝 |
+
 ---
 
 ## 12. Release Gate (Phase별)
 
 ### P0 Release Gate
-- [ ] Claude Code (Mac mini local) admin token으로 fake tool 호출 성공
+- [ ] Codex CLI exec client token으로 fake tool 호출 성공
 - [ ] invocation log 한 줄 기록
 - [ ] CoreMCP admin token이 fake-mcp에 전달 안 됨 (token boundary)
 - [ ] notifications/initialized 수신 처리
@@ -624,7 +652,7 @@ GitHub Actions 또는 로컬:
 - [ ] per-client token revoke 동작
 - [ ] external_connection 삭제 시 client token CASCADE
 - [ ] partial unique index로 soft-delete 재생성 가능
-- [ ] AUTH_MODE 환경 변수 분기 정상
+- [x] AUTH_MODE 환경 변수 분기 정상
 - [ ] Tailscale allowlist 정책 작동
 - [ ] Protocol version 2025-11-25 / 2025-06-18 둘 다 응답 정상
 - [ ] icons top-level forward 확인 (annotations 안에 없음)
@@ -636,11 +664,11 @@ GitHub Actions 또는 로컬:
 - [ ] ko 한국어 우선 표시
 
 ### P3 Release Gate
-- [ ] launchd 부트 자동 시작 + 5분 내 정상화
-- [ ] Tailscale 외부 접근 동작
-- [ ] daily backup 실행
-- [ ] log rotation 동작
-- [ ] listChanged emission 동작
+- [ ] launchd 부트 자동 시작 + 5분 내 정상화 — 실제 reboot 후 수동 확인 필요
+- [ ] Tailscale 외부 접근 동작 — CLI 설치/로그인 후 확인 필요
+- [x] daily backup 실행
+- [x] log rotation 동작 — script/plist/label logic 검증, actual label load는 운영 host 재로드 후 확인
+- [x] listChanged emission 동작
 
 ---
 

@@ -9,15 +9,15 @@
     <string>/usr/bin/env</string>
     <string>bash</string>
     <string>-lc</string>
-    <string>cd "$HOME/project_202605/CoreMCP/apps/web" &amp;&amp; pnpm start --hostname 127.0.0.1 --port 3000</string>
+    <string>export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/Library/pnpm:$PATH"; cd "$HOME/project_202605/CoreMCP/apps/web" &amp;&amp; pnpm start --hostname 127.0.0.1 --port 3003</string>
   </array>
   <key>RunAtLoad</key>
-  <false/>
+  <true/>
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>$HOME/.coremcp/logs/web.log</string>
+  <string>/Users/hwanchoi/.coremcp/logs/web.log</string>
   <key>StandardErrorPath</key>
-  <string>$HOME/.coremcp/logs/web.err.log</string>
+  <string>/Users/hwanchoi/.coremcp/logs/web.err.log</string>
 </dict>
 </plist>

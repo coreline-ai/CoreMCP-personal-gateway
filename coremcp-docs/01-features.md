@@ -32,7 +32,7 @@
 | MFA / Password reset / Email verify | 제외 | 가입자 없음 |
 | Right-to-erasure / Data export | 제외 | 본인 직접 관리 |
 | Connected clients revoke | 포함 | external_connections 행 삭제로 해당 토큰 invalidate |
-| MCP Protocol 2025-06-18 | 포함 | Claude Code 기본 호환 (ADR-029) |
+| MCP Protocol 2025-06-18 | 포함 | Codex CLI/Claude Code 호환성 유지 (ADR-029) |
 | MCP Protocol 2025-11-25 | 포함 | latest. icons metadata, JSON Schema 2020-12 (ADR-029) |
 | MCP tasks/* (2025-11-25 experimental) | 제외 | client 요청 시 -32601. CoreMCP는 downstream에도 forward 안 함. Phase P3+ 검토 (ADR-029) |
 
@@ -145,8 +145,9 @@
 | Tool schema 뷰 | 포함 | 핵심 |
 | Toolbox 관리 | 포함 | 핵심 |
 | Connected clients 목록/revoke | 포함 | 핵심 |
-| Connect Claude Code 가이드 | 포함 | 핵심 |
-| Connect ChatGPT/Cursor 가이드 | 부분포함 | OAuth 미구현 시 manual instruction |
+| Connect Codex CLI exec 가이드 | 포함 | 핵심 |
+| Connect Claude Code 가이드 | 포함 | 옵션 호환 |
+| Connect ChatGPT/Cursor 가이드 | 포함 | OAuth 활성 시 DCR/CIMD flow 사용 |
 | Tool invocation logs | 포함 | 핵심 |
 | Audit logs viewer | 포함 | 핵심 |
 | Settings (token rotate, locale) | 포함 | 핵심 |

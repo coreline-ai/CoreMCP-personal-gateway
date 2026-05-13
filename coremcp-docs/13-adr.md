@@ -639,6 +639,34 @@ Consequences:
 
 ---
 
+## ADR-037: Personal-first, SaaS-pattern selective absorption
+
+Status: Accepted
+
+Decision:
+현재 저장소의 제품/구현 기준은 **personal CoreMCP gateway + 도구함 관리**다. `coremcp-design-patterns-to-absorb.md`와 `production_docs_donotuse/`에 포함된 SaaS 패턴은 참고 자료이며, 현재 구현 지시로 간주하지 않는다.
+
+선별 흡수 가능한 패턴은 다음으로 제한한다.
+- 개인 service registry와 validation metadata
+- per-client token, credential vault, SSRF guard, request마다 bearer auth 재검증
+- 개인 도구함의 service/tool 단위 제어
+- schema drift, catalog sync, downstream partial failure 가시성
+- local request_id/metrics/log 기반 observability
+- 연결된 AI client 등록/검증 UX
+
+team/workspace 멀티테넌시, public marketplace, publisher profile, verified badge, public review queue, billing/quota/abuse automation은 명시적인 사용자 요청과 활성 dev-plan phase/ADR이 생기기 전까지 장기 backlog 또는 제외 범위로만 유지한다.
+
+Rationale:
+CoreMCP는 먼저 본인이 24/7 사용할 수 있는 안정적인 개인 gateway가 되어야 한다. SaaS 문서의 패턴을 무비판적으로 구현하면 범위가 커지고, token boundary·credential boundary·운영 검증 같은 현재 핵심 안전 요건이 흐려진다. 반대로 registry metadata, tool-level control, drift visibility, local observability 같은 패턴은 personal scope에서도 직접적인 사용자 가치가 있다.
+
+Consequences:
+- 구현 계획과 dev-plan은 personal scope 섹션을 우선 해석한다.
+- 신규 SaaS 패턴 문서는 설계 참고/장기 backlog로 읽고, 즉시 구현 태스크로 승격하지 않는다.
+- SaaS 전환이 필요해지면 본 ADR을 Superseded 또는 Amended로 표시하고 `15-future-saas-migration.md`와 새 dev-plan phase에서 범위를 다시 연다.
+- AGENTS.md의 편집 규칙은 이 ADR을 근거로 SaaS 기능 구현 확장을 차단한다.
+
+---
+
 ## Superseded / Future Migration
 
 다음 ADR은 SaaS 전환 시 Superseded:

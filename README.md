@@ -11,7 +11,7 @@
 [![SQLite](https://img.shields.io/badge/SQLite-3.35+-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
 [![macOS](https://img.shields.io/badge/macOS-Mac%20mini-000000?logo=apple&logoColor=white)](https://www.apple.com/mac-mini/)
 [![License](https://img.shields.io/badge/License-Private-red.svg)](#-license)
-[![Status](https://img.shields.io/badge/Status-P0%20Scaffold-yellow.svg)](#-phase-plan)
+[![Status](https://img.shields.io/badge/Status-P1%20Core-green.svg)](#-phase-plan)
 [![Docs](https://img.shields.io/badge/Docs-17%20files-blue.svg)](./coremcp-docs/)
 
 내 Mac mini에서 모든 MCP를 한 곳에 모아 어디서든 쓴다.
@@ -24,14 +24,14 @@
 
 ## Overview
 
-CoreMCP는 본인 1명이 Mac mini에서 운영하는 protected MCP gateway다. 여러 MCP 서버를 등록해 자신의 도구함(toolbox)에 담고, Claude Code 등 외부 AI 클라이언트에는 CoreMCP 하나만 연결한다.
+CoreMCP는 본인 1명이 Mac mini에서 운영하는 protected MCP gateway다. 여러 MCP 서버를 등록해 자신의 도구함(toolbox)에 담고, Codex CLI `exec` 등 외부 AI 클라이언트에는 CoreMCP 하나만 연결한다.
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
 │ External AI Clients                                         │
 │ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐         │
-│ │ Claude   │ │ Claude   │ │ OpenClaw │ │ ChatGPT  │  ...    │
-│ │ Code     │ │ desktop  │ │          │ │ (옵션)   │         │
+│ │ Codex    │ │ Claude   │ │ OpenClaw │ │ ChatGPT  │  ...    │
+│ │ CLI exec │ │ Code     │ │          │ │ (옵션)   │         │
 │ │ (Mac mini)│ │(MacBook)│ │          │ │          │         │
 │ └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘         │
 └──────┼────────────┼────────────┼────────────┼───────────────┘
@@ -66,36 +66,52 @@ CoreMCP는 본인 1명이 Mac mini에서 운영하는 protected MCP gateway다. 
 
 **한 줄 가치**: AI 클라이언트마다 MCP를 따로 등록하지 않고, 한 곳에 모아 어디서나 동일한 도구함을 쓴다.
 
-### Implementation Status — 2026-05-11
+### Implementation Status — 2026-05-13
 
 - Root monorepo scaffold, `apps/api`, `apps/fake-mcp`, `apps/web`, `packages/*`, `infra/*`가 생성되었습니다.
-- P0 backend scaffold는 admin bearer, `/mcp` JSON-RPC, protocol negotiation, session, fake downstream proxy, token boundary test까지 구현되었습니다.
-- Fake downstream MCP fixture는 `initialize`, `tools/list`, `tools/call`, `ping`을 지원합니다.
-- Web Admin UI는 한 페이지 scaffold와 admin token localStorage/API wrapper/icon renderer를 포함합니다.
-- P1의 per-client token, real registry persistence, credential vault, SSRF guard는 다음 구현 단계입니다.
+- P1 backend core는 Alembic/SQLite schema, client token DB hash, service registry, toolbox catalog, 실제 Fernet/Keychain credential vault, SSRF guard, validation, DB 기반 `/mcp tools/list/call`까지 구현되었습니다.
+- OAuth optional flow는 `AUTH_MODE=oauth`에서 DCR/CIMD, authorize/code, token, JWKS, refresh rotation, revoke/introspect까지 로컬 테스트로 고정했습니다.
+- OAuth 미지원 client용 one-time connection token issue/exchange와 기본 off Prometheus `/metrics` endpoint를 구현하고 API 회귀 테스트로 고정했습니다.
+- 개인 도구함 tool-level override(`hidden`, `visible_only`, `callable`), client/OAuth scope enforcement, schema drift summary, `X-Request-ID` 전파, policy deny/audit/invocation 관측성을 구현하고 API 회귀 테스트로 고정했습니다.
+- Fake downstream MCP fixture는 `initialize`, `tools/list`, `tools/call`, `ping`과 production test fixture(`cancellation`, `schema-change`, `cimd-test`, `dcr-test`, `icons-rich`)를 지원하며 12개 테스트로 고정했습니다.
+- Web Admin UI는 nonce 기반 CSP/security headers, `/services`, `/services/[id]`, `/toolbox`, `/clients`, `/settings`, `/playground`, `/logs` route split, Service Detail Tool Control, Logs filter, client 연결 카드와 Playwright CLI route smoke script를 통과했습니다.
+- Web Admin 디자인 시스템은 `docs/design/`에 code-level audit, component pattern, token JSON/CSS/SVG asset으로 정리했고, `cm-*` semantic primitive를 전체 admin route에 반영했습니다.
+- Codex CLI `exec` 연결 helper를 추가했습니다. `make codex-install`은 Codex 전용 client token을 발급해 `~/.coremcp/codex-client-token`에 저장하고, `codex mcp add coremcp --url ... --bearer-token-env-var COREMCP_CLIENT_TOKEN` 구성을 등록합니다.
+- launchd fake-mcp/API/Web/backup/logrotate 실제 load smoke와 plist 검증을 통과했습니다. Reboot 검증은 실제 재부팅이 필요하며, Tailscale 검증은 현재 머신에 CLI가 없어 skipped 상태입니다.
 
 ---
+
+
+### Remaining Work Split — 2026-05-13
+
+| 구분 | 남은 항목 |
+|---|---|
+| 목적 부합 코드 미구현 | 없음 — P0/P1 및 연결 편의 기능 구현 완료 |
+| 외부환경 검증 필요 | actual macOS reboot recovery, Tailscale CLI install/login/Serve/ACL smoke, real external OAuth client compatibility |
+| 선택 Polish | 실제 모바일 기기 visual QA, 장기 운영 관측 튜닝 |
 
 ## 📦 Features
 
 | 영역 | 기능 | 상태 |
 |---|---|---|
-| **MCP Gateway** | `/mcp` Streamable HTTP, initialize/tools/list/tools/call, Mcp-Session-Id, GET SSE | P0 scaffold implemented |
+| **MCP Gateway** | `/mcp` Streamable HTTP, initialize/tools/list/tools/call, Mcp-Session-Id, GET SSE | implemented + tested |
 | **Protocol** | MCP 2025-11-25 + 2025-06-18 병행 지원 (ADR-029) | implemented + tested |
-| **Authentication** | Admin file bearer implemented. Per-client DB hash remains P1 | P0 partial |
-| **MCP Registry** | private service 등록, validation, schema cache, drift detection | Phase P1 |
-| **Toolbox** | per-user toolbox, item enable/disable, dynamic catalog | Phase P1 |
-| **Tool Alias** | `service_slug.tool_name` 매핑, slug rename grace (ADR-016) | Phase P1 |
-| **Downstream Proxy** | bearer/api_key vault, timeout/cancellation/idempotency | Phase P1 |
-| **Credential Vault** | macOS Keychain (default) / Fernet (headless, ADR-031) | Phase P1 |
-| **Web Admin UI** | Next.js 15 + shadcn/ui, dashboard/services/toolbox/logs | Phase P2 |
-| **SSRF Guard** | allowlist 기반, Tailscale CIDR 명시 허용 (ADR-033) | Phase P1 |
-| **Tool Poisoning Scanner** | regex pattern + Unicode/homoglyph + SVG sanitize | Phase P1 |
-| **Audit / Invocation Log** | 모든 보안·실행 이벤트, secret redaction | Phase P1 |
-| **listChanged Emission** | toolbox 변경 시 SSE push | Phase P1 |
-| **One-time Token** | OpenClaw 등 OAuth 미지원 client용 | Phase P3 |
-| **OAuth 2.1 (옵션)** | CIMD First + DCR Fallback (ADR-036) | Phase P3 |
-| **Daemon** | launchd + 자동 시작 + SQLite backup + log rotation | Phase P3 |
+| **Authentication** | Admin file bearer + per-client DB hash token + MCP scope enforcement | implemented + tested |
+| **Codex CLI exec** | Codex MCP config 등록 + client token env wrapper + non-LLM MCP smoke | implemented + tested |
+| **MCP Registry** | private service 등록, validation, schema cache | implemented + tested |
+| **Toolbox** | default toolbox, item enable/disable, tool-level override(`hidden`/`visible_only`/`callable`), dynamic catalog | implemented + tested |
+| **Tool Alias** | `service_slug.tool_name` 매핑, primary alias | implemented |
+| **Downstream Proxy** | bearer/api_key vault, timeout, redirect block, idempotency cache, error mapping | implemented |
+| **Credential Vault** | macOS Keychain adapter / Fernet encrypted fallback | implemented + tested |
+| **Web Admin UI** | Next.js 15 admin route split + sessionStorage token + nonce CSP headers | implemented + route smoke |
+| **SSRF Guard** | allowlist 기반, metadata IP hard reject | implemented + tested |
+| **Tool Poisoning Scanner** | regex pattern + Unicode/homoglyph + SVG default-off | implemented |
+| **Audit / Invocation Log** | 보안·실행 이벤트, request_id 추적, secret redaction | implemented + tested |
+| **listChanged / Cancellation** | dynamic SSE emission, cancellation logging + downstream forward | implemented + tested |
+| **One-time Token** | OpenClaw 등 OAuth 미지원 client용 issue/exchange | implemented + tested |
+| **OAuth 2.1 (옵션)** | CIMD First + DCR Fallback (ADR-036), PKCE, JWKS, refresh/revoke/introspect | implemented + local tested |
+| **Metrics** | `METRICS_ENABLED=true`일 때 Prometheus `/metrics` 노출, MCP/tool/auth/policy/timeout counters | implemented + tested |
+| **Daemon** | launchd + fake-mcp/API/Web 자동 시작 + daily SQLite backup label + logrotate label + ops smoke | implemented; fake/api/web/backup/logrotate load verified |
 
 ---
 
@@ -109,41 +125,41 @@ CoreMCP는 본인 1명이 Mac mini에서 운영하는 protected MCP gateway다. 
 | Node.js | 18+ (pnpm + Turborepo) |
 | Storage | `~/.coremcp/` 최소 1GB |
 | Network | localhost 또는 Tailscale (외부 노출 시) |
-| MCP Client | Claude Code (필수), 그 외 옵션 |
+| MCP Client | Codex CLI `exec` (필수), Claude Code/ChatGPT/Cursor 등은 옵션 |
 
 ---
 
 ## 🚀 Quick Start
 
-> Phase P0 vertical slice 완성 후 동작하는 명령. 현재는 문서 기반 plan.
+> 현재 저장소 기준 로컬 실행 명령입니다. 가장 빠른 방법은 `make run`입니다.
 
 ```bash
-# 1. 디렉토리 생성
-mkdir -p ~/.coremcp/{data,logs,backups}
-chmod 700 ~/.coremcp
+# 1. 의존성/토큰/DB migration/Web build 후 launchd로 background 실행
+make run
 
-# 2. Admin token 생성 (root 관리자, 파일 보관)
-python -c "import secrets; print('cmcp_admin_' + secrets.token_urlsafe(32))" \
-  > ~/.coremcp/admin-token
-chmod 600 ~/.coremcp/admin-token
+# 2. 상태 확인
+make status
+infra/scripts/ops-smoke.sh
+infra/scripts/web-route-smoke.sh
 
-# 3. Backend 실행
-cd apps/api
-uv sync && uv run alembic upgrade head
-uv run uvicorn coremcp.main:app --host 127.0.0.1 --port 8787
+# 3. Web Admin
+open http://127.0.0.1:3003
 
-# 4. Web Admin UI 실행 (옵션, Phase P2 이후)
-cd apps/web
-pnpm install && pnpm dev
+# 4. Codex CLI exec에 CoreMCP 등록
+make codex-install
+make codex-smoke
 
-# 5. Claude Code에 CoreMCP 등록
-claude mcp add --transport http coremcp http://localhost:8787/mcp \
-  --header "Authorization: Bearer $(cat ~/.coremcp/admin-token)"
+# 5. Codex CLI exec에서 CoreMCP 도구함 사용
+infra/scripts/codex-exec-coremcp.sh "CoreMCP MCP 도구 목록을 확인해줘"
 
-# 6. (옵션) Per-client token 발급 (Phase P1 이후)
-#    Web UI: Settings → Tokens → "+ Generate new client token"
-#    또는: curl -X POST http://localhost:8787/v1/settings/client-tokens \
-#          -H "Authorization: Bearer $(cat ~/.coremcp/admin-token)"
+# 6. 중지
+make stop
+```
+
+Foreground로 터미널에서 직접 실행하려면 다음을 사용합니다.
+
+```bash
+make run-local
 ```
 
 상세는 [`coremcp-docs/09-implementation-plan.md`](./coremcp-docs/09-implementation-plan.md) §7 First Working Vertical Slice 참조.
@@ -198,7 +214,7 @@ launchd (com.coremcp.api)
 ### Request Flow (tools/call)
 
 ```text
-Claude Code  ──▶  /mcp tools/call
+Codex CLI exec ──▶  /mcp tools/call
                   │
                   ▼
             Auth: admin file 비교 또는 client hash DB lookup
@@ -219,7 +235,7 @@ Claude Code  ──▶  /mcp tools/call
             Result + tool_invocations log (BG)
                   │
                   ▼
-            Claude Code (result)
+            Codex CLI exec (result)
 ```
 
 ---
@@ -229,19 +245,18 @@ Claude Code  ──▶  /mcp tools/call
 ```text
 CoreMCP/
 ├── README.md                       # 본 문서
-├── CLAUDE.md                       # Claude Code 가이드
+├── CLAUDE.md                       # LLM coding agent 가이드
 ├── apps/
 │   ├── api/                        # FastAPI backend (Phase P0~)
 │   │   ├── coremcp/
 │   │   │   ├── main.py             # FastAPI entry
 │   │   │   ├── auth/               # admin / client / oauth
 │   │   │   ├── mcp_gateway/        # /mcp dispatcher + SSE
-│   │   │   ├── registry/           # services + SSRF + scanner
-│   │   │   ├── toolbox/            # catalog builder + alias
+│   │   │   ├── registry/           # catalog normalizer + scanner
 │   │   │   ├── credentials/        # vault backends
+│   │   │   ├── db/                 # SQLite repository + SQLAlchemy session
 │   │   │   ├── proxy/              # downstream executor
-│   │   │   ├── audit/              # logger
-│   │   │   └── invocations/
+│   │   │   └── smoke.py            # in-process smoke test
 │   │   └── alembic/                # migration
 │   ├── web/                        # Next.js admin (Phase P2~)
 │   │   └── app/                    # Dashboard / Services / Logs
@@ -250,9 +265,11 @@ CoreMCP/
 │   ├── shared-types/
 │   └── client-profiles/
 ├── infra/
-│   ├── launchd/                    # com.coremcp.api.plist
+│   ├── launchd/                    # api/web/backup/logrotate plists
 │   ├── docker/                     # 옵션 Postgres/Redis
-│   └── scripts/                    # backup, rotate-token
+│   └── scripts/                    # backup, restore, launchctl, log rotation
+├── docs/
+│   └── design/                     # Web Admin design system + token assets
 ├── coremcp-docs/                   # 본 문서팩 (17 files, 정본)
 └── production_docs_donotuse/       # SaaS 청사진 (참고용 only)
 ```
@@ -261,7 +278,7 @@ CoreMCP/
 
 ## 📖 Documentation
 
-전체 17개 문서가 [`coremcp-docs/`](./coremcp-docs/)에 있습니다. 본 README는 진입점이고, 상세는 각 문서를 참조하세요.
+전체 17개 제품/구현 문서가 [`coremcp-docs/`](./coremcp-docs/)에 있습니다. Web Admin의 코드 레벨 디자인 시스템은 [`docs/design/`](./docs/design/)에 별도로 정리했습니다.
 
 | # | 문서 | 핵심 내용 |
 |---:|---|---|
@@ -279,8 +296,18 @@ CoreMCP/
 | 11 | [Risk Notes](./coremcp-docs/11-risk-notes.md) | R-101~R-115 위험 + mitigation |
 | 12 | [Operations](./coremcp-docs/12-operations.md) | launchd, backup, runbook 8개 |
 | 13 | [ADR](./coremcp-docs/13-adr.md) | 36개 아키텍처 의사결정 기록 |
-| 14 | [MCP Client Profiles](./coremcp-docs/14-mcp-client-profiles.md) | Claude Code / ChatGPT / Cursor 호환성 |
+| 14 | [MCP Client Profiles](./coremcp-docs/14-mcp-client-profiles.md) | Codex CLI exec / Claude Code / ChatGPT / Cursor 호환성 |
 | 15 | [Future SaaS Migration](./coremcp-docs/15-future-saas-migration.md) | SaaS 전환 trigger + 절차 |
+
+### Design documentation
+
+| 문서/Asset | 핵심 내용 |
+|---|---|
+| [Design System](./docs/design/README.md) | CoreMCP personal admin console의 목표, token, 화면 구조 원칙 |
+| [Code-level Audit](./docs/design/code-level-audit.md) | `apps/web` theme/global/component class 분석과 반복 지점 |
+| [Component Patterns](./docs/design/component-patterns.md) | `cm-card`, `cm-panel`, `cm-button`, `cm-input`, `ToolIcon` 사용 규칙 |
+| [Theme Tokens](./docs/design/assets/coremcp-theme.tokens.json) | 색상/반경/그림자/font token JSON |
+| [Palette SVG](./docs/design/assets/coremcp-palette.svg) | 팔레트와 semantic tone 시각 asset |
 
 ---
 
@@ -303,7 +330,7 @@ P0 (1주)              P1 (1.5주)            P2 (1~2주)         P3 (1주)
 
 | Phase | 기간 | 목표 | Exit |
 |:---:|:---:|---|---|
-| **P0** | 1주 | Admin token → fake-mcp → Claude Code 성공 | invocation log 1줄 |
+| **P0** | 1주 | Admin/client token → fake-mcp → Codex CLI exec 성공 | invocation log 1줄 |
 | **P1** | 1.5주 | Per-client token + 실제 MCP + vault | Mac mini + MacBook 분리 동작 |
 | **P2** | 1~2주 | Web Admin UI (Settings/Tokens dual model) | 마우스 조작만으로 운영 |
 | **P3** | 1주 | launchd + Tailscale + OAuth/CIMD | 무인 운영 1주 안정 |
@@ -318,7 +345,7 @@ CoreMCP는 단일 사용자 환경이지만 **SaaS급 보안 원칙**을 적용�
 |---|---|---|
 | **Token boundary** | CoreMCP token은 downstream에 **절대 전달 금지** | ADR-004 |
 | **Dual token revoke** | admin 회전 / client per-connection 즉시 invalidate | ADR-030 |
-| **SSRF allowlist** | 기본 private/loopback/CGNAT 전부 차단, `ALLOW_TAILSCALE_DOWNSTREAM` 등 명시 opt-in | ADR-033 |
+| **SSRF allowlist** | 기본 private/loopback/CGNAT 전부 차단, `ALLOW_TAILSCALE_DOWNSTREAM` 등 명시 opt-in 구현 | ADR-033 |
 | **CIMD validation** | `client_id` byte-exact match, content-type charset 허용, TTL fixed 1h | ADR-036 |
 | **SVG XSS 방어** | `<img>` only 렌더링, CSP `img-src 'self' data:`, `ICON_SVG_ENABLED=false` default 권장 | 06 §6.2 |
 | **AUTH_MODE 분리** | `static_bearer` default 시 `/.well-known/oauth-protected-resource` = **404** | ADR-032 |
@@ -355,6 +382,7 @@ DATABASE_URL=sqlite+aiosqlite:////Users/me/.coremcp/data/db.sqlite3
 SECRET_BACKEND=keychain                  # keychain | fernet
 # keychain: Mac mini 자동 로그인 환경
 # fernet:   headless 무인 운영 (FERNET_KEY_FILE 필요)
+FERNET_KEY_FILE=~/.coremcp/data/secrets.key
 
 # Downstream
 DOWNSTREAM_CONNECT_TIMEOUT_MS=3000
@@ -363,9 +391,9 @@ DOWNSTREAM_MAX_BODY_MB=5
 DOWNSTREAM_MAX_REDIRECTS=0
 
 # SSRF (ADR-033)
-ALLOW_LOOPBACK_DOWNSTREAM=true           # fake-mcp 개발용
+COREMCP_SSRF_ALLOW_HOSTS=127.0.0.1,localhost  # fake-mcp/local MCP 개발용
 ALLOW_TAILSCALE_DOWNSTREAM=false
-ALLOWED_PRIVATE_CIDRS=
+COREMCP_SSRF_ALLOW_CIDRS=
 
 # Icons (06 §6.2)
 ICON_SVG_ENABLED=false                   # SVG XSS 방어 default
@@ -400,7 +428,7 @@ ICON_SVG_ENABLED=false                   # SVG XSS 방어 default
 ## 🎯 Roadmap
 
 ### 현재 (Personal MCP Gateway)
-- **Phase P0~P3 완료 후**: 본인 Mac mini에서 무인 운영 + Claude Code 동작
+- **Phase P0~P3 완료 후**: 본인 Mac mini에서 무인 운영 + Codex CLI exec 동작
 - **목표**: 1년 사용 + 안정성 검증
 
 ### 미래 (SaaS Migration — Trigger 발생 시)
@@ -414,7 +442,7 @@ ICON_SVG_ENABLED=false                   # SVG XSS 방어 default
 
 | 증상 | 원인 | 조치 |
 |---|---|---|
-| `claude mcp add` 후 401 | admin token 파일 mismatch | `cat ~/.coremcp/admin-token`으로 확인 후 헤더 재구성 |
+| `make codex-smoke` 후 401 | Codex client token 만료/불일치 | `make codex-install` 재실행 또는 `infra/scripts/codex-mcp-install.sh --force --rotate-token` |
 | Mac mini 재부팅 후 credential 실패 | Keychain 잠금 | 자동 로그인 활성 또는 `SECRET_BACKEND=fernet` 전환 |
 | `/mcp tools/call` 응답 timeout | downstream 35s 초과 | `DOWNSTREAM_READ_TIMEOUT_MS` 조정 또는 downstream 점검 |
 | Tailscale에서 차단 | `ALLOW_TAILSCALE_DOWNSTREAM=false` | 환경 변수 `true` + `ALLOWED_PRIVATE_CIDRS` 명시 |
@@ -439,7 +467,7 @@ ICON_SVG_ENABLED=false                   # SVG XSS 방어 default
 - [MCP Spec 2025-06-18](https://modelcontextprotocol.io/specification/2025-06-18)
 - [MCP Transports](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports)
 - [MCP Security Best Practices](https://modelcontextprotocol.io/docs/tutorials/security/security_best_practices)
-- [Claude Code MCP Docs](https://code.claude.com/docs/en/mcp)
+- [OpenAI Codex CLI Reference](https://developers.openai.com/codex/cli/reference)
 
 ### OAuth / Auth RFCs
 - [RFC 7591 — Dynamic Client Registration](https://datatracker.ietf.org/doc/html/rfc7591)

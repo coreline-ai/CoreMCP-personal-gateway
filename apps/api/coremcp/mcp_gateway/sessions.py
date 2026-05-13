@@ -39,3 +39,6 @@ class SessionStore:
         if not session_id:
             return False
         return self._sessions.pop(session_id, None) is not None
+
+    def count_active(self) -> int:
+        return len(self._sessions)

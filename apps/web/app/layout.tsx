@@ -6,9 +6,11 @@ export const metadata: Metadata = {
   description: '개인 MCP 도구함을 관리하는 CoreMCP Web Admin UI'
 };
 
+export const dynamic = 'force-dynamic';
+
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="ko">
+    <html lang="ko" className="dark" suppressHydrationWarning>
       <body>{children}</body>
     </html>
   );

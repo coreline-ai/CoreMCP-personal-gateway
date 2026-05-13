@@ -24,6 +24,7 @@ app = FastAPI(
 # received by this fake downstream server so integration tests can verify token
 # boundaries. Do not copy this pattern into production services.
 app.state.authorization_headers = []
+app.state.schema_version = 0
 
 
 def _json_rpc_result(request_id: Any, result: Any) -> dict[str, Any]:
@@ -56,6 +57,8 @@ def _tool_content_text(text: str) -> list[dict[str, str]]:
 
 
 def _tools() -> list[dict[str, Any]]:
+    app.state.schema_version += 1
+    schema_version = app.state.schema_version
     return [
         {
             "name": "echo",
@@ -145,6 +148,72 @@ def _tools() -> list[dict[str, Any]]:
                 "openWorldHint": False,
             },
         },
+        {
+            "name": "cancellation",
+            "title": "Cancellation Fixture",
+            "description": "Sleep for up to 60 seconds so clients can test cancellation behavior.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "seconds": {"type": "number", "minimum": 0, "maximum": 60, "default": 60}
+                },
+                "additionalProperties": False,
+            },
+            "annotations": {
+                "destructiveHint": False,
+                "readOnlyHint": True,
+                "idempotentHint": False,
+                "openWorldHint": False,
+            },
+        },
+        {
+            "name": "schema-change",
+            "title": f"Schema Change v{schema_version}",
+            "description": "Change schema metadata on each tools/list call for drift detection tests.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    f"value_v{schema_version}": {"type": "string"}
+                },
+                "additionalProperties": False,
+            },
+            "annotations": {
+                "destructiveHint": False,
+                "readOnlyHint": True,
+                "idempotentHint": True,
+                "openWorldHint": False,
+            },
+        },
+        {
+            "name": "icons-rich",
+            "title": "Rich Icon Fixture",
+            "description": "Expose mixed icon metadata including an SVG data URL for sanitizer tests.",
+            "icons": [
+                {"src": "data:image/svg+xml,%3Csvg%20onload%3Dalert(1)%3E%3C/svg%3E", "mimeType": "image/svg+xml"},
+                {"src": "https://example.test/icons/rich.png", "mimeType": "image/png", "sizes": ["64x64"]},
+            ],
+            "inputSchema": {"type": "object", "additionalProperties": False},
+            "annotations": {
+                "destructiveHint": False,
+                "readOnlyHint": True,
+                "idempotentHint": True,
+                "openWorldHint": False,
+            },
+        },
+        {
+            "name": "cimd-test",
+            "title": "CIMD Fixture Marker",
+            "description": "Marker tool used with /.well-known/oauth-client fixture endpoint.",
+            "inputSchema": {"type": "object", "additionalProperties": False},
+            "annotations": {"readOnlyHint": True},
+        },
+        {
+            "name": "dcr-test",
+            "title": "DCR Fixture Marker",
+            "description": "Marker tool used with /oauth/register fixture endpoint.",
+            "inputSchema": {"type": "object", "additionalProperties": False},
+            "annotations": {"readOnlyHint": True},
+        },
     ]
 
 
@@ -217,6 +286,29 @@ async def _handle_tools_call(request_id: Any, params: dict[str, Any]) -> dict[st
         code = int(arguments.get("code", -32000))
         return _json_rpc_error(request_id, code, message, {"tool": "error"})
 
+    if name == "cancellation":
+        seconds = float(arguments.get("seconds", 60))
+        seconds = max(0.0, min(seconds, 60.0))
+        await asyncio.sleep(seconds)
+        return _json_rpc_result(
+            request_id,
+            {
+                "content": _tool_content_text(f"Cancellation fixture completed after {seconds:g} seconds"),
+                "structuredContent": {"seconds": seconds},
+                "isError": False,
+            },
+        )
+
+    if name in {"schema-change", "icons-rich", "cimd-test", "dcr-test"}:
+        return _json_rpc_result(
+            request_id,
+            {
+                "content": _tool_content_text(f"{name} ok"),
+                "structuredContent": {"tool": name},
+                "isError": False,
+            },
+        )
+
     return _json_rpc_error(request_id, -32602, "Unknown tool", {"tool": name})
 
 
@@ -230,7 +322,7 @@ async def _dispatch(payload: dict[str, Any]) -> tuple[dict[str, Any] | None, dic
     if not isinstance(params, dict):
         return _json_rpc_error(request_id, -32602, "Invalid params"), {}
 
-    if method == "notifications/initialized":
+    if method in {"notifications/initialized", "notifications/cancelled"}:
         return None, {}
     if method == "initialize":
         return await _handle_initialize(request_id, params)
@@ -247,6 +339,39 @@ async def _dispatch(payload: dict[str, Any]) -> tuple[dict[str, Any] | None, dic
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/.well-known/oauth-client")
+def cimd_metadata(request: Request) -> dict[str, Any]:
+    client_id = str(request.url)
+    origin = str(request.base_url).rstrip("/")
+    return {
+        "client_id": client_id,
+        "client_name": "CoreMCP Fake CIMD Client",
+        "redirect_uris": [f"{origin}/oauth/callback"],
+        "grant_types": ["authorization_code", "refresh_token"],
+        "response_types": ["code"],
+        "token_endpoint_auth_method": "none",
+        "scope": "mcp:tools.read mcp:tools.call",
+    }
+
+
+@app.post("/oauth/register")
+async def dcr_register(request: Request) -> JSONResponse:
+    metadata = await request.json()
+    redirect_uris = metadata.get("redirect_uris", ["http://localhost/callback"]) if isinstance(metadata, dict) else ["http://localhost/callback"]
+    return JSONResponse(
+        {
+            "client_id": f"fake_dcr_{uuid.uuid4().hex}",
+            "client_id_issued_at": 0,
+            "client_name": metadata.get("client_name", "CoreMCP Fake DCR Client") if isinstance(metadata, dict) else "CoreMCP Fake DCR Client",
+            "redirect_uris": redirect_uris,
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+            "token_endpoint_auth_method": "none",
+        },
+        status_code=201,
+    )
 
 
 @app.post("/mcp")
@@ -289,6 +414,7 @@ def get_authorization_state() -> dict[str, Any]:
 @app.post("/_test/reset-state")
 def reset_test_state() -> dict[str, Any]:
     app.state.authorization_headers = []
+    app.state.schema_version = 0
     return {"ok": True}
 
 

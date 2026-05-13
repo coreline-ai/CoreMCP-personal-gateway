@@ -1,4 +1,4 @@
-export type ClientProfileId = 'claude_code' | 'openclaw' | 'chatgpt' | 'cursor' | 'windsurf' | 'other';
+export type ClientProfileId = 'codex_cli' | 'claude_code' | 'openclaw' | 'chatgpt' | 'cursor' | 'windsurf' | 'other';
 
 export interface ClientProfile {
   id: ClientProfileId;
@@ -8,7 +8,8 @@ export interface ClientProfile {
 }
 
 export const clientProfiles: ClientProfile[] = [
-  { id: 'claude_code', displayName: 'Claude Code', preferredAuth: 'client_bearer', priority: 'P0' },
+  { id: 'codex_cli', displayName: 'Codex CLI exec', preferredAuth: 'client_bearer', priority: 'P0' },
+  { id: 'claude_code', displayName: 'Claude Code', preferredAuth: 'client_bearer', priority: 'P1' },
   { id: 'openclaw', displayName: 'OpenClaw', preferredAuth: 'client_bearer', priority: 'P1' },
   { id: 'chatgpt', displayName: 'ChatGPT Custom MCP', preferredAuth: 'oauth', priority: 'P2' },
   { id: 'cursor', displayName: 'Cursor', preferredAuth: 'client_bearer', priority: 'P2' },

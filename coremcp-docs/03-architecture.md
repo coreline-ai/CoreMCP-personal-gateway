@@ -18,7 +18,7 @@
 ```text
 +--------------------------------------------+
 | External AI Clients                        |
-| Claude Code (Mac mini) / Claude Code (MBP) |
+| Codex CLI exec / Claude Code (optional)    |
 | / OpenClaw / (optional ChatGPT/Cursor)     |
 +----------------------+---------------------+
                        |
@@ -170,21 +170,21 @@ API → BackgroundTasks: run_validation(id)
 Web → API: poll GET /v1/jobs/{job_id} or service status
 ```
 
-### 5.2 Claude Code Connection (Mac mini local)
+### 5.2 Codex CLI exec Connection (Mac mini local)
 ```text
-User: claude mcp add --transport http coremcp http://localhost:8787/mcp --header "Authorization: Bearer ..."
-Claude Code → CoreMCP: POST /mcp initialize (bearer)
+User: make codex-install && infra/scripts/codex-exec-coremcp.sh "..."
+Codex CLI → CoreMCP: POST /mcp initialize (client bearer from COREMCP_CLIENT_TOKEN)
 CoreMCP → Auth: verify bearer
 CoreMCP → DB: insert mcp_sessions (or in-memory)
-CoreMCP → Claude Code: InitializeResult + Mcp-Session-Id
-Claude Code → CoreMCP: tools/list
+CoreMCP → Codex CLI: InitializeResult + Mcp-Session-Id
+Codex CLI → CoreMCP: tools/list
 CoreMCP → DB+Cache: catalog build
-CoreMCP → Claude Code: tools array
+CoreMCP → Codex CLI: tools array
 ```
 
 ### 5.3 tools/call
 ```text
-Claude Code → CoreMCP: tools/call github.create_issue
+Codex CLI → CoreMCP: tools/call github.create_issue
 CoreMCP → Auth: bearer
 CoreMCP → DB: alias lookup → service_tool
 CoreMCP → DB: toolbox membership
@@ -193,7 +193,7 @@ CoreMCP → Vault: resolve credential
 CoreMCP → Downstream: tools/call create_issue + downstream cred
 Downstream → CoreMCP: result
 CoreMCP → DB: tool_invocations insert (bg)
-CoreMCP → Claude Code: result
+CoreMCP → Codex CLI: result
 ```
 
 ### 5.4 listChanged Emission (요약)
@@ -203,8 +203,8 @@ Web → API: POST /v1/toolboxes/{id}/items
 API → DB: insert
 API → CatalogInvalidator: invalidate user
 API → SseEmitter: send notifications/tools/list_changed to active sessions
-[active GET /mcp SSE handlers] → Claude Code: notification
-Claude Code → CoreMCP: tools/list (재요청)
+[active GET /mcp SSE handlers] → MCP client: notification
+MCP client → CoreMCP: tools/list (재요청)
 ```
 
 상세 흐름 및 트리거는 아래 §5.5 참조.
@@ -219,8 +219,8 @@ API → CatalogInvalidator: invalidate L1 cache for user_id
 API → DomainEventBus: emit ToolboxChanged{user_id}
 DomainEventBus → SseEmitter: notify active sessions for user_id
 SseEmitter → /mcp GET SSE handler: notifications/tools/list_changed event
-Claude Code → CoreMCP /mcp: tools/list (재요청)
-CoreMCP → Claude Code: 새 catalog
+MCP client → CoreMCP /mcp: tools/list (재요청)
+CoreMCP → MCP client: 새 catalog
 ```
 
 발생 트리거 (07-mcp-proxy-spec.md §12 참조):
@@ -419,7 +419,7 @@ CoreMCP는 두 종류의 personal token을 사용한다 (ADR-030):
 | Stdio hosting | 제외 | RCE 위험 |
 | Session auth | 금지 | 모든 request bearer |
 | Token model | dual: admin file + client DB | revocable per-connection (ADR-030) |
-| Protocol versions | 2025-06-18 + 2025-11-25 | Claude Code 호환 + 최신 (ADR-029) |
+| Protocol versions | 2025-06-18 + 2025-11-25 | Codex CLI/Claude Code 호환 + 최신 (ADR-029) |
 | AUTH_MODE | static_bearer default, oauth optional | ChatGPT 등 OAuth 강제 client 시 활성 (ADR-032) |
 | OAuth client registration | CIMD first, DCR fallback | brand impersonation 방어 (ADR-036) |
 

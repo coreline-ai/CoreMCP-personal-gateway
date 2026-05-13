@@ -37,7 +37,7 @@ export function ToolIcon({ tool, src, alt, size = 32, className = '' }: ToolIcon
       height={size}
       loading="lazy"
       decoding="async"
-      className={`rounded-lg border border-slate-200 bg-white object-contain p-1 ${className}`}
+      className={`rounded-lg border border-border bg-card object-contain p-1 ${className}`}
       onError={(event) => {
         if (event.currentTarget.src.endsWith(TOOL_ICON_FALLBACK_SRC)) return;
         setCurrentSrc(TOOL_ICON_FALLBACK_SRC);

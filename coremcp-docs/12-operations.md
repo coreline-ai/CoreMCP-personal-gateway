@@ -83,7 +83,33 @@ launchctl bootout gui/$(id -u)/com.coremcp.api
 ```
 
 ### 2.2 Web daemon (옵션)
-별도 plist `com.coremcp.web` — Next.js build 후 `next start --port 3000` 또는 정적 export.
+별도 plist `com.coremcp.web` — Next.js build 후 `next start --port 3003` 또는 정적 export.
+
+현재 repo에는 실제 검증용 helper가 포함되어 있다.
+
+```bash
+mkdir -p ~/.coremcp/{data,logs,backups}
+chmod 700 ~/.coremcp
+
+# root에서 실행
+pnpm build
+infra/scripts/coremcp-launchctl.sh load
+infra/scripts/ops-smoke.sh
+
+# 재부팅 후 수동 검증
+infra/scripts/ops-smoke.sh --post-reboot
+
+# 종료
+infra/scripts/coremcp-launchctl.sh unload
+```
+
+2026-05-13 로컬 검증 결과:
+- `com.coremcp.fake-mcp`: launchd load 후 `http://127.0.0.1:8790/health` 200
+- `com.coremcp.api`: launchd load 후 `http://127.0.0.1:8787/ready` 200
+- `com.coremcp.web`: launchd load 후 `http://127.0.0.1:3003/` 200
+- `com.coremcp.backup`: daily 03:00 schedule label load 확인
+- `com.coremcp.logrotate`: daily 00:15 plist 추가, `plutil`과 `ops-smoke` label logic 통과
+- Reboot 검증은 실제 macOS 재부팅이 필요하므로 `--post-reboot` runbook으로 분리
 
 ### 2.3 Worker daemon (옵션)
 Arq 사용 시 `com.coremcp.worker` 추가. MVP는 API 프로세스 내 BackgroundTasks.
@@ -93,9 +119,9 @@ Arq 사용 시 `com.coremcp.worker` 추가. MVP는 API 프로세스 내 Backgrou
 ## 3. Logs
 
 ### 3.1 위치
-- API stdout/stderr: `~/.coremcp/logs/launchd.api.{stdout,stderr}`
+- API stdout/stderr: `~/.coremcp/logs/api.log`, `~/.coremcp/logs/api.err.log`
 - structured JSON: `~/.coremcp/logs/coremcp.log` (structlog)
-- web Next.js: `~/.coremcp/logs/launchd.web.{stdout,stderr}` (옵션)
+- web Next.js: `~/.coremcp/logs/web.log`, `~/.coremcp/logs/web.err.log` (옵션)
 - audit / invocation은 DB
 
 ### 3.2 형식 (structlog JSON)
@@ -129,23 +155,25 @@ cmcp_admin_, cmcp_client_, admin_token, client_token
 ```
 
 ### 3.5 Rotation
-crontab 또는 launchd로 daily:
+
+Repo에는 log rotation 전용 스크립트와 launchd plist가 있다.
+
 ```bash
-# infra/scripts/rotate-logs.sh
-LOG_DIR=~/.coremcp/logs
-find "$LOG_DIR" -name 'coremcp.log.*.gz' -mtime +7 -delete
-DATE=$(date +%Y%m%d)
-if [ -f "$LOG_DIR/coremcp.log" ]; then
-  mv "$LOG_DIR/coremcp.log" "$LOG_DIR/coremcp.log.$DATE"
-  gzip "$LOG_DIR/coremcp.log.$DATE"
-  launchctl kickstart -k gui/$(id -u)/com.coremcp.api  # 새 파일 생성
-fi
+# 수동 실행
+infra/scripts/rotate-logs.sh
+
+# launchd daily 00:15 label
+plutil -lint infra/launchd/com.coremcp.logrotate.plist
+infra/scripts/coremcp-launchctl.sh load
+launchctl list | grep com.coremcp.logrotate
 ```
 
-크론:
-```bash
-0 0 * * * ~/projects/coremcp/infra/scripts/rotate-logs.sh
-```
+기본 정책:
+- `COREMCP_LOG_DIR` 기본값: `~/.coremcp/logs`
+- `*.log` 파일이 10MB를 넘으면 gzip 압축
+- `*.log`와 `*.log.gz` 모두 `COREMCP_LOG_RETENTION_DAYS`(기본 7일) 초과분 삭제
+
+2026-05-13 상태: plist syntax와 `ops-smoke.sh`의 `fake-mcp/api/web/backup/logrotate` label logic은 통과. 실제 reboot 검증은 운영 host 재부팅 후 `ops-smoke.sh --post-reboot`로 확인한다.
 
 ---
 
@@ -189,20 +217,18 @@ Mac mini에 grafana + prometheus 띄울 시 활용.
 
 ### 5.1 SQLite backup
 ```bash
-# infra/scripts/backup.sh
-DEST=~/.coremcp/backups
-mkdir -p "$DEST"
-DATE=$(date +%Y%m%d-%H%M%S)
-sqlite3 ~/.coremcp/data/db.sqlite3 ".backup '$DEST/db.$DATE.sqlite3'"
-gzip "$DEST/db.$DATE.sqlite3"
-# 7일 이상 된 backup 삭제
-find "$DEST" -name 'db.*.sqlite3.gz' -mtime +7 -delete
+# 수동 1회 실행
+infra/scripts/backup-sqlite.sh
 ```
 
-크론:
+launchd daily schedule:
 ```bash
-0 3 * * * ~/projects/coremcp/infra/scripts/backup.sh
+plutil -lint infra/launchd/com.coremcp.backup.plist infra/launchd/com.coremcp.logrotate.plist
+infra/scripts/coremcp-launchctl.sh load
+launchctl list | grep -E "com.coremcp.(backup|logrotate)"
 ```
+
+기본 정책: 매일 03:00, `~/.coremcp/backups/coremcp-*.sqlite3`, 7일 이상 파일 삭제.
 
 ### 5.2 전체 디렉토리 backup
 - Time Machine으로 `~/.coremcp/` 포함
@@ -211,7 +237,7 @@ find "$DEST" -name 'db.*.sqlite3.gz' -mtime +7 -delete
 
 ### 5.3 Credential backup
 - macOS Keychain은 iCloud Keychain 활성 시 자동 동기화
-- Fernet master key는 별도 안전한 곳에 보관 (1Password 등)
+- Fernet master key(`FERNET_KEY_FILE`, 기본 `~/.coremcp/data/secrets.key`)는 별도 안전한 곳에 보관 (1Password 등)
 
 ### 5.4 Backup 복원
 ```bash
@@ -240,6 +266,14 @@ tailscale serve --bg --https=443 http://localhost:8787
 ```
 
 이후 `https://macmini.<tailnet>.ts.net` 으로 접근.
+
+로컬 운영 smoke:
+
+```bash
+infra/scripts/ops-smoke.sh --require-tailscale
+```
+
+2026-05-12 현재 검증 머신에는 `tailscale` CLI가 설치되어 있지 않아 Tailscale access 401/200 검증은 skipped 상태다.
 
 ### 6.3 ACL
 admin console에서 본인 디바이스만 접근 허용.
@@ -314,7 +348,7 @@ mDNS + 자체 cert로 운영.
    `python -c "import secrets; print('cmcp_admin_' + secrets.token_urlsafe(32))" > ~/.coremcp/admin-token`
 2. chmod 600 ~/.coremcp/admin-token
 3. launchctl kickstart -k gui/$(id -u)/com.coremcp.api
-4. Web UI 재로그인 (이전 localStorage 무효)
+4. Web UI 재로그인 (이전 sessionStorage 무효)
 5. 모든 client token 일괄 revoke 검토 (admin token 노출 시 권장)
 
 조치 (client token):
@@ -337,7 +371,7 @@ audit log 확인:
 증상: MacBook에서 401.
 
 조치:
-1. token 동기화 확인 (Mac mini의 token과 MacBook localStorage가 일치)
+1. token 동기화 확인 (Mac mini의 token과 MacBook sessionStorage가 일치)
 2. 회전 후 재등록 누락 여부
 3. Tailscale ACL이 외부 디바이스 차단했는지
 

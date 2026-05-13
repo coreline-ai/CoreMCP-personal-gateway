@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="420" viewBox="0 0 920 420" role="img" aria-labelledby="title desc">
+  <title id="title">CoreMCP Multica-absorbed Design Palette</title>
+  <desc id="desc">CoreMCP neutral operations palette derived from Multica design principles.</desc>
+  <rect width="920" height="420" fill="#ffffff"/>
+  <text x="40" y="56" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="500" fill="#18181b">CoreMCP Multica-absorbed Admin Theme</text>
+  <text x="40" y="86" font-family="Inter, Arial, sans-serif" font-size="14" fill="#71717a">Neutral surfaces · Color as signal · Compact operations UI</text>
+
+  <g transform="translate(40 126)">
+    <rect x="0" y="0" width="120" height="88" rx="14" fill="#18181b"/>
+    <text x="16" y="116" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="500" fill="#18181b">foreground</text>
+    <text x="16" y="136" font-family="Menlo, monospace" font-size="12" fill="#71717a">oklch 0.141</text>
+  </g>
+  <g transform="translate(180 126)">
+    <rect x="0" y="0" width="120" height="88" rx="14" fill="#71717a"/>
+    <text x="16" y="116" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="500" fill="#18181b">muted-fg</text>
+    <text x="16" y="136" font-family="Menlo, monospace" font-size="12" fill="#71717a">oklch 0.552</text>
+  </g>
+  <g transform="translate(320 126)">
+    <rect x="0" y="0" width="120" height="88" rx="14" fill="#ffffff" stroke="#e4e4e7"/>
+    <text x="16" y="116" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="500" fill="#18181b">card</text>
+    <text x="16" y="136" font-family="Menlo, monospace" font-size="12" fill="#71717a">white</text>
+  </g>
+  <g transform="translate(460 126)">
+    <rect x="0" y="0" width="120" height="88" rx="14" fill="#f4f4f5" stroke="#e4e4e7"/>
+    <text x="16" y="116" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="500" fill="#18181b">muted</text>
+    <text x="16" y="136" font-family="Menlo, monospace" font-size="12" fill="#71717a">oklch 0.967</text>
+  </g>
+  <g transform="translate(600 126)">
+    <rect x="0" y="0" width="120" height="88" rx="14" fill="#e4e4e7"/>
+    <text x="16" y="116" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="500" fill="#18181b">border</text>
+    <text x="16" y="136" font-family="Menlo, monospace" font-size="12" fill="#71717a">oklch 0.92</text>
+  </g>
+  <g transform="translate(740 126)">
+    <rect x="0" y="0" width="120" height="88" rx="14" fill="#2563eb"/>
+    <text x="16" y="116" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="500" fill="#18181b">brand</text>
+    <text x="16" y="136" font-family="Menlo, monospace" font-size="12" fill="#71717a">oklch h255</text>
+  </g>
+
+  <g transform="translate(40 300)">
+    <rect x="0" y="0" width="190" height="54" rx="14" fill="#ecfdf5" stroke="#a7f3d0"/>
+    <text x="20" y="34" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="500" fill="#047857">success / active</text>
+  </g>
+  <g transform="translate(250 300)">
+    <rect x="0" y="0" width="190" height="54" rx="14" fill="#eff6ff" stroke="#bfdbfe"/>
+    <text x="20" y="34" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="500" fill="#1d4ed8">info / running</text>
+  </g>
+  <g transform="translate(460 300)">
+    <rect x="0" y="0" width="190" height="54" rx="14" fill="#fffbeb" stroke="#fde68a"/>
+    <text x="20" y="34" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="500" fill="#b45309">warning / auth</text>
+  </g>
+  <g transform="translate(670 300)">
+    <rect x="0" y="0" width="190" height="54" rx="14" fill="#fff1f2" stroke="#fecdd3"/>
+    <text x="20" y="34" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="500" fill="#be123c">danger / deny</text>
+  </g>
+</svg>

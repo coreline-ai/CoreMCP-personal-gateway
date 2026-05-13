@@ -17,7 +17,7 @@
 | R-104 | Tool poisoning (downstream description 악성) | Medium | Medium | P1 |
 | R-105 | Schema drift 미감지 | Low | Medium | P1 |
 | R-106 | Keychain unlock 실패 (재부팅 직후) | Medium | High | P1 |
-| R-107 | Personal token 노출 (localStorage XSS or git commit) | High | Low | P1 |
+| R-107 | Personal token 노출 (sessionStorage XSS or git commit) | High | Low | P1 |
 | R-108 | SQLite 락 / 손상 | Low | Low | P2 |
 | R-109 | Mac mini 하드웨어 장애 | High | Low | P1 |
 | R-110 | launchd 시작 실패 | Medium | Low | P2 |
@@ -139,7 +139,7 @@ Mac mini 재부팅 후 login.keychain이 잠긴 상태에서 launchd가 CoreMCP 
 ## 8. R-107 Token 노출 (Admin / Client)
 
 ### Description
-- admin token (`cmcp_admin_*`)이 localStorage XSS, git 커밋, 화면 공유로 노출
+- admin token (`cmcp_admin_*`)이 sessionStorage XSS, git 커밋, 화면 공유로 노출
 - client token (`cmcp_client_*`)이 동일하게 노출
 - 또는 client token 발급 modal에서 사용자가 안전히 보관 안 함
 
@@ -150,7 +150,7 @@ Mac mini 재부팅 후 login.keychain이 잠긴 상태에서 launchd가 CoreMCP 
 ### Mitigation
 - admin: ~/.coremcp/admin-token chmod 600, .gitignore에 ~/.coremcp/
 - client: DB hash만 저장, 발급 응답 평문 1회 노출 → Web UI에 명확한 경고
-- localStorage에는 admin token만, CSP `script-src 'self'`
+- sessionStorage에는 admin token만, nonce CSP `script-src 'self' 'nonce-...'`
 - Tailscale 외부 노출 시 HTTPS 강제
 - 의심 시 admin token 회전, 모든 client token 일괄 revoke
 - audit log: admin_token.rotate, client_token.issue, client_token.revoke
@@ -310,11 +310,11 @@ admin token 회전 + client token 일괄 revoke 누락 시 보안 hole. 또는 e
 - [ ] R-107 token 파일 chmod 600 + .gitignore
 - [ ] R-108 SQLite WAL 모드 활성
 - [ ] R-109 Time Machine 또는 backup script 설정
-- [ ] R-110 launchd plist 검증
-- [ ] R-111 Tailscale ACL 점검 (해당 시)
+- [x] R-110 launchd plist 검증 — api/web/backup/logrotate `plutil` OK, actual reboot은 외부환경 검증
+- [ ] R-111 Tailscale ACL 점검 (해당 시) — Tailscale CLI 설치/로그인 후 외부환경 검증
 - [ ] R-112 schema drift 알림 동작
 - [ ] R-113 rate limit 동작
-- [ ] R-114 log rotation 설정
+- [x] R-114 log rotation 설정 — `rotate-logs.sh` + `com.coremcp.logrotate.plist`; actual label load는 운영 host 재로드 후 확인
 - [ ] R-115 admin/client token 일관성 확인 (CASCADE 동작)
 - [ ] ~/.coremcp/admin-token chmod 600
 - [ ] Web UI에 client token 발급 modal 안전 경고 표시

@@ -4,6 +4,11 @@
   "private": true,
   "description": "Personal MCP Toolbox + Authenticated MCP Gateway",
   "scripts": {
+    "bootstrap": "infra/scripts/bootstrap-local.sh",
+    "run:local": "infra/scripts/run-local.sh",
+    "run:launchd": "make run",
+    "stop": "make stop",
+    "status": "make status",
     "test": "pnpm -r --if-present test",
     "lint": "pnpm -r --if-present lint",
     "build": "pnpm -r --if-present build",

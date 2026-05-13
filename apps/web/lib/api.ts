@@ -39,6 +39,7 @@ export interface SettingsResponse {
   secret_backend?: string;
   tailscale_enabled?: boolean;
   cache_backend?: string;
+  app_version?: string;
 }
 
 export interface ListResponse<T> {
@@ -50,10 +51,53 @@ export interface McpServiceSummary {
   id: string;
   name: string;
   slug: string;
+  endpoint_url?: string;
+  description?: string | null;
+  auth_type?: string;
   status: 'draft' | 'validating' | 'active' | 'error' | 'disabled' | 'auth_required' | string;
   tool_count?: number;
+  risk_level?: string | null;
+  credential_status?: string | null;
+  credential_masked?: string | null;
+  validation_summary?: Record<string, unknown> | null;
   last_validated_at?: string | null;
   updated_at?: string | null;
+}
+
+export interface ServiceToolSummary {
+  id: string;
+  service_id: string;
+  original_name: string;
+  exposed_name?: string | null;
+  title?: string | null;
+  description?: string | null;
+  status?: string;
+  risk_level?: string | null;
+  schema_hash?: string | null;
+  validation_status?: string | null;
+  warning_count?: number | null;
+  warnings?: unknown[] | null;
+  input_schema_json?: Record<string, unknown> | null;
+  icons_json?: Array<{ src: string; mimeType?: string; sizes?: string[] }>;
+}
+
+export type ToolPermissionLevel = 'hidden' | 'visible_only' | 'callable';
+
+export interface ToolOverrideSummary {
+  id: string;
+  toolbox_id: string;
+  service_id: string;
+  service_tool_id: string;
+  exposed_name: string;
+  enabled: boolean;
+  permission_level: ToolPermissionLevel;
+  updated_at: string;
+}
+
+export interface ServiceCredentialSummary {
+  status: string;
+  masked: string | null;
+  updated_at: string | null;
 }
 
 export interface ToolboxSummary {
@@ -61,6 +105,22 @@ export interface ToolboxSummary {
   name: string;
   is_default?: boolean;
   item_count?: number;
+  items?: ToolboxItemSummary[];
+}
+
+export interface ToolboxItemSummary {
+  id: string;
+  toolbox_id: string;
+  service_id: string;
+  enabled: 0 | 1 | boolean;
+  service_name?: string;
+  service_slug?: string;
+  service_status?: string;
+  tool_count?: number;
+  callable_tool_count?: number | null;
+  visible_only_tool_count?: number | null;
+  hidden_tool_count?: number | null;
+  disabled_tool_count?: number | null;
 }
 
 export interface ExternalConnectionSummary {
@@ -79,6 +139,66 @@ export interface PlaygroundToolSummary {
   icons?: Array<{ src: string; mimeType?: string; sizes?: string[] }>;
 }
 
+export interface ClientTokenSummary {
+  id: string;
+  external_connection_id: string;
+  token_prefix: string;
+  scopes: string[];
+  status: 'active' | 'revoked' | string;
+  last_used_at?: string | null;
+  created_at?: string | null;
+  revoked_at?: string | null;
+}
+
+export interface IssueClientTokenResponse extends ClientTokenSummary {
+  token: string;
+}
+
+export interface OneTimeConnectionTokenResponse {
+  token: string;
+  token_type: 'coremcp_one_time' | string;
+  expires_in: number;
+  expires_at: string;
+  client_type: string;
+  toolbox_id: string;
+  requested_scopes: string[];
+  connection_prompt: string;
+}
+
+export interface ToolInvocationSummary {
+  id: string;
+  request_id?: string | null;
+  method?: string;
+  exposed_tool_name?: string;
+  service_id?: string | null;
+  service_name?: string | null;
+  service_slug?: string | null;
+  service_tool_id?: string | null;
+  tool_name?: string | null;
+  status: string;
+  latency_ms?: number | null;
+  error_code?: string | null;
+  created_at?: string;
+}
+
+export interface AuditLogSummary {
+  id: string;
+  request_id?: string | null;
+  action: string;
+  resource_type: string;
+  resource_id?: string | null;
+  status?: string | null;
+  error_code?: string | null;
+  service_id?: string | null;
+  service_name?: string | null;
+  service_slug?: string | null;
+  tool_name?: string | null;
+  exposed_tool_name?: string | null;
+  client_type?: string | null;
+  client_name?: string | null;
+  created_at?: string;
+}
+
 interface ApiFetchOptions extends Omit<RequestInit, 'body' | 'headers'> {
   body?: unknown;
   headers?: HeadersInit;
@@ -92,17 +212,17 @@ export function getApiBaseUrl(): string {
 
 export function getStoredAdminToken(): string | null {
   if (typeof window === 'undefined') return null;
-  return window.localStorage.getItem(ADMIN_TOKEN_STORAGE_KEY);
+  return window.sessionStorage.getItem(ADMIN_TOKEN_STORAGE_KEY);
 }
 
 export function saveAdminToken(token: string): void {
   if (typeof window === 'undefined') return;
-  window.localStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, token.trim());
+  window.sessionStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, token.trim());
 }
 
 export function clearAdminToken(): void {
   if (typeof window === 'undefined') return;
-  window.localStorage.removeItem(ADMIN_TOKEN_STORAGE_KEY);
+  window.sessionStorage.removeItem(ADMIN_TOKEN_STORAGE_KEY);
 }
 
 function emitUnauthorized(): void {
@@ -194,7 +314,52 @@ export const coreMcpApi = {
   health: () => apiFetch<HealthResponse>('/health', { auth: false }),
   settings: () => apiFetch<SettingsResponse>('/v1/settings'),
   listServices: () => apiFetch<ListResponse<McpServiceSummary>>('/v1/mcp-services?limit=20'),
+  getService: (serviceId: string) => apiFetch<McpServiceSummary>(`/v1/mcp-services/${serviceId}`),
+  createService: (body: { name: string; slug?: string; endpoint_url: string; auth_type?: string; description?: string }) =>
+    apiFetch<McpServiceSummary>('/v1/mcp-services', { method: 'POST', body }),
+  updateService: (serviceId: string, body: Partial<Pick<McpServiceSummary, 'name' | 'slug' | 'description' | 'endpoint_url' | 'auth_type' | 'status'>>) =>
+    apiFetch<McpServiceSummary>(`/v1/mcp-services/${serviceId}`, { method: 'PATCH', body }),
+  deleteService: (serviceId: string) =>
+    apiFetch<{ id: string; status: string }>(`/v1/mcp-services/${serviceId}`, { method: 'DELETE' }),
+  validateService: (serviceId: string) =>
+    apiFetch<{ service_id: string; status: string; tools_found: number; job_id: string; warnings?: unknown[] }>(`/v1/mcp-services/${serviceId}/validate`, { method: 'POST' }),
+  listServiceTools: (serviceId: string) => apiFetch<ListResponse<ServiceToolSummary>>(`/v1/mcp-services/${serviceId}/tools`),
+  listToolOverrides: (serviceId: string) => apiFetch<ListResponse<ToolOverrideSummary>>(`/v1/mcp-services/${serviceId}/tool-overrides`),
+  updateToolOverride: (serviceId: string, serviceToolId: string, body: { enabled: boolean; permission_level: ToolPermissionLevel }) =>
+    apiFetch<ToolOverrideSummary>(`/v1/mcp-services/${serviceId}/tool-overrides/${serviceToolId}`, { method: 'PUT', body }),
+  getServiceCredential: (serviceId: string) => apiFetch<ServiceCredentialSummary>(`/v1/mcp-services/${serviceId}/credential`),
+  putServiceCredential: (serviceId: string, body: { credential_type: string; secret: string; header_name?: string }) =>
+    apiFetch<ServiceCredentialSummary>(`/v1/mcp-services/${serviceId}/credential`, { method: 'PUT', body }),
+  rotateServiceCredential: (serviceId: string, body: { secret: string; credential_type?: string; header_name?: string }) =>
+    apiFetch<ServiceCredentialSummary>(`/v1/mcp-services/${serviceId}/credential/rotate`, { method: 'POST', body }),
+  deleteServiceCredential: (serviceId: string) =>
+    apiFetch<{ service_id: string; status: string }>(`/v1/mcp-services/${serviceId}/credential`, { method: 'DELETE' }),
   listToolboxes: () => apiFetch<ListResponse<ToolboxSummary>>('/v1/toolboxes?limit=20'),
+  getToolbox: (toolboxId: string) => apiFetch<ToolboxSummary>(`/v1/toolboxes/${toolboxId}`),
+  addToolboxItem: (toolboxId: string, serviceId: string) =>
+    apiFetch<ToolboxItemSummary>(`/v1/toolboxes/${toolboxId}/items`, { method: 'POST', body: { service_id: serviceId, enabled: true } }),
+  updateToolboxItem: (toolboxId: string, itemId: string, enabled: boolean) =>
+    apiFetch<ToolboxItemSummary>(`/v1/toolboxes/${toolboxId}/items/${itemId}`, { method: 'PATCH', body: { enabled } }),
+  removeToolboxItem: (toolboxId: string, itemId: string) =>
+    apiFetch<{ id: string; status: string }>(`/v1/toolboxes/${toolboxId}/items/${itemId}`, { method: 'DELETE' }),
   listExternalConnections: () => apiFetch<ListResponse<ExternalConnectionSummary>>('/v1/external-connections?limit=20'),
-  listPlaygroundTools: () => apiFetch<ListResponse<PlaygroundToolSummary>>('/v1/playground/tools/list?limit=100')
+  createExternalConnection: (body: { client_type: string; client_name: string }) =>
+    apiFetch<ExternalConnectionSummary>('/v1/external-connections', { method: 'POST', body }),
+  createOneTimeConnectionToken: (body: { client_type: string; requested_scopes?: string[] }) =>
+    apiFetch<OneTimeConnectionTokenResponse>('/v1/external-connections/one-time-token', { method: 'POST', body }),
+  revokeExternalConnection: (connectionId: string) =>
+    apiFetch<{ id: string; status: string }>(`/v1/external-connections/${connectionId}`, { method: 'DELETE' }),
+  listClientTokens: () => apiFetch<ListResponse<ClientTokenSummary>>('/v1/settings/client-tokens?limit=20'),
+  issueClientToken: (externalConnectionId: string) =>
+    apiFetch<IssueClientTokenResponse>('/v1/settings/client-tokens', {
+      method: 'POST',
+      body: { external_connection_id: externalConnectionId, scopes: ['mcp:tools.read', 'mcp:tools.call'] }
+    }),
+  revokeClientToken: (tokenId: string) =>
+    apiFetch<{ id: string; status: string }>(`/v1/settings/client-tokens/${tokenId}`, { method: 'DELETE' }),
+  listPlaygroundTools: () => apiFetch<ListResponse<PlaygroundToolSummary>>('/v1/playground/tools/list?limit=100'),
+  callPlaygroundTool: (exposedName: string, args: Record<string, unknown>) =>
+    apiFetch<unknown>('/v1/playground/tools/call', { method: 'POST', body: { exposed_name: exposedName, arguments: args } }),
+  listToolInvocations: () => apiFetch<ListResponse<ToolInvocationSummary>>('/v1/tool-invocations?limit=10'),
+  listAuditLogs: () => apiFetch<ListResponse<AuditLogSummary>>('/v1/audit-logs?limit=10')
 };

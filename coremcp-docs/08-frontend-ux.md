@@ -17,6 +17,8 @@ CoreMCP Web UI는 **본인을 위한 admin console**이다. 핵심 가치 한 �
 
 ## 2. Information Architecture
 
+현재 Web Admin 구현은 Multica dashboard 형식을 흡수해 **좌측 sidebar + 상단 48px page header + route별 단일 content pane** 구조를 사용한다. `/clients` 같은 개별 route에서 모든 section을 한 번에 렌더링하지 않는다.
+
 ```text
 CoreMCP Web
 ├── /                        Dashboard
@@ -28,7 +30,7 @@ CoreMCP Web
 │   └── /toolbox             default toolbox 관리
 ├── /clients
 │   └── /clients             연결된 외부 AI client 관리
-│   └── /clients/connect     Connect 가이드 (Claude Code/OpenClaw/etc.)
+│   └── /clients/connect     Connect 가이드 (Codex CLI exec/Claude Code/OpenClaw/etc.)
 ├── /playground              tool 직접 호출 테스트
 ├── /logs
 │   ├── /logs/invocations    tool 실행 기록
@@ -49,26 +51,26 @@ CoreMCP Web
 ### 3.1 첫 진입
 - 첫 접근 시 `Admin Token` 입력 화면 (`cmcp_admin_*`)
 - Mac mini에서 `~/.coremcp/admin-token` 파일 내용 입력
-- 입력값은 localStorage(`coremcp_admin_token`)에 저장
+- 입력값은 sessionStorage(`coremcp_admin_token`)에 저장
 - Web Admin UI는 admin token 권한으로만 동작
 - 모든 API 호출에 `Authorization: Bearer <admin_token>` 헤더
 
 ### 3.2 Token 만료/오류
-- 401 응답 시 localStorage clear + admin token 입력 화면 재노출
+- 401 응답 시 sessionStorage clear + admin token 입력 화면 재노출
 - 안내: "Admin token이 만료되었거나 회전되었습니다. ~/.coremcp/admin-token을 확인하세요."
 
 ### 3.3 토큰 보관 안전
 - localhost 한정 사용 시 큰 문제 없음
-- Tailscale 등 외부 노출 시: localStorage XSS 위험 → CSP `script-src 'self'`, dangerouslySetInnerHTML 금지
+- Tailscale 등 외부 노출 시: browser storage XSS 위험 → nonce 기반 CSP, dangerouslySetInnerHTML 금지
 
 ### 3.4 Admin vs Client Token
 
 | 종류 | Web UI 사용 | /mcp 사용 | 저장 |
 |---|---|---|---|
-| Admin (`cmcp_admin_*`) | yes (localStorage) | yes (fallback) | 파일 + chmod 600 |
+| Admin (`cmcp_admin_*`) | yes (sessionStorage) | yes (fallback) | 파일 + chmod 600 |
 | Client (`cmcp_client_*`) | no | yes (primary) | DB hash (personal_access_tokens) |
 
-Web UI는 admin token만 사용. Claude Code 등 external client에는 client token 발급 권장 (ADR-030).
+Web UI는 admin token만 사용. Codex CLI exec 등 external client에는 client token 발급 권장 (ADR-030).
 
 ### 3.5 Icon 렌더링 정책 (XSS 방어)
 
@@ -77,8 +79,9 @@ CoreMCP Web UI는 service / tool icons를 다음 정책으로 렌더링한다:
 1. **`<img>` 태그로만 렌더링** — inline SVG (innerHTML, dangerouslySetInnerHTML) 절대 금지
 2. **CSP 적용**:
    ```http
-   Content-Security-Policy: default-src 'self'; img-src 'self' data: https:; script-src 'self'
+   Content-Security-Policy: default-src 'self'; img-src 'self' data: https:; script-src 'self' 'nonce-...'; style-src 'self'; frame-ancestors 'none'
    ```
+   현재 Next.js App Router 구현은 middleware nonce 기반 CSP를 사용하며 `script-src`/`style-src`에 `unsafe-inline`을 사용하지 않는다.
 3. **content-type 화이트리스트**:
    - `image/png` (권장)
    - `image/webp` (권장)
@@ -110,6 +113,14 @@ CoreMCP Web UI는 service / tool icons를 다음 정책으로 렌더링한다:
 <div dangerouslySetInnerHTML={{ __html: tool.icons?.[0]?.svg }} />
 ```
 
+### 3.7 Theme
+
+- 기본 theme는 `dark`다.
+- 사용자는 좌측 sidebar 하단 `Theme` selector에서 `Dark 기본 / Light / System`을 선택한다.
+- 선택값은 `localStorage.coremcp_theme`에만 저장한다.
+- admin token은 기존대로 `sessionStorage.coremcp_admin_token`만 사용한다.
+- dark/light 전환은 CSS variable token으로 처리하고 backend 설정에는 영향을 주지 않는다.
+
 ---
 
 ## 4. Pages
@@ -126,7 +137,7 @@ CoreMCP Web UI는 service / tool icons를 다음 정책으로 렌더링한다:
 - **System Health**: API/DB/Vault 상태
 - **Quick Actions**:
   - "+ Add MCP" → `/services/new`
-  - "Connect Claude Code" → `/clients/connect`
+  - "Connect Codex CLI exec" → `/clients/connect`
   - "Open Playground" → `/playground`
 
 빈 상태:
@@ -179,7 +190,7 @@ Step-based form:
 #### Step 5: Add to Toolbox
 - "기본 도구함에 추가" 체크박스 (default ON)
 - "Playground에서 테스트" 버튼
-- "Claude Code에 연결하기" 가이드 링크
+- "Codex CLI exec에 연결하기" 가이드 링크
 
 ### 4.4 Service Detail ( `/services/[id]` )
 
@@ -230,14 +241,14 @@ UI 요소:
 빈 상태:
 ```text
 도구함이 비어 있습니다.
-MCP를 추가하면 Claude Code와 ChatGPT에서 바로 사용할 수 있습니다.
+MCP를 추가하면 Codex CLI exec와 선택 client에서 바로 사용할 수 있습니다.
 [MCP 추가]
 ```
 
 ### 4.6 Connected Clients ( `/clients` )
 
 리스트 컬럼:
-- client_type (Claude Code / OpenClaw / Claude / ChatGPT / Cursor)
+- client_type (Codex CLI exec / Claude Code / OpenClaw / Claude / ChatGPT / Cursor)
 - client_name (사용자 라벨)
 - toolbox 연결
 - protocol_version
@@ -247,20 +258,27 @@ MCP를 추가하면 Claude Code와 ChatGPT에서 바로 사용할 수 있습니�
 - status (active / revoked)
 - revoke 버튼 (external_connection + client token CASCADE)
 
-신규 connection 생성 시 client token 평문이 modal에 1회만 노출됨. 사용자가 복사해 Claude Code 등에 등록 (ADR-030).
+신규 connection 생성 시 client token 평문이 modal에 1회만 노출됨. Codex CLI exec는 helper script가 token file과 env var를 관리한다 (ADR-030).
 
 ### 4.7 Connect Client Guide ( `/clients/connect` )
 
 탭 (client별):
 
-#### Claude Code (Mac mini local)
+#### Codex CLI exec (Mac mini local)
 ```bash
-claude mcp add --transport http coremcp http://localhost:8787/mcp \
-  --header "Authorization: Bearer $(cat ~/.coremcp/admin-token)"
+make codex-install
+make codex-smoke
+infra/scripts/codex-exec-coremcp.sh "CoreMCP MCP 도구 목록을 확인해줘"
 ```
 "Copy" 버튼.
 
-#### Claude Code (MacBook via Tailscale)
+#### Claude Code (optional, via bearer)
+```bash
+claude mcp add --transport http coremcp http://localhost:8787/mcp \
+  --header "Authorization: Bearer <cmcp_client_token>"
+```
+
+#### Claude Code (optional MacBook via Tailscale)
 - Tailscale 설치 안내 링크
 - Magic DNS URL 표시
 - 명령:
@@ -390,8 +408,8 @@ CSV / NDJSON export 버튼 (개인 분석용).
 
 #### Empty
 - "MCP 없음": "아직 MCP를 등록하지 않았습니다. Remote MCP URL을 입력해 첫 MCP를 등록하세요." + CTA
-- "Toolbox 비어있음": "도구함이 비어 있습니다. MCP를 추가하면 Claude Code에서 바로 쓸 수 있어요." + CTA
-- "연결된 client 없음": "아직 연결된 AI client가 없습니다. Claude Code 연결 가이드를 확인하세요." + CTA
+- "Toolbox 비어있음": "도구함이 비어 있습니다. MCP를 추가하면 Codex CLI exec에서 바로 쓸 수 있어요." + CTA
+- "연결된 client 없음": "아직 연결된 AI client가 없습니다. Codex CLI exec 연결 가이드를 확인하세요." + CTA
 
 #### Error
 - "문제가 발생했어요. 잠시 후 다시 시도해 주세요. 오류 코드: <code>"
@@ -454,7 +472,7 @@ Web Admin UI는 다시 로그인해야 합니다. /mcp에서 admin token을 fall
 ### 6.7 Client Token Revoke confirm
 ```text
 이 client token을 revoke하면 해당 external_connection은 즉시 접근 불가합니다.
-영향: Claude Code(Mac mini) 또는 (MacBook) 등 1개 client만 차단됩니다.
+영향: Codex CLI exec 또는 Claude Code 등 1개 client만 차단됩니다.
 다른 client는 영향 없습니다.
 ```
 
@@ -551,7 +569,7 @@ Phase P2 완료 기준:
 - [ ] Service Detail (Overview/Tools/Validation/Credential 탭)
 - [ ] Toolbox 관리
 - [ ] Connected Clients 목록
-- [ ] Connect Claude Code 가이드 (Mac mini local + Tailscale)
+- [ ] Connect Codex CLI exec 가이드 (`make codex-install` + wrapper)
 - [ ] Playground (tool 호출 테스트)
 - [ ] Logs / Invocations
 - [ ] Logs / Audit
@@ -561,8 +579,8 @@ Phase P2 완료 기준:
 - [ ] Settings / About (health)
 - [ ] Error boundary fallback
 - [ ] 401 → 토큰 재입력 flow
-- [ ] Icon 렌더링이 `<img>` 태그만 사용 (CSP + sanitize 확인)
-- [ ] ICON_SVG_ENABLED=false default 동작 (SVG → default icon fallback)
+- [x] Icon 렌더링이 `<img>` 태그만 사용 (CSP + sanitize 확인)
+- [x] ICON_SVG_ENABLED=false default 동작 (SVG → default icon fallback)
 
 Phase P3+ 옵션:
 - [ ] Service Detail / Logs / Settings 나머지 탭

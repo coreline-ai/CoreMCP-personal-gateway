@@ -20,7 +20,7 @@ CoreMCP는 Mac mini에서 단일 프로세스(또는 백엔드 + 웹 별도 프�
 - `Mcp-Session-Id` 헤더 처리
 - MCP-Protocol-Version 헤더 처리 (ADR-029):
   - 2025-11-25: 최신 지원 버전, default 응답
-  - 2025-06-18: Claude Code 호환 버전
+  - 2025-06-18: Codex CLI/Claude Code 호환 버전
   - 헤더 누락 시 2025-06-18로 가정
   - 미래 버전 요청 시 가장 가까운 지원 버전으로 downgrade
 
@@ -29,14 +29,14 @@ CoreMCP는 Mac mini에서 단일 프로세스(또는 백엔드 + 웹 별도 프�
 | 버전 | 상태 | 비고 |
 |---|---|---|
 | 2025-11-25 | Supported | latest, default 응답 |
-| 2025-06-18 | Supported | Claude Code 호환성 유지 |
+| 2025-06-18 | Supported | Codex CLI/Claude Code 호환성 유지 |
 | 2025-03-26 | Best-effort | 일부 deprecated 동작 fallback |
 
 협상 규칙:
 - client가 `MCP-Protocol-Version: 2025-11-25` 요청 → CoreMCP 동일 버전 응답
 - client가 `2025-06-18` 요청 → 그대로 응답
 - client가 미지원 미래 버전 요청 → 가장 가까운 지원 버전으로 downgrade + warning 로그
-- header 누락 → 2025-06-18 가정 (Claude Code 기본 호환)
+- header 누락 → 2025-06-18 가정 (legacy client 호환)
 
 (ADR-029) 참조.
 
@@ -66,8 +66,8 @@ CoreMCP는 Mac mini에서 단일 프로세스(또는 백엔드 + 웹 별도 프�
 - tasks/*: client → CoreMCP 요청 시 -32601 (Method not found). MCP 2025-11-25 experimental method. downstream으로 forward하지 않음.
 
 ### 2.4 Target Clients (우선순위)
-1. Claude Code (Mac mini 로컬)
-2. Claude Code (MacBook via Tailscale)
+1. Codex CLI exec (Mac mini 로컬)
+2. Claude Code (옵션: Mac mini 로컬 / MacBook via Tailscale)
 3. OpenClaw (one-time token)
 4. Claude desktop custom connector (옵션, OAuth 구현 시)
 5. ChatGPT custom MCP (옵션, OAuth 구현 시)
@@ -111,7 +111,7 @@ CoreMCP는 Mac mini에서 단일 프로세스(또는 백엔드 + 웹 별도 프�
 ### 4.2 Web (Next.js)
 책임:
 - Dashboard, Services, Toolbox, Logs, Settings UI
-- 정적 bearer token을 localStorage에 보관
+- 정적 bearer token을 sessionStorage에 보관
 - API 호출에 헤더 첨부
 
 배포 옵션:
@@ -136,7 +136,7 @@ CoreMCP는 Mac mini에서 단일 프로세스(또는 백엔드 + 웹 별도 프�
 | Toolbox | 보통 1개 default |
 | ToolboxItem | toolbox-service 연결 |
 | ServiceCredential | downstream 인증 정보 (vault ref) |
-| ExternalConnection | Claude Code 등 client 등록 |
+| ExternalConnection | Codex CLI exec, Claude Code 등 client 등록 |
 | ConnectionToken | one-time token (OpenClaw 등) |
 | PersonalAccessToken | per-client token hash (ADR-030) |
 | MCPSession | in-memory dict (DB 옵션) |
@@ -364,7 +364,7 @@ ALLOWED_PRIVATE_CIDRS=          # 콤마 구분, 예: "100.64.0.0/10,10.0.0.0/8"
 9. Downstream proxy executor + credential vault (keyring)
 10. Dual token model: admin + per-client revocable
 11. AUTH_MODE 분리 (static_bearer 기본, oauth 옵션)
-12. Claude Code integration test
+12. Codex CLI MCP smoke + optional Claude Code integration test
 13. Audit/invocation logging
 14. Web UI (Next.js)
 15. listChanged emission
