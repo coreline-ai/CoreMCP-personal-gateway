@@ -72,12 +72,12 @@ CoreMCP는 본인 1명이 Mac mini에서 운영하는 protected MCP gateway다. 
 - P1 backend core는 Alembic/SQLite schema, client token DB hash, service registry, toolbox catalog, 실제 Fernet/Keychain credential vault, SSRF guard, validation, DB 기반 `/mcp tools/list/call`까지 구현되었습니다.
 - OAuth optional flow는 `AUTH_MODE=oauth`에서 DCR/CIMD, authorize/code, token, JWKS, refresh rotation, revoke/introspect까지 로컬 테스트로 고정했습니다.
 - OAuth 미지원 client용 one-time connection token issue/exchange와 기본 off Prometheus `/metrics` endpoint를 구현하고 API 회귀 테스트로 고정했습니다.
-- 개인 도구함 tool-level override(`hidden`, `visible_only`, `callable`), client/OAuth scope enforcement, schema drift summary, `X-Request-ID` 전파, policy deny/audit/invocation 관측성을 구현하고 API 회귀 테스트로 고정했습니다.
+- 개인 도구함 tool-level override(`hidden`, `visible_only`, `callable`)와 preset(`readonly`, `dangerous_off`, `full_access`), client/OAuth scope enforcement, schema drift detail, `X-Request-ID` 전파, policy deny/audit/invocation 관측성을 구현하고 API 회귀 테스트로 고정했습니다.
 - Fake downstream MCP fixture는 `initialize`, `tools/list`, `tools/call`, `ping`과 production test fixture(`cancellation`, `schema-change`, `cimd-test`, `dcr-test`, `icons-rich`)를 지원하며 12개 테스트로 고정했습니다.
 - Web Admin UI는 nonce 기반 CSP/security headers, `/services`, `/services/[id]`, `/toolbox`, `/clients`, `/settings`, `/playground`, `/logs` route split, Service Detail Tool Control, Logs filter, client 연결 카드와 Playwright CLI route smoke script를 통과했습니다.
 - Web Admin 디자인 시스템은 `docs/design/`에 code-level audit, component pattern, token JSON/CSS/SVG asset으로 정리했고, `cm-*` semantic primitive를 전체 admin route에 반영했습니다.
 - Codex CLI `exec` 연결 helper를 추가했습니다. `make codex-install`은 Codex 전용 client token을 발급해 `~/.coremcp/codex-client-token`에 저장하고, `codex mcp add coremcp --url ... --bearer-token-env-var COREMCP_CLIENT_TOKEN` 구성을 등록합니다.
-- launchd fake-mcp/API/Web/backup/logrotate 실제 load smoke와 plist 검증을 통과했습니다. Reboot 검증은 실제 재부팅이 필요하며, Tailscale 검증은 현재 머신에 CLI가 없어 skipped 상태입니다.
+- launchd fake-mcp/API/Web/backup/logrotate/refresh 실제 load smoke와 plist 검증을 통과했습니다. Reboot 검증은 실제 재부팅이 필요하며, Tailscale 검증은 현재 머신에 CLI가 없어 skipped 상태입니다.
 
 ---
 
@@ -98,10 +98,10 @@ CoreMCP는 본인 1명이 Mac mini에서 운영하는 protected MCP gateway다. 
 | **Protocol** | MCP 2025-11-25 + 2025-06-18 병행 지원 (ADR-029) | implemented + tested |
 | **Authentication** | Admin file bearer + per-client DB hash token + MCP scope enforcement | implemented + tested |
 | **Codex CLI exec** | Codex MCP config 등록 + client token env wrapper + non-LLM MCP smoke | implemented + tested |
-| **MCP Registry** | private service 등록, validation, schema cache | implemented + tested |
-| **Toolbox** | default toolbox, item enable/disable, tool-level override(`hidden`/`visible_only`/`callable`), dynamic catalog | implemented + tested |
+| **MCP Registry** | private service 등록, category/homepage/docs/logo metadata, validation, schema cache + schema diff detail | implemented + tested |
+| **Toolbox** | default toolbox, item enable/disable, tool-level override(`hidden`/`visible_only`/`callable`), preset(`readonly`/`dangerous_off`/`full_access`), dynamic catalog | implemented + tested |
 | **Tool Alias** | `service_slug.tool_name` 매핑, primary alias | implemented |
-| **Downstream Proxy** | bearer/api_key vault, timeout, redirect block, idempotency cache, error mapping | implemented |
+| **Downstream Proxy** | bearer/api_key vault, timeout, redirect block, JSON content-type/size sanitizer, idempotency cache, error mapping | implemented + tested |
 | **Credential Vault** | macOS Keychain adapter / Fernet encrypted fallback | implemented + tested |
 | **Web Admin UI** | Next.js 15 admin route split + sessionStorage token + nonce CSP headers | implemented + route smoke |
 | **SSRF Guard** | allowlist 기반, metadata IP hard reject | implemented + tested |
@@ -111,7 +111,7 @@ CoreMCP는 본인 1명이 Mac mini에서 운영하는 protected MCP gateway다. 
 | **One-time Token** | OpenClaw 등 OAuth 미지원 client용 issue/exchange | implemented + tested |
 | **OAuth 2.1 (옵션)** | CIMD First + DCR Fallback (ADR-036), PKCE, JWKS, refresh/revoke/introspect | implemented + local tested |
 | **Metrics** | `METRICS_ENABLED=true`일 때 Prometheus `/metrics` 노출, MCP/tool/auth/policy/timeout counters | implemented + tested |
-| **Daemon** | launchd + fake-mcp/API/Web 자동 시작 + daily SQLite backup label + logrotate label + ops smoke | implemented; fake/api/web/backup/logrotate load verified |
+| **Daemon** | launchd + fake-mcp/API/Web 자동 시작 + daily SQLite backup label + logrotate + scheduled service refresh + ops smoke | implemented; fake/api/web/backup/logrotate/refresh load verified |
 
 ---
 
@@ -265,9 +265,9 @@ CoreMCP/
 │   ├── shared-types/
 │   └── client-profiles/
 ├── infra/
-│   ├── launchd/                    # api/web/backup/logrotate plists
+│   ├── launchd/                    # api/web/backup/logrotate/refresh plists
 │   ├── docker/                     # 옵션 Postgres/Redis
-│   └── scripts/                    # backup, restore, launchctl, log rotation
+│   └── scripts/                    # backup, restore, launchctl, log rotation, ops smoke
 ├── docs/
 │   └── design/                     # Web Admin design system + token assets
 ├── coremcp-docs/                   # 본 문서팩 (17 files, 정본)

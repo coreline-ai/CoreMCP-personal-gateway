@@ -40,7 +40,7 @@
 - `apps/fake-mcp`: P0/P1 테스트용 downstream MCP fixture + cancellation/schema-change/cimd-test/dcr-test/icons-rich fixture 구현, 12개 테스트 통과.
 - `apps/web`: P2 Web Admin route split, sessionStorage token, nonce CSP/security headers, Playwright CLI route smoke script, `cm-*` semantic design primitive 기반 UI 일관화 구현.
 - `../docs/design`: Web Admin design system, code-level audit, component pattern, token JSON/CSS/SVG asset 정리.
-- `infra`: launchd API/Web/backup/logrotate actual load smoke, backup/restore/log rotation helper, `com.coremcp.logrotate` plist, api/web/backup/logrotate ops label logic 구현.
+- `infra`: launchd API/Web/backup/logrotate/refresh actual load smoke, backup/restore/log rotation/scheduled refresh helper, `com.coremcp.logrotate`/`com.coremcp.refresh` plist, api/web/backup/logrotate/refresh ops label logic 구현.
 - `Codex CLI`: `make codex-install`/`make codex-smoke`/`infra/scripts/codex-exec-coremcp.sh`로 Codex CLI `exec` 연결 경로 구현.
 - `TESTING.md`: unit/integration/e2e/ops smoke 명령과 현재 통과 결과 정리.
 - 다음 우선순위: 실제 reboot 후 자동 복귀, Tailscale CLI 설치/로그인 후 외부 접근, 실제 OAuth client compatibility.

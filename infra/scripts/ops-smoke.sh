@@ -53,7 +53,8 @@ plutil -lint \
   "$PLIST_DIR/com.coremcp.web.plist" \
   "$PLIST_DIR/com.coremcp.fake-mcp.plist" \
   "$PLIST_DIR/com.coremcp.backup.plist" \
-  "$PLIST_DIR/com.coremcp.logrotate.plist" >/dev/null
+  "$PLIST_DIR/com.coremcp.logrotate.plist" \
+  "$PLIST_DIR/com.coremcp.refresh.plist" >/dev/null
 pass "launchd plist syntax"
 
 for label in \
@@ -61,7 +62,8 @@ for label in \
   "com.coremcp.api" \
   "com.coremcp.web" \
   "com.coremcp.backup" \
-  "com.coremcp.logrotate"; do
+  "com.coremcp.logrotate" \
+  "com.coremcp.refresh"; do
   require_launchd_label "$label" || fail "$label is not loaded with last exit status 0"
 done
 pass "launchd labels loaded"

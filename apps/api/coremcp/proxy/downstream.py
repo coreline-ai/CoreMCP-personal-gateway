@@ -31,9 +31,10 @@ class DownstreamMcpClient:
     copied into the outgoing request.
     """
 
-    def __init__(self, url: str, client: httpx.AsyncClient) -> None:
+    def __init__(self, url: str, client: httpx.AsyncClient, *, max_response_bytes: int = 1024 * 1024) -> None:
         self.url = url
         self.client = client
+        self.max_response_bytes = max(1, max_response_bytes)
 
     async def request(
         self,
@@ -94,6 +95,18 @@ class DownstreamMcpClient:
 
         if not expect_response and (response.status_code in {202, 204} or not response.content):
             return {"jsonrpc": "2.0", "id": request_id, "result": {}}
+
+        if not response.content:
+            raise DownstreamMcpError("downstream returned empty response")
+        if len(response.content) > self.max_response_bytes:
+            raise DownstreamMcpError(
+                f"downstream response exceeds {self.max_response_bytes} bytes",
+                code=-32009,
+            )
+        content_type = response.headers.get("content-type", "").lower()
+        media_type = content_type.partition(";")[0].strip()
+        if media_type != "application/json":
+            raise DownstreamMcpError("downstream returned non-JSON content-type", code=-32010)
 
         try:
             data = response.json()

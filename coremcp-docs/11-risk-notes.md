@@ -310,7 +310,7 @@ admin token 회전 + client token 일괄 revoke 누락 시 보안 hole. 또는 e
 - [ ] R-107 token 파일 chmod 600 + .gitignore
 - [ ] R-108 SQLite WAL 모드 활성
 - [ ] R-109 Time Machine 또는 backup script 설정
-- [x] R-110 launchd plist 검증 — api/web/backup/logrotate `plutil` OK, actual reboot은 외부환경 검증
+- [x] R-110 launchd plist 검증 — api/web/backup/logrotate/refresh `plutil` OK, actual reboot은 외부환경 검증
 - [ ] R-111 Tailscale ACL 점검 (해당 시) — Tailscale CLI 설치/로그인 후 외부환경 검증
 - [ ] R-112 schema drift 알림 동작
 - [ ] R-113 rate limit 동작

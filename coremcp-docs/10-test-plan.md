@@ -617,10 +617,11 @@ GitHub Actions 또는 로컬:
 
 | 영역 | 결과 | 비고 |
 |---|---:|---|
-| API pytest | 46 passed | `cd apps/api && uv run pytest -q`; downstream timeout + SVG icon default block regression 포함 |
+| API pytest | 49 passed | `cd apps/api && uv run pytest -q`; downstream sanitizer + tool preset + metadata regression 포함 |
 | fake-mcp pytest | 12 passed | cancellation/schema-change/cimd-test/dcr-test/icons-rich fixture 명시 테스트 포함 |
-| launchd plist lint | 5 OK | fake-mcp/api/web/backup/logrotate |
-| ops-smoke label logic | pass | mocked `launchctl list`로 api/web/backup/logrotate label 확인 로직 검증 |
+| launchd plist lint | 6 OK | fake-mcp/api/web/backup/logrotate/refresh |
+| refresh runner smoke | pass | `python -m coremcp.refresh` no-service run exit 0 |
+| ops-smoke label logic | pass | mocked/actual `launchctl list`로 api/web/backup/logrotate/refresh label 확인 로직 검증 |
 
 잔여 항목 구분:
 

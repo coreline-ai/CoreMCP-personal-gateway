@@ -115,6 +115,54 @@ class DownstreamRecorder:
         )
 
 
+class PresetPolicyRecorder(DownstreamRecorder):
+    async def __call__(self, request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        self.requests.append({"method": request.method, "url": str(request.url), "headers": dict(request.headers), "body": body})
+        rpc_method = body.get("method")
+        request_id = body.get("id")
+        if rpc_method == "initialize":
+            return httpx.Response(
+                200,
+                json={"jsonrpc": "2.0", "id": request_id, "result": {"protocolVersion": body.get("params", {}).get("protocolVersion")}},
+            )
+        if rpc_method == "tools/list":
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "tools": [
+                            {
+                                "name": "search",
+                                "title": "Search",
+                                "description": "Read-only lookup.",
+                                "inputSchema": {"type": "object"},
+                                "annotations": {"readOnlyHint": True},
+                            },
+                            {
+                                "name": "create_note",
+                                "title": "Create note",
+                                "description": "Creates a local note.",
+                                "inputSchema": {"type": "object"},
+                                "annotations": {"readOnlyHint": False},
+                            },
+                            {
+                                "name": "delete_note",
+                                "title": "Delete note",
+                                "description": "Deletes a local note.",
+                                "inputSchema": {"type": "object"},
+                                "annotations": {"destructiveHint": True},
+                            },
+                        ],
+                        "nextCursor": None,
+                    },
+                },
+            )
+        return await super().__call__(request)
+
+
 @pytest.fixture
 async def app_client(tmp_path: Path):
     recorder = DownstreamRecorder()
@@ -636,6 +684,7 @@ async def test_service_validation_toolbox_catalog_and_db_backed_call(app_client)
     assert validation.json()["status"] == "success"
     assert validation.json()["tools_found"] == 2
     assert validation.json()["schema_drift"]["changed_tool_count"] == 2
+    assert {item["name"] for item in validation.json()["schema_diff"]["added"]} == {"echo", "error"}
     assert all(request["headers"].get("x-request-id") == validation_request_id for request in recorder.requests[-2:])
     audit = await app.state.repository.recent_audit_logs(limit=5, action="service.validate.success")
     assert audit and audit[0]["request_id"] == validation_request_id
@@ -643,6 +692,7 @@ async def test_service_validation_toolbox_catalog_and_db_backed_call(app_client)
     second_validation = await client.post(f"/v1/mcp-services/{service_id}/validate", headers=auth_headers())
     assert second_validation.status_code == 200
     assert second_validation.json()["schema_drift"]["changed_tool_count"] == 0
+    assert second_validation.json()["schema_diff"] == {"added": [], "removed": [], "changed": []}
 
     tools = await client.get(f"/v1/mcp-services/{service_id}/tools", headers=auth_headers())
     assert tools.status_code == 200
@@ -678,6 +728,43 @@ async def test_service_validation_toolbox_catalog_and_db_backed_call(app_client)
     assert called.status_code == 200
     assert called.json()["result"]["content"][0]["text"] == "echo:from-db"
     assert await app.state.repository.count_invocations() >= 2
+
+
+@pytest.mark.asyncio
+async def test_service_private_metadata_create_list_and_patch(app_client):
+    client, _, _ = app_client
+
+    created = await client.post(
+        "/v1/mcp-services",
+        headers=auth_headers(),
+        json={
+            "name": "Docs MCP",
+            "slug": "docs",
+            "endpoint_url": "http://fake.local/mcp",
+            "category": "knowledge",
+            "homepage_url": "https://example.com",
+            "documentation_url": "https://example.com/docs",
+            "logo_url": "https://example.com/icon.png",
+        },
+    )
+    assert created.status_code == 201
+    service_id = created.json()["id"]
+    assert created.json()["category"] == "knowledge"
+    assert created.json()["documentation_url"] == "https://example.com/docs"
+
+    listed = await client.get("/v1/mcp-services", headers=auth_headers())
+    service = next(item for item in listed.json()["items"] if item["id"] == service_id)
+    assert service["category"] == "knowledge"
+    assert service["homepage_url"] == "https://example.com"
+
+    patched = await client.patch(
+        f"/v1/mcp-services/{service_id}",
+        headers=auth_headers(),
+        json={"category": "personal-docs", "logo_url": None},
+    )
+    assert patched.status_code == 200
+    assert patched.json()["category"] == "personal-docs"
+    assert patched.json()["logo_url"] is None
 
 
 @pytest.mark.asyncio
@@ -779,6 +866,77 @@ async def test_tool_override_visible_only_lists_but_denies_call(app_client):
     assert denied.status_code == 200
     assert denied.json()["result"]["_meta"]["coremcp"]["error_code"] == "policy_denied"
     assert denied.json()["result"]["_meta"]["coremcp"]["reason"] == "tool_permission_visible_only"
+
+
+@pytest.mark.asyncio
+async def test_tool_policy_presets_apply_readonly_dangerous_off_and_full_access(tmp_path: Path):
+    recorder = PresetPolicyRecorder()
+    downstream_client = httpx.AsyncClient(transport=httpx.MockTransport(recorder))
+    app = create_app(
+        settings=Settings(
+            COREMCP_ADMIN_TOKEN_VALUE=TOKEN,
+            COREMCP_ADMIN_TOKEN_FILE=tmp_path / "missing-admin-token",
+            COREMCP_DB_PATH=tmp_path / "preset.sqlite3",
+            FAKE_MCP_URL="http://preset.local/mcp",
+            COREMCP_SSRF_ALLOW_HOSTS="preset.local",
+            COREMCP_SECRET_BACKEND="fernet",
+            COREMCP_SECRETS_FILE=tmp_path / "preset-secrets.json",
+        ),
+        http_client=downstream_client,
+    )
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+            created = await client.post(
+                "/v1/mcp-services",
+                headers=auth_headers(),
+                json={"name": "Preset", "slug": "preset", "endpoint_url": "http://preset.local/mcp"},
+            )
+            service_id = created.json()["id"]
+            assert (await client.post(f"/v1/mcp-services/{service_id}/validate", headers=auth_headers())).status_code == 200
+            assert (await client.post("/v1/toolboxes/tbx_default/items", headers=auth_headers(), json={"service_id": service_id})).status_code == 201
+
+            readonly = await client.post(
+                f"/v1/mcp-services/{service_id}/tool-overrides/preset",
+                headers=auth_headers(),
+                json={"preset": "readonly"},
+            )
+            assert readonly.status_code == 200
+            readonly_map = {item["exposed_name"]: item["permission_level"] for item in readonly.json()["items"]}
+            assert readonly_map == {
+                "preset.create_note": "hidden",
+                "preset.delete_note": "hidden",
+                "preset.search": "callable",
+            }
+
+            init = await initialize(client)
+            session_id = init.headers["Mcp-Session-Id"]
+            listed = await client.post(
+                "/mcp",
+                headers={**auth_headers(), "Mcp-Session-Id": session_id},
+                json={"jsonrpc": "2.0", "id": 240, "method": "tools/list", "params": {}},
+            )
+            assert [tool["name"] for tool in listed.json()["result"]["tools"]] == ["preset.search"]
+
+            dangerous_off = await client.post(
+                f"/v1/mcp-services/{service_id}/tool-overrides/preset",
+                headers=auth_headers(),
+                json={"preset": "dangerous_off"},
+            )
+            assert dangerous_off.status_code == 200
+            dangerous_map = {item["exposed_name"]: item["permission_level"] for item in dangerous_off.json()["items"]}
+            assert dangerous_map["preset.delete_note"] == "hidden"
+            assert dangerous_map["preset.create_note"] == "callable"
+            assert dangerous_map["preset.search"] == "callable"
+
+            full_access = await client.post(
+                f"/v1/mcp-services/{service_id}/tool-overrides/preset",
+                headers=auth_headers(),
+                json={"preset": "full_access"},
+            )
+            assert full_access.status_code == 200
+            assert {item["permission_level"] for item in full_access.json()["items"]} == {"callable"}
+
+    await downstream_client.aclose()
 
 
 @pytest.mark.asyncio
@@ -1090,6 +1248,47 @@ async def test_downstream_redirect_is_rejected_without_following(tmp_path: Path)
             url_safety_checker=UrlSafetyChecker(settings),
         )
     await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_downstream_rejects_non_json_content_type_and_oversized_response():
+    async def charset_transport(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json; charset=utf-8"},
+            content=b'{"jsonrpc":"2.0","id":1,"result":{}}',
+        )
+
+    charset_client = httpx.AsyncClient(transport=httpx.MockTransport(charset_transport))
+    downstream = DownstreamMcpClient("https://charset.example/mcp", charset_client)
+    assert (await downstream.request(method="tools/list"))["result"] == {}
+    await charset_client.aclose()
+
+    async def non_json_transport(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/plain"},
+            content=b'{"jsonrpc":"2.0","id":1,"result":{}}',
+        )
+
+    non_json_client = httpx.AsyncClient(transport=httpx.MockTransport(non_json_transport))
+    downstream = DownstreamMcpClient("https://content-type.example/mcp", non_json_client)
+    with pytest.raises(DownstreamMcpError, match="non-JSON content-type"):
+        await downstream.request(method="tools/list")
+    await non_json_client.aclose()
+
+    async def large_transport(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json; charset=utf-8"},
+            content=b'{"jsonrpc":"2.0","id":1,"result":{"payload":"' + (b"x" * 256) + b'"}}',
+        )
+
+    large_client = httpx.AsyncClient(transport=httpx.MockTransport(large_transport))
+    downstream = DownstreamMcpClient("https://large.example/mcp", large_client, max_response_bytes=64)
+    with pytest.raises(DownstreamMcpError, match="exceeds 64 bytes"):
+        await downstream.request(method="tools/list")
+    await large_client.aclose()
 
 
 def test_url_safety_blocks_cgnat_and_fragments(tmp_path: Path):

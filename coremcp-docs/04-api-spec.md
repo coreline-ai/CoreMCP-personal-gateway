@@ -529,6 +529,10 @@ Request:
   "description": "GitHub issue tools",
   "endpoint_url": "https://api.example.com/mcp",
   "auth_type": "bearer_token",
+  "category": "code",
+  "homepage_url": "https://github.com",
+  "documentation_url": "https://docs.github.com",
+  "logo_url": "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png",
   "credential": { "type": "bearer_token", "value": "ghp_xxx" }
 }
 ```
@@ -538,8 +542,11 @@ Request:
 {
   "id": "svc_...",
   "slug": "github",
-  "status": "validating",
-  "validation_job_id": "job_..."
+  "status": "draft",
+  "category": "code",
+  "homepage_url": "https://github.com",
+  "documentation_url": "https://docs.github.com",
+  "logo_url": "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png"
 }
 ```
 
@@ -554,6 +561,10 @@ Response:
     "id": "svc_...",
     "name": "GitHub MCP",
     "slug": "github",
+    "category": "code",
+    "homepage_url": "https://github.com",
+    "documentation_url": "https://docs.github.com",
+    "logo_url": "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png",
     "status": "active",
     "tool_count": 6,
     "last_validated_at": "...",
@@ -567,15 +578,32 @@ Response:
 service detail + cached tools count + credential status (값 없음).
 
 ### PATCH /v1/mcp-services/{id}
-수정 가능: `name`, `description`, `slug`(rename 시 alias 처리), `disabled`(true/false).
+수정 가능: `name`, `description`, `slug`, `endpoint_url`, `auth_type`, `status`, `category`, `homepage_url`, `documentation_url`, `logo_url`.
 
 ### DELETE /v1/mcp-services/{id}
 soft-delete. 202 Accepted.
 
 ### POST /v1/mcp-services/{id}/validate
-async re-validation 트리거.
+re-validation 트리거. 성공 시 service의 cached tool catalog와 `validation_summary`를 갱신한다.
 ```json
-{ "job_id": "job_...", "status": "queued" }
+{
+  "job_id": "job_...",
+  "service_id": "svc_...",
+  "status": "success",
+  "tools_found": 6,
+  "schema_drift": {
+    "previous_tool_count": 5,
+    "discovered_tool_count": 6,
+    "changed_tool_count": 2,
+    "added_tool_count": 1,
+    "removed_tool_count": 0
+  },
+  "schema_diff": {
+    "added": [{ "name": "new_tool", "schema_hash": "sha256:..." }],
+    "removed": [],
+    "changed": [{ "name": "create_issue", "previous_schema_hash": "sha256:old", "current_schema_hash": "sha256:new" }]
+  }
+}
 ```
 
 ### POST /v1/mcp-services/{id}/refresh-tools
@@ -613,6 +641,31 @@ schema 강제 재캐싱.
   }]
 }
 ```
+
+### GET /v1/mcp-services/{id}/tool-overrides
+default toolbox의 tool-level policy override 목록.
+
+### PUT /v1/mcp-services/{id}/tool-overrides/{service_tool_id}
+```json
+{
+  "enabled": true,
+  "permission_level": "callable"
+}
+```
+
+`permission_level`: `hidden`, `visible_only`, `callable`.
+
+### POST /v1/mcp-services/{id}/tool-overrides/preset
+개인 도구함에 맞는 일괄 preset 적용.
+
+```json
+{ "preset": "dangerous_off" }
+```
+
+지원 preset:
+- `readonly`: `annotations.readOnlyHint=true`이고 destructive/high-risk가 아닌 tool만 callable
+- `dangerous_off`: destructive/high-risk tool은 hidden, 나머지는 callable
+- `full_access`: 모든 active tool callable
 
 ### GET /v1/mcp-services/{id}/health
 ```json

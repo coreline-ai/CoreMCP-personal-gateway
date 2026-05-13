@@ -8,6 +8,7 @@ WEB_PLIST="$PLIST_DIR/com.coremcp.web.plist"
 FAKE_PLIST="$PLIST_DIR/com.coremcp.fake-mcp.plist"
 BACKUP_PLIST="$PLIST_DIR/com.coremcp.backup.plist"
 LOGROTATE_PLIST="$PLIST_DIR/com.coremcp.logrotate.plist"
+REFRESH_PLIST="$PLIST_DIR/com.coremcp.refresh.plist"
 
 usage() {
   echo "Usage: $0 {load|unload|restart|status}" >&2
@@ -20,8 +21,10 @@ case "$COMMAND" in
     launchctl load -w "$WEB_PLIST"
     launchctl load -w "$BACKUP_PLIST"
     launchctl load -w "$LOGROTATE_PLIST"
+    launchctl load -w "$REFRESH_PLIST"
     ;;
   unload)
+    launchctl unload -w "$REFRESH_PLIST" 2>/dev/null || true
     launchctl unload -w "$LOGROTATE_PLIST" 2>/dev/null || true
     launchctl unload -w "$BACKUP_PLIST" 2>/dev/null || true
     launchctl unload -w "$WEB_PLIST" 2>/dev/null || true
@@ -33,7 +36,7 @@ case "$COMMAND" in
     "$0" load
     ;;
   status)
-    launchctl list | grep -E 'com\.coremcp\.(api|web|fake-mcp|backup|logrotate)' || true
+    launchctl list | grep -E 'com\.coremcp\.(api|web|fake-mcp|backup|logrotate|refresh)' || true
     ;;
   *)
     usage

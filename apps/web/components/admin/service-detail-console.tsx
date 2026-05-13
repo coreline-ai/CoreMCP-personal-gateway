@@ -12,6 +12,7 @@ import {
   type McpServiceSummary,
   type ServiceCredentialSummary,
   type ServiceToolSummary,
+  type ToolPreset,
   type ToolInvocationSummary,
   type ToolOverrideSummary,
   type ToolPermissionLevel
@@ -31,6 +32,19 @@ const permissionOptions: Array<{ value: ToolPermissionLevel; label: string; desc
   { value: 'visible_only', label: 'Visible only', description: '목록에는 보이지만 호출은 policy deny 됩니다.' },
   { value: 'hidden', label: 'Hidden', description: '외부 AI client의 tools/list에서 숨깁니다.' }
 ];
+
+const toolPresetOptions: Array<{ value: ToolPreset; label: string; description: string }> = [
+  { value: 'readonly', label: 'Read-only', description: 'readOnlyHint tool만 호출 가능하게 남기고 나머지는 숨깁니다.' },
+  { value: 'dangerous_off', label: 'Dangerous off', description: 'destructive/high-risk tool만 숨기고 일반 tool은 호출 가능하게 둡니다.' },
+  { value: 'full_access', label: 'Full access', description: '현재 service의 모든 active tool을 callable로 전환합니다.' }
+];
+
+type MetadataDraft = {
+  category: string;
+  homepage_url: string;
+  documentation_url: string;
+  logo_url: string;
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -71,6 +85,21 @@ function warningList(summary: Record<string, unknown> | null | undefined): strin
     if (isRecord(warning)) return textFromUnknown(warning.message) ?? JSON.stringify(warning);
     return String(warning);
   });
+}
+
+function recordList(value: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(value)) return [];
+  return value.filter(isRecord);
+}
+
+function schemaDiffDetails(summary: Record<string, unknown> | null | undefined) {
+  const schemaDiff = summary?.schema_diff;
+  if (!isRecord(schemaDiff)) return { added: [], removed: [], changed: [] };
+  return {
+    added: recordList(schemaDiff.added),
+    removed: recordList(schemaDiff.removed),
+    changed: recordList(schemaDiff.changed)
+  };
 }
 
 function findOverrideForTool(tool: ServiceToolSummary, overrides: ToolOverrideSummary[]) {
@@ -185,6 +214,13 @@ export function ServiceDetailConsole({ serviceId }: ServiceDetailConsoleProps) {
   const [secretInput, setSecretInput] = useState('');
   const [deleteConfirm, setDeleteConfirm] = useState('');
   const [updatingToolId, setUpdatingToolId] = useState<string | null>(null);
+  const [applyingPreset, setApplyingPreset] = useState<ToolPreset | null>(null);
+  const [metadataDraft, setMetadataDraft] = useState<MetadataDraft>({
+    category: '',
+    homepage_url: '',
+    documentation_url: '',
+    logo_url: ''
+  });
 
   useEffect(() => {
     const stored = getStoredAdminToken();
@@ -218,6 +254,7 @@ export function ServiceDetailConsole({ serviceId }: ServiceDetailConsoleProps) {
   const schemaHash = summaryValue(validationSummary, ['schema_hash', 'catalog_schema_hash', 'tools_schema_hash']) ?? (tools.length === 1 ? tools[0]?.schema_hash ?? null : null);
   const validationState = summaryValue(validationSummary, ['status', 'validation_status', 'last_status']) ?? service?.status ?? 'unknown';
   const riskLevel = service?.risk_level ?? summaryValue(validationSummary, ['risk_level', 'max_risk_level']) ?? 'unknown';
+  const schemaDiff = useMemo(() => schemaDiffDetails(validationSummary), [validationSummary]);
 
   const toolControlSummary = useMemo(() => {
     return tools.reduce(
@@ -260,6 +297,12 @@ export function ServiceDetailConsole({ serviceId }: ServiceDetailConsoleProps) {
         coreMcpApi.listAuditLogs()
       ]);
       setService(serviceResponse);
+      setMetadataDraft({
+        category: serviceResponse.category ?? '',
+        homepage_url: serviceResponse.homepage_url ?? '',
+        documentation_url: serviceResponse.documentation_url ?? '',
+        logo_url: serviceResponse.logo_url ?? ''
+      });
       setTools(toolsResponse.items);
       setToolOverrides(overridesResponse.items);
       setCredential(credentialResponse);
@@ -340,6 +383,23 @@ export function ServiceDetailConsole({ serviceId }: ServiceDetailConsoleProps) {
     }
   }
 
+  async function handleApplyPreset(preset: ToolPreset) {
+    const targetServiceId = service?.id ?? serviceId;
+    setApplyingPreset(preset);
+    setStatusMessage(`${preset} tool preset을 적용하는 중입니다...`);
+    try {
+      const response = await coreMcpApi.applyToolPreset(targetServiceId, preset);
+      setToolOverrides(response.items);
+      setStatusMessage(
+        `${preset} preset 적용 완료: callable ${response.counts.callable ?? 0}, hidden ${response.counts.hidden ?? 0}, visible ${response.counts.visible_only ?? 0}`
+      );
+    } catch (error) {
+      setStatusMessage(explainError(error));
+    } finally {
+      setApplyingPreset(null);
+    }
+  }
+
   async function handleCredentialSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!secretInput.trim()) return;
@@ -377,6 +437,30 @@ export function ServiceDetailConsole({ serviceId }: ServiceDetailConsoleProps) {
       await coreMcpApi.deleteService(service?.id ?? serviceId);
       setStatusMessage('Service를 soft-delete했습니다. /services에서 목록을 새로고침하세요.');
       await refreshDetail();
+    } catch (error) {
+      setStatusMessage(explainError(error));
+    }
+  }
+
+  async function handleMetadataSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const targetServiceId = service?.id ?? serviceId;
+    setStatusMessage('Service metadata를 저장하는 중입니다...');
+    try {
+      const updated = await coreMcpApi.updateService(targetServiceId, {
+        category: metadataDraft.category.trim() || null,
+        homepage_url: metadataDraft.homepage_url.trim() || null,
+        documentation_url: metadataDraft.documentation_url.trim() || null,
+        logo_url: metadataDraft.logo_url.trim() || null
+      });
+      setService(updated);
+      setMetadataDraft({
+        category: updated.category ?? '',
+        homepage_url: updated.homepage_url ?? '',
+        documentation_url: updated.documentation_url ?? '',
+        logo_url: updated.logo_url ?? ''
+      });
+      setStatusMessage('Service metadata를 저장했습니다.');
     } catch (error) {
       setStatusMessage(explainError(error));
     }
@@ -439,6 +523,7 @@ export function ServiceDetailConsole({ serviceId }: ServiceDetailConsoleProps) {
                 ['Service ID', service?.id ?? serviceId],
                 ['Status', service?.status ?? 'unknown'],
                 ['Auth type', service?.auth_type ?? 'none'],
+                ['Category', service?.category ?? 'uncategorized'],
                 ['Credential', credential?.status ?? service?.credential_status ?? 'unknown'],
                 ['Tools', `${service?.tool_count ?? tools.length}`],
                 ['Last validated', service?.last_validated_at ?? 'never']
@@ -476,6 +561,21 @@ export function ServiceDetailConsole({ serviceId }: ServiceDetailConsoleProps) {
               <span className="rounded-lg bg-muted px-3 py-2 font-medium text-muted-foreground ring-1 ring-border">hidden {toolControlSummary.hidden}</span>
               <span className="rounded-lg bg-rose-50 px-3 py-2 font-medium text-rose-700 ring-1 ring-rose-200">disabled {toolControlSummary.disabled}</span>
             </div>
+          </div>
+
+          <div className="mt-4 grid gap-3 rounded-xl border border-border bg-card p-3 md:grid-cols-3">
+            {toolPresetOptions.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                disabled={Boolean(applyingPreset) || tools.length === 0}
+                onClick={() => handleApplyPreset(option.value)}
+                className="rounded-lg border border-border bg-background px-3 py-3 text-left transition hover:border-brand-300 hover:bg-brand-50 disabled:cursor-wait disabled:opacity-60 dark:hover:bg-brand-950/30"
+              >
+                <span className="text-sm font-medium text-foreground">{applyingPreset === option.value ? 'Applying…' : option.label}</span>
+                <span className="mt-1 block text-xs leading-5 text-muted-foreground">{option.description}</span>
+              </button>
+            ))}
           </div>
 
           <div className="mt-6 grid gap-3">
@@ -585,6 +685,32 @@ export function ServiceDetailConsole({ serviceId }: ServiceDetailConsoleProps) {
               </ul>
             </div>
           )}
+          {(schemaDiff.added.length > 0 || schemaDiff.removed.length > 0 || schemaDiff.changed.length > 0) && (
+            <div className="mt-4 grid gap-3 lg:grid-cols-3">
+              {[
+                ['Added tools', schemaDiff.added, 'bg-emerald-50 text-emerald-950 ring-emerald-200'],
+                ['Removed tools', schemaDiff.removed, 'bg-rose-50 text-rose-950 ring-rose-200'],
+                ['Changed schemas', schemaDiff.changed, 'bg-amber-50 text-amber-950 ring-amber-200']
+              ].map(([label, items, tone]) => (
+                <div key={label as string} className={`rounded-lg p-4 ring-1 ${tone as string}`}>
+                  <h4 className="text-sm font-medium">{label as string}</h4>
+                  <ul className="mt-3 grid gap-2 text-xs leading-5">
+                    {(items as Array<Record<string, unknown>>).map((item, index) => (
+                      <li key={`${label}-${String(item.name)}-${index}`} className="rounded-md bg-background/70 p-2 font-mono text-foreground ring-1 ring-border">
+                        <span className="block break-all">{textFromUnknown(item.name) ?? 'unknown'}</span>
+                        <span className="mt-1 block break-all text-muted-foreground">
+                          {textFromUnknown(item.schema_hash)
+                            ?? textFromUnknown(item.current_schema_hash)
+                            ?? textFromUnknown(item.previous_schema_hash)
+                            ?? 'hash n/a'}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          )}
           <pre className="mt-6 cm-code-block">{JSON.stringify(service?.validation_summary ?? { last_validated_at: service?.last_validated_at ?? null }, null, 2)}</pre>
         </section>
       )}
@@ -657,6 +783,45 @@ export function ServiceDetailConsole({ serviceId }: ServiceDetailConsoleProps) {
           <p className="cm-kicker">Settings</p>
           <h3 className="cm-section-title">Service 설정과 삭제</h3>
           <div className="mt-4 grid gap-4 lg:grid-cols-2">
+            <form onSubmit={handleMetadataSubmit} className="cm-panel-subtle">
+              <h4 className="font-medium text-foreground">Private service metadata</h4>
+              <p className="cm-copy">개인 도구함에서 service를 빠르게 식별하기 위한 로컬 전용 metadata입니다.</p>
+              <div className="mt-4 grid gap-3">
+                <label className="grid gap-2 text-sm font-medium text-foreground">Category
+                  <input
+                    value={metadataDraft.category}
+                    onChange={(event) => setMetadataDraft((previous) => ({ ...previous, category: event.target.value }))}
+                    className="cm-input"
+                    placeholder="productivity, infra, knowledge"
+                  />
+                </label>
+                <label className="grid gap-2 text-sm font-medium text-foreground">Homepage URL
+                  <input
+                    value={metadataDraft.homepage_url}
+                    onChange={(event) => setMetadataDraft((previous) => ({ ...previous, homepage_url: event.target.value }))}
+                    className="cm-input"
+                    placeholder="https://example.com"
+                  />
+                </label>
+                <label className="grid gap-2 text-sm font-medium text-foreground">Documentation URL
+                  <input
+                    value={metadataDraft.documentation_url}
+                    onChange={(event) => setMetadataDraft((previous) => ({ ...previous, documentation_url: event.target.value }))}
+                    className="cm-input"
+                    placeholder="https://example.com/docs"
+                  />
+                </label>
+                <label className="grid gap-2 text-sm font-medium text-foreground">Logo URL
+                  <input
+                    value={metadataDraft.logo_url}
+                    onChange={(event) => setMetadataDraft((previous) => ({ ...previous, logo_url: event.target.value }))}
+                    className="cm-input"
+                    placeholder="https://example.com/icon.png"
+                  />
+                </label>
+              </div>
+              <button type="submit" className="mt-4 cm-button cm-button-primary">Metadata 저장</button>
+            </form>
             <div className="cm-panel-subtle">
               <h4 className="font-medium text-foreground">운영 메모</h4>
               <p className="cm-copy">Endpoint, auth_type, credential 상태를 바꾼 뒤에는 validation을 다시 실행해 cached tool catalog를 갱신하세요.</p>

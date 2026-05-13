@@ -101,6 +101,17 @@ class Repository:
             if name not in columns:
                 await self.db.execute(f"ALTER TABLE tool_invocations ADD COLUMN {name} {ddl}")
 
+        service_columns = await self._table_columns("mcp_services")
+        service_additions = {
+            "category": "TEXT",
+            "logo_url": "TEXT",
+            "homepage_url": "TEXT",
+            "documentation_url": "TEXT",
+        }
+        for name, ddl in service_additions.items():
+            if name not in service_columns:
+                await self.db.execute(f"ALTER TABLE mcp_services ADD COLUMN {name} {ddl}")
+
     async def _table_columns(self, table_name: str) -> set[str]:
         cursor = await self.db.execute(f"PRAGMA table_info({table_name})")
         rows = await cursor.fetchall()
@@ -596,16 +607,34 @@ class Repository:
         endpoint_url: str,
         auth_type: str = "none",
         description: str | None = None,
+        category: str | None = None,
+        logo_url: str | None = None,
+        homepage_url: str | None = None,
+        documentation_url: str | None = None,
         status: str = "draft",
     ) -> dict[str, Any]:
         service_id = new_id("svc")
         await self.db.execute(
             """
             INSERT INTO mcp_services
-              (id, owner_user_id, name, slug, description, endpoint_url, auth_type, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+              (id, owner_user_id, name, slug, description, endpoint_url, auth_type,
+               category, logo_url, homepage_url, documentation_url, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (service_id, LOCAL_USER_ID, name, slug, description, endpoint_url, auth_type, status),
+            (
+                service_id,
+                LOCAL_USER_ID,
+                name,
+                slug,
+                description,
+                endpoint_url,
+                auth_type,
+                category,
+                logo_url,
+                homepage_url,
+                documentation_url,
+                status,
+            ),
         )
         await self.log_audit(action="service.create", resource_type="mcp_service", resource_id=service_id)
         return await self.get_mcp_service(service_id) or {}
@@ -635,6 +664,7 @@ class Repository:
         cursor = await self.db.execute(
             f"""
             SELECT s.id, s.name, s.slug, s.description, s.endpoint_url, s.auth_type, s.status,
+                   s.category, s.logo_url, s.homepage_url, s.documentation_url,
                    s.risk_level, s.last_validated_at, s.updated_at, COUNT(st.id) AS tool_count
             FROM mcp_services s
             LEFT JOIN service_tools st ON st.service_id = s.id AND st.status = 'active'
@@ -648,7 +678,20 @@ class Repository:
         return [dict(row) for row in await cursor.fetchall()]
 
     async def update_mcp_service(self, service_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
-        allowed = {"name", "slug", "description", "endpoint_url", "auth_type", "status", "risk_level", "validation_summary"}
+        allowed = {
+            "name",
+            "slug",
+            "description",
+            "endpoint_url",
+            "auth_type",
+            "status",
+            "risk_level",
+            "validation_summary",
+            "category",
+            "logo_url",
+            "homepage_url",
+            "documentation_url",
+        }
         fields: list[str] = []
         values: list[Any] = []
         for key, value in updates.items():

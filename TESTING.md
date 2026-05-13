@@ -23,9 +23,19 @@ make smoke
 # Ops script smoke
 tmpdir="$(mktemp -d)" && mkdir -p "$tmpdir/data" && sqlite3 "$tmpdir/data/coremcp.sqlite3" 'create table smoke(id integer);'
 COREMCP_DATA_DIR="$tmpdir" infra/scripts/backup-sqlite.sh
-plutil -lint infra/launchd/com.coremcp.api.plist infra/launchd/com.coremcp.web.plist infra/launchd/com.coremcp.backup.plist infra/launchd/com.coremcp.logrotate.plist
+plutil -lint infra/launchd/com.coremcp.api.plist infra/launchd/com.coremcp.web.plist infra/launchd/com.coremcp.backup.plist infra/launchd/com.coremcp.logrotate.plist infra/launchd/com.coremcp.refresh.plist
 infra/scripts/coremcp-launchctl.sh load
 infra/scripts/ops-smoke.sh
+
+# Scheduled refresh smoke (no registered services)
+tmpdir="$(mktemp -d)" && cd apps/api && \
+  COREMCP_ADMIN_TOKEN_VALUE=refresh-smoke \
+  COREMCP_ADMIN_TOKEN_FILE="$tmpdir/admin-token" \
+  COREMCP_DB_PATH="$tmpdir/coremcp.sqlite3" \
+  COREMCP_SECRET_BACKEND=fernet \
+  COREMCP_SECRETS_FILE="$tmpdir/secrets.json" \
+  FERNET_KEY_FILE="$tmpdir/secrets.key" \
+  uv run python -m coremcp.refresh
 
 # Web route smoke (requires npx or PWCLI)
 infra/scripts/web-route-smoke.sh
@@ -43,13 +53,14 @@ make test && pnpm lint && pnpm build && pnpm test && make smoke && make codex-sm
 
 ## Current verification snapshot — 2026-05-13
 
-- `cd apps/api && uv run pytest -q`: **46 passed**.
+- `cd apps/api && uv run pytest -q`: **49 passed**.
 - `cd apps/fake-mcp && uv run pytest -q`: **12 passed**.
 - `pnpm lint`, `pnpm build`, `pnpm test`: **PASS**.
 - `make smoke`: **PASS**.
 - Alembic fresh migration smoke: **PASS** (`20260512_0001` → `20260513_0003`).
-- `plutil -lint infra/launchd/*.plist`: **5 plist OK** (`fake-mcp`, `api`, `web`, `backup`, `logrotate`).
-- `infra/scripts/coremcp-launchctl.sh restart && infra/scripts/ops-smoke.sh`: **PASS** (`fake-mcp/api/web/backup/logrotate` labels loaded, Fake/API/Web ready; Tailscale CLI missing so skipped).
+- `plutil -lint infra/launchd/*.plist`: **6 plist OK** (`fake-mcp`, `api`, `web`, `backup`, `logrotate`, `refresh`).
+- `python -m coremcp.refresh` no-service smoke: **PASS** (`services_checked=0`, exit 0).
+- `infra/scripts/coremcp-launchctl.sh restart && infra/scripts/ops-smoke.sh`: **PASS** (`fake-mcp/api/web/backup/logrotate/refresh` labels loaded, Fake/API/Web ready; Tailscale CLI missing so skipped).
 - `make run`: **PASS** (bootstrap, Web build, launchd restart, ops smoke).
 - `COREMCP_WEB_URL=http://127.0.0.1:3004 infra/scripts/web-route-smoke.sh`: **PASS** (security headers + `/services` → `/toolbox` → `/clients` → `/settings` → `/playground` → `/logs`).
 - `make codex-install && make codex-smoke`: **PASS** (Codex MCP config + CoreMCP initialize/tools-list with Codex client token).
@@ -71,7 +82,7 @@ Remaining items are split as follows:
 
 | Layer | Path | Command | Status |
 |---|---|---|---|
-| API unit/integration | `apps/api/tests/` | `cd apps/api && uv run pytest` | 46 tests passing |
+| API unit/integration | `apps/api/tests/` | `cd apps/api && uv run pytest` | 49 tests passing |
 | Fake MCP fixture | `apps/fake-mcp/tests/` | `cd apps/fake-mcp && uv run pytest` | 12 tests passing |
 | Web lint/type/build | `apps/web/` | `pnpm lint && pnpm build` | passing |
 | Workspace no-op tests | `packages/*`, `apps/web` | `pnpm test` | passing |
@@ -81,7 +92,7 @@ Remaining items are split as follows:
 | Web design system docs | `docs/design/` | `rg -n "CoreMCP Design System" docs/design` | passing |
 | Codex CLI MCP | `infra/scripts/codex-*.sh` | `make codex-install && make codex-smoke` | passing |
 | OAuth/client auth flow | `apps/api/tests/test_mcp_gateway.py` | DCR/CIMD, PKCE, JWT/JWKS, refresh, revoke, one-time token exchange | passing |
-| Ops scripts | `infra/scripts`, `infra/launchd` | backup/restore/log rotation/plutil + fake-mcp/api/web/backup/logrotate label logic | plutil + actual launchd load/ops smoke passing; Tailscale/reboot are environment checks |
+| Ops scripts | `infra/scripts`, `infra/launchd` | backup/restore/log rotation/scheduled refresh/plutil + fake-mcp/api/web/backup/logrotate/refresh label logic | plutil + actual launchd load/ops smoke passing; Tailscale/reboot are environment checks |
 
 ## Conventions
 
@@ -111,7 +122,9 @@ Always keep tests for:
 - `Idempotency-Key` 중복 `tools/call`은 in-memory result cache를 재사용합니다.
 - Tool-level override는 disabled/hidden tool을 `tools/list`에서 숨기고, disabled/visible_only call을 downstream 호출 없이 policy deny로 기록합니다.
 - Request id는 API response header, downstream `X-Request-ID`, invocation/audit log에서 연결됩니다.
-- Schema drift는 validation summary에 changed/added/removed count로 기록되고 invalid refresh 시 기존 active catalog를 보존합니다.
+- Schema drift는 validation summary에 changed/added/removed count와 `schema_diff.added/removed/changed` detail로 기록되고 invalid refresh 시 기존 active catalog를 보존합니다.
+- Tool preset(`readonly`, `dangerous_off`, `full_access`)은 tool-level override에 일괄 적용되고 hidden/visible/callable 정책을 회귀 테스트로 고정합니다.
+- Downstream response sanitizer는 JSON `Content-Type`과 `COREMCP_DOWNSTREAM_MAX_RESPONSE_BYTES` size cap을 강제합니다.
 - Client/OAuth token scopes는 `tools/list`에 `mcp:tools.read`, `tools/call`에 `mcp:tools.call`을 요구하고, 부족하면 downstream 호출 없이 policy deny로 기록합니다.
 - `notifications/cancelled`는 202로 수락되고 invocation status `cancelled`로 기록됩니다.
 - OAuth mode는 static bearer endpoint 숨김, PKCE 실패 reject, CIMD SSRF/redirect guard, revoke 후 `/mcp` 401을 유지합니다.

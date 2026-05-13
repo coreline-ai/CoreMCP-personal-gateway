@@ -36,6 +36,18 @@ ONE_TIME_TOKEN_TTL_SECONDS = 600
 DEFAULT_CLIENT_SCOPES = ["mcp:tools.read", "mcp:tools.call"]
 ALLOWED_CLIENT_SCOPES = {"mcp:tools.read", "mcp:tools.call", "mcp:connections.manage"}
 TOOL_PERMISSION_LEVELS = {"hidden", "visible_only", "callable"}
+TOOL_PRESETS = {"readonly", "full_access", "dangerous_off"}
+DANGEROUS_TOOL_KEYWORDS = (
+    "delete",
+    "remove",
+    "drop",
+    "destroy",
+    "purge",
+    "truncate",
+    "revoke",
+    "disable",
+    "shutdown",
+)
 
 
 def jsonrpc_result(request_id: Any, result: dict[str, Any]) -> dict[str, Any]:
@@ -353,22 +365,93 @@ def _connection_token_prompt(token: str, expires_at: str) -> str:
     )
 
 
-def _tool_schema_change_summary(existing_tools: list[dict[str, Any]], normalized_tools: list[dict[str, Any]]) -> dict[str, int]:
+def _tool_schema_diff(existing_tools: list[dict[str, Any]], normalized_tools: list[dict[str, Any]]) -> dict[str, Any]:
     existing_by_name = {str(tool.get("original_name")): tool for tool in existing_tools}
     normalized_by_name = {str(tool.get("original_name")): tool for tool in normalized_tools}
-    changed = 0
-    for name, tool in normalized_by_name.items():
-        if existing_by_name.get(name, {}).get("schema_hash") != tool.get("schema_hash"):
-            changed += 1
-    removed = len(set(existing_by_name) - set(normalized_by_name))
-    added = len(set(normalized_by_name) - set(existing_by_name))
-    return {
+    added_names = sorted(set(normalized_by_name) - set(existing_by_name))
+    removed_names = sorted(set(existing_by_name) - set(normalized_by_name))
+    changed_tools = []
+    for name in sorted(set(existing_by_name) & set(normalized_by_name)):
+        previous_hash = existing_by_name.get(name, {}).get("schema_hash")
+        current_hash = normalized_by_name.get(name, {}).get("schema_hash")
+        if previous_hash != current_hash:
+            changed_tools.append(
+                {
+                    "name": name,
+                    "previous_schema_hash": previous_hash,
+                    "current_schema_hash": current_hash,
+                }
+            )
+    summary = {
         "previous_tool_count": len(existing_tools),
         "discovered_tool_count": len(normalized_tools),
-        "changed_tool_count": changed + removed,
-        "added_tool_count": added,
-        "removed_tool_count": removed,
+        "changed_tool_count": len(changed_tools) + len(added_names) + len(removed_names),
+        "added_tool_count": len(added_names),
+        "removed_tool_count": len(removed_names),
     }
+    details = {
+        "added": [
+            {
+                "name": name,
+                "schema_hash": normalized_by_name.get(name, {}).get("schema_hash"),
+            }
+            for name in added_names
+        ],
+        "removed": [
+            {
+                "name": name,
+                "schema_hash": existing_by_name.get(name, {}).get("schema_hash"),
+            }
+            for name in removed_names
+        ],
+        "changed": changed_tools,
+    }
+    return {"summary": summary, "details": details}
+
+
+def _tool_schema_change_summary(existing_tools: list[dict[str, Any]], normalized_tools: list[dict[str, Any]]) -> dict[str, int]:
+    return _tool_schema_diff(existing_tools, normalized_tools)["summary"]
+
+
+def _tool_annotation_bool(tool: dict[str, Any], key: str) -> bool:
+    annotations = tool.get("annotations")
+    return bool(isinstance(annotations, dict) and annotations.get(key) is True)
+
+
+def _is_dangerous_tool(tool: dict[str, Any]) -> bool:
+    if _tool_annotation_bool(tool, "destructiveHint"):
+        return True
+    if str(tool.get("risk_level") or "").lower() in {"high", "critical", "dangerous"}:
+        return True
+    haystack = " ".join(
+        str(tool.get(key) or "")
+        for key in ("original_name", "exposed_name", "title", "description")
+    ).lower()
+    return any(keyword in haystack for keyword in DANGEROUS_TOOL_KEYWORDS)
+
+
+def _tool_preset_policy(tool: dict[str, Any], preset: str) -> tuple[bool, str]:
+    dangerous = _is_dangerous_tool(tool)
+    if preset == "full_access":
+        return True, "callable"
+    if preset == "readonly":
+        read_only = _tool_annotation_bool(tool, "readOnlyHint") and not dangerous
+        return True, "callable" if read_only else "hidden"
+    if preset == "dangerous_off":
+        return True, "hidden" if dangerous else "callable"
+    raise ValueError(f"unsupported tool preset: {preset}")
+
+
+def _tool_override_counts(items: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {"callable": 0, "visible_only": 0, "hidden": 0, "disabled": 0}
+    for item in items:
+        if not item.get("enabled", True):
+            counts["disabled"] += 1
+            continue
+        permission = str(item.get("permission_level") or "callable")
+        if permission in {"callable", "visible_only", "hidden"}:
+            counts[permission] += 1
+    return counts
 
 
 async def _forward_downstream_cancellation(
@@ -977,11 +1060,18 @@ async def validate_service(
         warnings.extend(metadata_warnings)
         if tools and not normalized:
             raise DownstreamMcpError("downstream tools/list returned no valid tools", code=-32602)
-        change_summary = _tool_schema_change_summary(existing_tools, normalized)
+        schema_diff = _tool_schema_diff(existing_tools, normalized)
+        change_summary = schema_diff["summary"]
         saved = await repository.replace_service_tools(service_id, normalized)
         stages.append({"name": "metadata_scan", "status": "success", "warnings": warnings, **change_summary})
 
-        summary = {"stages": stages, "tools_found": len(saved), "warnings": warnings, "schema_drift": change_summary}
+        summary = {
+            "stages": stages,
+            "tools_found": len(saved),
+            "warnings": warnings,
+            "schema_drift": change_summary,
+            "schema_diff": schema_diff["details"],
+        }
         await repository.mark_service_validated(
             service_id=service_id,
             status="active",
@@ -1053,7 +1143,11 @@ def create_app(settings: Settings | None = None, http_client: httpx.AsyncClient 
         app.state.sessions = SessionStore()
         app.state.repository = Repository(settings.resolved_database_path)
         app.state.http_client = http_client
-        app.state.downstream = DownstreamMcpClient(settings.fake_mcp_url, http_client)
+        app.state.downstream = DownstreamMcpClient(
+            settings.fake_mcp_url,
+            http_client,
+            max_response_bytes=settings.downstream_max_response_bytes,
+        )
         app.state.tool_registry = {}
         app.state.list_changed_bus = ListChangedEventBus()
         app.state.idempotency_cache = IdempotencyCache()
@@ -1547,6 +1641,10 @@ def create_app(settings: Settings | None = None, http_client: httpx.AsyncClient 
                 endpoint_url=endpoint_url.strip(),
                 auth_type=body.get("auth_type") if isinstance(body.get("auth_type"), str) else "none",
                 description=body.get("description") if isinstance(body.get("description"), str) else None,
+                category=body.get("category") if isinstance(body.get("category"), str) else None,
+                logo_url=body.get("logo_url") if isinstance(body.get("logo_url"), str) else None,
+                homepage_url=body.get("homepage_url") if isinstance(body.get("homepage_url"), str) else None,
+                documentation_url=body.get("documentation_url") if isinstance(body.get("documentation_url"), str) else None,
             )
         except sqlite3.IntegrityError as exc:
             return api_error("conflict", "service slug already exists", status_code=409, details=str(exc))
@@ -1578,7 +1676,22 @@ def create_app(settings: Settings | None = None, http_client: httpx.AsyncClient 
         body = await _json_body(request)
         if isinstance(body, JSONResponse):
             return body
-        updates = {key: body[key] for key in ("name", "slug", "description", "endpoint_url", "auth_type", "status") if key in body}
+        updates = {
+            key: body[key]
+            for key in (
+                "name",
+                "slug",
+                "description",
+                "endpoint_url",
+                "auth_type",
+                "status",
+                "category",
+                "logo_url",
+                "homepage_url",
+                "documentation_url",
+            )
+            if key in body
+        }
         service = await request.app.state.repository.update_mcp_service(service_id, updates)
         if service is None:
             return not_found("mcp_service")
@@ -1646,6 +1759,41 @@ def create_app(settings: Settings | None = None, http_client: httpx.AsyncClient 
             return not_found("service_tool")
         await _publish_list_changed(request.app, reason="tool_permission.update", resource_id=service_tool_id)
         return JSONResponse(item)
+
+    @app.post("/v1/mcp-services/{service_id}/tool-overrides/preset")
+    async def apply_service_tool_preset(request: Request, service_id: str) -> Response:
+        if not verify_admin_request(request):
+            return unauthorized_response()
+        body = await _json_body(request)
+        if isinstance(body, JSONResponse):
+            return body
+        preset = str(body.get("preset") or "")
+        if preset not in TOOL_PRESETS:
+            return api_error("validation_failed", "preset must be readonly, full_access, or dangerous_off", status_code=422)
+        if await request.app.state.repository.get_mcp_service(service_id) is None:
+            return not_found("mcp_service")
+
+        tools = await request.app.state.repository.list_service_tools(service_id)
+        items: list[dict[str, Any]] = []
+        for tool in tools:
+            enabled, permission_level = _tool_preset_policy(tool, preset)
+            item = await request.app.state.repository.upsert_tool_override(
+                service_id=service_id,
+                service_tool_id=tool["id"],
+                enabled=enabled,
+                permission_level=permission_level,
+            )
+            if item is not None:
+                items.append(item)
+        await request.app.state.repository.log_audit(
+            action="tool_permission.preset",
+            resource_type="mcp_service",
+            resource_id=service_id,
+            metadata={"preset": preset, "counts": _tool_override_counts(items)},
+            request_id=correlation_id(request),
+        )
+        await _publish_list_changed(request.app, reason=f"tool_permission.preset.{preset}", resource_id=service_id)
+        return JSONResponse({"preset": preset, "items": items, "counts": _tool_override_counts(items), "next_cursor": None})
 
     @app.put("/v1/mcp-services/{service_id}/credential")
     async def put_credential(request: Request, service_id: str) -> Response:

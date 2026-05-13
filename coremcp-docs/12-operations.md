@@ -109,6 +109,7 @@ infra/scripts/coremcp-launchctl.sh unload
 - `com.coremcp.web`: launchd load 후 `http://127.0.0.1:3003/` 200
 - `com.coremcp.backup`: daily 03:00 schedule label load 확인
 - `com.coremcp.logrotate`: daily 00:15 plist 추가, `plutil`과 `ops-smoke` label logic 통과
+- `com.coremcp.refresh`: daily 03:20 active service validation schedule, `plutil`과 no-service runner smoke 통과
 - Reboot 검증은 실제 macOS 재부팅이 필요하므로 `--post-reboot` runbook으로 분리
 
 ### 2.3 Worker daemon (옵션)
@@ -162,10 +163,10 @@ Repo에는 log rotation 전용 스크립트와 launchd plist가 있다.
 # 수동 실행
 infra/scripts/rotate-logs.sh
 
-# launchd daily 00:15 label
-plutil -lint infra/launchd/com.coremcp.logrotate.plist
+# launchd daily 00:15 logrotate + daily 03:20 refresh labels
+plutil -lint infra/launchd/com.coremcp.logrotate.plist infra/launchd/com.coremcp.refresh.plist
 infra/scripts/coremcp-launchctl.sh load
-launchctl list | grep com.coremcp.logrotate
+launchctl list | grep -E "com.coremcp.(logrotate|refresh)"
 ```
 
 기본 정책:
@@ -173,7 +174,7 @@ launchctl list | grep com.coremcp.logrotate
 - `*.log` 파일이 10MB를 넘으면 gzip 압축
 - `*.log`와 `*.log.gz` 모두 `COREMCP_LOG_RETENTION_DAYS`(기본 7일) 초과분 삭제
 
-2026-05-13 상태: plist syntax와 `ops-smoke.sh`의 `fake-mcp/api/web/backup/logrotate` label logic은 통과. 실제 reboot 검증은 운영 host 재부팅 후 `ops-smoke.sh --post-reboot`로 확인한다.
+2026-05-13 상태: plist syntax와 `ops-smoke.sh`의 `fake-mcp/api/web/backup/logrotate/refresh` label logic은 통과. 실제 reboot 검증은 운영 host 재부팅 후 `ops-smoke.sh --post-reboot`로 확인한다.
 
 ---
 
@@ -223,19 +224,36 @@ infra/scripts/backup-sqlite.sh
 
 launchd daily schedule:
 ```bash
-plutil -lint infra/launchd/com.coremcp.backup.plist infra/launchd/com.coremcp.logrotate.plist
+plutil -lint infra/launchd/com.coremcp.backup.plist infra/launchd/com.coremcp.logrotate.plist infra/launchd/com.coremcp.refresh.plist
 infra/scripts/coremcp-launchctl.sh load
-launchctl list | grep -E "com.coremcp.(backup|logrotate)"
+launchctl list | grep -E "com.coremcp.(backup|logrotate|refresh)"
 ```
 
 기본 정책: 매일 03:00, `~/.coremcp/backups/coremcp-*.sqlite3`, 7일 이상 파일 삭제.
 
-### 5.2 전체 디렉토리 backup
+### 5.2 Scheduled service refresh
+
+```bash
+# 수동 1회 실행
+cd apps/api
+uv run python -m coremcp.refresh
+
+# refresh 대상 status 조정
+COREMCP_REFRESH_STATUSES=active,error uv run python -m coremcp.refresh
+```
+
+기본 정책: 매일 03:20, `active` service만 대상으로 `validate_service()`를 재사용한다. API runtime과 동일한 vault, SSRF guard, timeout, downstream response sanitizer를 사용한다.
+
+launchd log:
+- stdout: `~/.coremcp/logs/refresh.log`
+- stderr: `~/.coremcp/logs/refresh.err.log`
+
+### 5.3 전체 디렉토리 backup
 - Time Machine으로 `~/.coremcp/` 포함
 - 또는 iCloud Drive 동기화 (~/.coremcp가 ~/Library/Mobile Documents 아래 심볼릭 링크 옵션)
 - 또는 rsync to NAS
 
-### 5.3 Credential backup
+### 5.4 Credential backup
 - macOS Keychain은 iCloud Keychain 활성 시 자동 동기화
 - Fernet master key(`FERNET_KEY_FILE`, 기본 `~/.coremcp/data/secrets.key`)는 별도 안전한 곳에 보관 (1Password 등)
 

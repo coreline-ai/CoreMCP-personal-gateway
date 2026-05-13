@@ -202,11 +202,14 @@ Step-based form:
 #### Tools
 - 캐시된 tool 목록
 - 각 tool: exposed_name, original_name, description, input/output schema viewer, annotations, schema_hash, risk_level, last_seen
-- "Refresh tools" 버튼
+- 개별 policy: enabled toggle + permission level(`hidden`, `visible_only`, `callable`)
+- preset: `readonly`, `dangerous_off`, `full_access`
+- "Refresh tools" / "Validate" 버튼
 
 #### Validation
-- validation_runs 히스토리 (최근 20개)
-- 각 run의 stage별 결과
+- 최근 validation summary
+- stage별 결과
+- schema drift count + `schema_diff.added/removed/changed` 상세
 
 #### Credential
 - type, masked_value, status, last_rotated
@@ -218,6 +221,7 @@ Step-based form:
 - filter: status, exposed_tool_name, from/to
 
 #### Settings
+- private metadata(`category`, `homepage_url`, `documentation_url`, `logo_url`) 수정
 - name, description, slug 수정
 - slug 변경 시 alias deprecation 경고
 - disable / enable

@@ -53,6 +53,10 @@ export interface McpServiceSummary {
   slug: string;
   endpoint_url?: string;
   description?: string | null;
+  category?: string | null;
+  logo_url?: string | null;
+  homepage_url?: string | null;
+  documentation_url?: string | null;
   auth_type?: string;
   status: 'draft' | 'validating' | 'active' | 'error' | 'disabled' | 'auth_required' | string;
   tool_count?: number;
@@ -82,6 +86,7 @@ export interface ServiceToolSummary {
 }
 
 export type ToolPermissionLevel = 'hidden' | 'visible_only' | 'callable';
+export type ToolPreset = 'readonly' | 'full_access' | 'dangerous_off';
 
 export interface ToolOverrideSummary {
   id: string;
@@ -92,6 +97,13 @@ export interface ToolOverrideSummary {
   enabled: boolean;
   permission_level: ToolPermissionLevel;
   updated_at: string;
+}
+
+export interface ToolPresetResponse {
+  preset: ToolPreset;
+  items: ToolOverrideSummary[];
+  counts: Record<string, number>;
+  next_cursor: string | null;
 }
 
 export interface ServiceCredentialSummary {
@@ -315,9 +327,22 @@ export const coreMcpApi = {
   settings: () => apiFetch<SettingsResponse>('/v1/settings'),
   listServices: () => apiFetch<ListResponse<McpServiceSummary>>('/v1/mcp-services?limit=20'),
   getService: (serviceId: string) => apiFetch<McpServiceSummary>(`/v1/mcp-services/${serviceId}`),
-  createService: (body: { name: string; slug?: string; endpoint_url: string; auth_type?: string; description?: string }) =>
+  createService: (body: {
+    name: string;
+    slug?: string;
+    endpoint_url: string;
+    auth_type?: string;
+    description?: string;
+    category?: string;
+    logo_url?: string;
+    homepage_url?: string;
+    documentation_url?: string;
+  }) =>
     apiFetch<McpServiceSummary>('/v1/mcp-services', { method: 'POST', body }),
-  updateService: (serviceId: string, body: Partial<Pick<McpServiceSummary, 'name' | 'slug' | 'description' | 'endpoint_url' | 'auth_type' | 'status'>>) =>
+  updateService: (
+    serviceId: string,
+    body: Partial<Pick<McpServiceSummary, 'name' | 'slug' | 'description' | 'endpoint_url' | 'auth_type' | 'status' | 'category' | 'logo_url' | 'homepage_url' | 'documentation_url'>>
+  ) =>
     apiFetch<McpServiceSummary>(`/v1/mcp-services/${serviceId}`, { method: 'PATCH', body }),
   deleteService: (serviceId: string) =>
     apiFetch<{ id: string; status: string }>(`/v1/mcp-services/${serviceId}`, { method: 'DELETE' }),
@@ -327,6 +352,8 @@ export const coreMcpApi = {
   listToolOverrides: (serviceId: string) => apiFetch<ListResponse<ToolOverrideSummary>>(`/v1/mcp-services/${serviceId}/tool-overrides`),
   updateToolOverride: (serviceId: string, serviceToolId: string, body: { enabled: boolean; permission_level: ToolPermissionLevel }) =>
     apiFetch<ToolOverrideSummary>(`/v1/mcp-services/${serviceId}/tool-overrides/${serviceToolId}`, { method: 'PUT', body }),
+  applyToolPreset: (serviceId: string, preset: ToolPreset) =>
+    apiFetch<ToolPresetResponse>(`/v1/mcp-services/${serviceId}/tool-overrides/preset`, { method: 'POST', body: { preset } }),
   getServiceCredential: (serviceId: string) => apiFetch<ServiceCredentialSummary>(`/v1/mcp-services/${serviceId}/credential`),
   putServiceCredential: (serviceId: string, body: { credential_type: string; secret: string; header_name?: string }) =>
     apiFetch<ServiceCredentialSummary>(`/v1/mcp-services/${serviceId}/credential`, { method: 'PUT', body }),

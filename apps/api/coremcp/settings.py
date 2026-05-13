@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     downstream_read_timeout_seconds: float = Field(
         default=30.0, alias="COREMCP_DOWNSTREAM_READ_TIMEOUT_SECONDS"
     )
+    downstream_max_response_bytes: int = Field(
+        default=1024 * 1024, alias="COREMCP_DOWNSTREAM_MAX_RESPONSE_BYTES"
+    )
     auth_mode: str = Field(default="static_bearer", alias="AUTH_MODE")
     expose_resource_metadata_in_static_mode: bool = Field(
         default=False, alias="EXPOSE_RESOURCE_METADATA_IN_STATIC_MODE"
