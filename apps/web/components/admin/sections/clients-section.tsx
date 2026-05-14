@@ -1,6 +1,7 @@
 'use client';
 
 import type { FormEvent } from 'react';
+import { useMemo, useState } from 'react';
 import { getApiBaseUrl, type ExternalConnectionSummary } from '@/lib/api';
 
 interface ClientsSectionProps {
@@ -54,6 +55,29 @@ export function ClientsSection({
   onRevokeConnection
 }: ClientsSectionProps) {
   const mcpUrl = `${getApiBaseUrl().replace(/\/$/, '')}/mcp`;
+  const [copied, setCopied] = useState(false);
+  const generatedConfig = useMemo(() => {
+    if (clientType === 'codex_cli') {
+      return `make codex-install\ninfra/scripts/codex-exec-coremcp.sh "CoreMCP 도구 목록을 확인해줘"`;
+    }
+    if (clientType === 'claude_code') {
+      return `# Claude Code bearer MCP config 예시\n# token은 등록+Token 후 cmcp_client_… 값을 사용\n{\n  "mcpServers": {\n    "coremcp": {\n      "url": "${mcpUrl}",\n      "headers": {\n        "Authorization": "Bearer cmcp_client_…"\n      }\n    }\n  }\n}`;
+    }
+    if (clientType === 'oauth_client') {
+      return `# OAuth discovery/resource metadata endpoint\n${getApiBaseUrl().replace(/\/$/, '')}/.well-known/oauth-protected-resource\n${getApiBaseUrl().replace(/\/$/, '')}/.well-known/oauth-authorization-server`;
+    }
+    return `MCP endpoint: ${mcpUrl}\nAuthorization: Bearer cmcp_client_…`;
+  }, [clientType, mcpUrl]);
+
+  async function copyGeneratedConfig() {
+    try {
+      await navigator.clipboard.writeText(generatedConfig);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      setCopied(false);
+    }
+  }
 
   return (
     <article id="clients" className="cm-card">
@@ -85,11 +109,15 @@ export function ClientsSection({
       </form>
 
       <div className="mt-4 cm-panel text-sm leading-6 text-muted-foreground">
-        <p className="font-medium text-foreground">MCP endpoint</p>
-        <p className="mt-1 font-mono text-xs text-muted-foreground">{mcpUrl}</p>
-        <p className="mt-2">Codex CLI는 아래 helper가 client token을 발급하고 MCP server를 등록합니다.</p>
-        <pre className="mt-3 whitespace-pre-wrap rounded-lg bg-primary px-3 py-3 font-mono text-xs leading-5 text-primary-foreground">{`make codex-install
-infra/scripts/codex-exec-coremcp.sh "CoreMCP 도구 목록을 확인해줘"`}</pre>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="font-medium text-foreground">MCP endpoint</p>
+            <p className="mt-1 font-mono text-xs text-muted-foreground">{mcpUrl}</p>
+            <p className="mt-2">선택한 client type에 맞는 config/command를 생성합니다.</p>
+          </div>
+          <button type="button" onClick={copyGeneratedConfig} className="cm-button cm-button-secondary">{copied ? 'Copied' : 'Copy config'}</button>
+        </div>
+        <pre className="mt-3 whitespace-pre-wrap rounded-lg bg-primary px-3 py-3 font-mono text-xs leading-5 text-primary-foreground">{generatedConfig}</pre>
         <p className="mt-3">Bearer 지원 client는 <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">Authorization: Bearer cmcp_client_…</code> 헤더를 사용할 수 있습니다.</p>
       </div>
 

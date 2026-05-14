@@ -42,6 +42,32 @@ export interface SettingsResponse {
   app_version?: string;
 }
 
+export interface DashboardSummary {
+  metrics: Record<string, number>;
+  service_status_counts: Record<string, number>;
+  calls_24h: {
+    calls: number;
+    errors: number;
+    avg_latency_ms: number;
+    max_latency_ms: number;
+  };
+  top_tools_24h: Array<{
+    tool: string;
+    calls: number;
+    errors: number;
+    avg_latency_ms: number;
+  }>;
+  unhealthy_services: Array<{
+    id: string;
+    name: string;
+    slug: string;
+    status: string;
+    consecutive_failures: number;
+    last_health_check_at?: string | null;
+    circuit_open_until?: string | null;
+  }>;
+}
+
 export interface ListResponse<T> {
   items: T[];
   next_cursor: string | null;
@@ -148,6 +174,8 @@ export interface PlaygroundToolSummary {
   name: string;
   title?: string;
   description?: string;
+  inputSchema?: Record<string, unknown>;
+  input_schema?: Record<string, unknown>;
   icons?: Array<{ src: string; mimeType?: string; sizes?: string[] }>;
 }
 
@@ -325,6 +353,7 @@ export async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): 
 export const coreMcpApi = {
   health: () => apiFetch<HealthResponse>('/health', { auth: false }),
   settings: () => apiFetch<SettingsResponse>('/v1/settings'),
+  dashboardSummary: () => apiFetch<DashboardSummary>('/v1/dashboard/summary'),
   listServices: () => apiFetch<ListResponse<McpServiceSummary>>('/v1/mcp-services?limit=20'),
   getService: (serviceId: string) => apiFetch<McpServiceSummary>(`/v1/mcp-services/${serviceId}`),
   createService: (body: {

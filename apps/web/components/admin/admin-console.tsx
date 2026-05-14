@@ -8,6 +8,7 @@ import {
   saveAdminToken,
   type AuditLogSummary,
   type ClientTokenSummary,
+  type DashboardSummary,
   type ExternalConnectionSummary,
   type McpServiceSummary,
   type PlaygroundToolSummary,
@@ -41,6 +42,7 @@ export function AdminConsole({ initialSection = 'dashboard' }: { initialSection?
   const [clientTokens, setClientTokens] = useState<ClientTokenSummary[]>([]);
   const [invocations, setInvocations] = useState<ToolInvocationSummary[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLogSummary[]>([]);
+  const [dashboardSummary, setDashboardSummary] = useState<DashboardSummary | null>(null);
   const [playgroundTools, setPlaygroundTools] = useState<PlaygroundToolSummary[]>([]);
   const [toolOverridesByService, setToolOverridesByService] = useState<Record<string, ToolOverrideSummary[]>>({});
 
@@ -87,8 +89,9 @@ export function AdminConsole({ initialSection = 'dashboard' }: { initialSection?
     if (!getStoredAdminToken()) return;
     setStatusMessage('CoreMCP 데이터를 불러오는 중입니다...');
     try {
-      const [settingsResponse, servicesResponse, toolboxesResponse, connectionsResponse, tokensResponse, invocationsResponse, auditResponse] = await Promise.all([
+      const [settingsResponse, dashboardResponse, servicesResponse, toolboxesResponse, connectionsResponse, tokensResponse, invocationsResponse, auditResponse] = await Promise.all([
         coreMcpApi.settings(),
+        coreMcpApi.dashboardSummary(),
         coreMcpApi.listServices(),
         coreMcpApi.listToolboxes(),
         coreMcpApi.listExternalConnections(),
@@ -97,6 +100,7 @@ export function AdminConsole({ initialSection = 'dashboard' }: { initialSection?
         coreMcpApi.listAuditLogs()
       ]);
       setSettings(settingsResponse);
+      setDashboardSummary(dashboardResponse);
       setServices(servicesResponse.items);
       setToolboxes(toolboxesResponse.items);
       setConnections(connectionsResponse.items);
@@ -138,6 +142,7 @@ export function AdminConsole({ initialSection = 'dashboard' }: { initialSection?
     setConnections([]);
     setClientTokens([]);
     setAuditLogs([]);
+    setDashboardSummary(null);
     setInvocations([]);
     setToolOverridesByService({});
     setIssuedToken(null);
@@ -296,7 +301,7 @@ export function AdminConsole({ initialSection = 'dashboard' }: { initialSection?
 
   function renderActiveSection() {
     if (activeSection === 'dashboard') {
-      return <DashboardSection defaultToolbox={defaultToolbox} toolboxItems={toolboxItems} services={services} settings={settings} clientTokens={clientTokens} invocations={invocations} />;
+      return <DashboardSection defaultToolbox={defaultToolbox} toolboxItems={toolboxItems} services={services} settings={settings} clientTokens={clientTokens} invocations={invocations} dashboardSummary={dashboardSummary} />;
     }
 
     if (activeSection === 'services') {

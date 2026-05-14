@@ -70,32 +70,32 @@ export function explainError(error: unknown) {
 }
 
 export function statusPill(status?: string) {
-  if (status === 'active' || status === 'success') return 'bg-emerald-50 text-emerald-700 ring-emerald-200';
-  if (status === 'error' || status === 'revoked' || status === 'deleted') return 'bg-rose-50 text-rose-700 ring-rose-200';
-  if (status === 'validating') return 'bg-blue-50 text-blue-700 ring-blue-200';
-  if (status === 'auth_required' || status === 'not_connected') return 'bg-amber-50 text-amber-700 ring-amber-200';
-  return 'bg-slate-50 text-slate-600 ring-slate-200';
+  if (status === 'active' || status === 'success') return 'bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-200 dark:ring-emerald-400/30';
+  if (status === 'error' || status === 'revoked' || status === 'deleted') return 'bg-rose-50 text-rose-700 ring-rose-200 dark:bg-rose-500/15 dark:text-rose-200 dark:ring-rose-400/30';
+  if (status === 'validating') return 'bg-blue-50 text-blue-700 ring-blue-200 dark:bg-blue-500/15 dark:text-blue-200 dark:ring-blue-400/30';
+  if (status === 'auth_required' || status === 'not_connected') return 'bg-amber-50 text-amber-700 ring-amber-200 dark:bg-amber-500/15 dark:text-amber-200 dark:ring-amber-400/30';
+  return 'bg-slate-50 text-slate-600 ring-slate-200 dark:bg-slate-500/15 dark:text-slate-200 dark:ring-slate-400/30';
 }
 
 export function riskPill(risk?: string | null) {
-  if (risk === 'dangerous' || risk === 'high' || risk === 'destructive') return 'bg-rose-50 text-rose-700 ring-rose-200';
-  if (risk === 'medium' || risk === 'warning') return 'bg-amber-50 text-amber-700 ring-amber-200';
-  if (risk === 'low' || risk === 'safe') return 'bg-emerald-50 text-emerald-700 ring-emerald-200';
-  return 'bg-slate-50 text-slate-600 ring-slate-200';
+  if (risk === 'dangerous' || risk === 'high' || risk === 'destructive') return 'bg-rose-50 text-rose-700 ring-rose-200 dark:bg-rose-500/15 dark:text-rose-200 dark:ring-rose-400/30';
+  if (risk === 'medium' || risk === 'warning') return 'bg-amber-50 text-amber-700 ring-amber-200 dark:bg-amber-500/15 dark:text-amber-200 dark:ring-amber-400/30';
+  if (risk === 'low' || risk === 'safe') return 'bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-200 dark:ring-emerald-400/30';
+  return 'bg-slate-50 text-slate-600 ring-slate-200 dark:bg-slate-500/15 dark:text-slate-200 dark:ring-slate-400/30';
 }
 
 export function logStatusPill(status?: string | null, errorCode?: string | null) {
   const normalized = status?.toLowerCase();
   if (errorCode || normalized?.includes('error') || normalized?.includes('deny') || normalized === 'failed') {
-    return 'bg-rose-50 text-rose-700 ring-rose-200';
+    return 'bg-rose-50 text-rose-700 ring-rose-200 dark:bg-rose-500/15 dark:text-rose-200 dark:ring-rose-400/30';
   }
   if (normalized?.includes('success') || normalized === 'ok' || normalized === 'completed') {
-    return 'bg-emerald-50 text-emerald-700 ring-emerald-200';
+    return 'bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-200 dark:ring-emerald-400/30';
   }
   if (normalized?.includes('pending') || normalized?.includes('running')) {
-    return 'bg-blue-50 text-blue-700 ring-blue-200';
+    return 'bg-blue-50 text-blue-700 ring-blue-200 dark:bg-blue-500/15 dark:text-blue-200 dark:ring-blue-400/30';
   }
-  return 'bg-slate-50 text-slate-600 ring-slate-200';
+  return 'bg-slate-50 text-slate-600 ring-slate-200 dark:bg-slate-500/15 dark:text-slate-200 dark:ring-slate-400/30';
 }
 
 export function shortRequestId(requestId?: string | null) {

@@ -4,6 +4,7 @@ import type { FormEvent, ReactNode } from 'react';
 import Link from 'next/link';
 import { ADMIN_TOKEN_STORAGE_KEY, getApiBaseUrl } from '@/lib/api';
 import { classNames, pageTitles, sections } from './admin-utils';
+import { BrandIcon, sectionIcons } from './icons';
 import { ThemeToggle } from './theme-toggle';
 
 interface AdminShellProps {
@@ -42,8 +43,10 @@ export function AdminShell({
     <main className="cm-app-shell">
       <aside className="cm-sidebar" aria-label="CoreMCP navigation">
         <div className="cm-sidebar-header">
-          <Link href="/" className="flex items-center gap-2 rounded-lg px-1 py-1 transition-colors hover:bg-muted">
-            <span className="grid size-8 place-items-center rounded-lg bg-primary font-mono text-xs font-medium text-primary-foreground">CM</span>
+          <Link href="/" className="flex items-center gap-2 rounded-lg px-1 py-1 transition-colors hover:bg-muted" aria-label="CoreMCP home">
+            <span className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground">
+              <BrandIcon />
+            </span>
             <span className="min-w-0">
               <span className="block truncate text-sm font-medium">CoreMCP</span>
               <span className="block truncate font-mono text-xs text-muted-foreground">{getApiBaseUrl()}</span>
@@ -66,12 +69,15 @@ export function AdminShell({
             <div key={group} className="cm-sidebar-group">
               <p className="cm-sidebar-label">{group}</p>
               <div className="grid gap-0.5">
-                {sections.filter((section) => section.group === group).map((section) => (
-                  <Link key={section.id} href={section.href} className="cm-sidebar-link" data-active={activeSection === section.id ? 'true' : 'false'}>
-                    <span className="size-1.5 rounded-full bg-current opacity-45" aria-hidden="true" />
-                    <span className="truncate">{section.label}</span>
-                  </Link>
-                ))}
+                {sections.filter((section) => section.group === group).map((section) => {
+                  const SectionIcon = sectionIcons[section.id];
+                  return (
+                    <Link key={section.id} href={section.href} className="cm-sidebar-link" data-active={activeSection === section.id ? 'true' : 'false'}>
+                      {SectionIcon ? <SectionIcon /> : <span className="size-1.5 rounded-full bg-current opacity-45" aria-hidden="true" />}
+                      <span className="truncate">{section.label}</span>
+                    </Link>
+                  );
+                })}
               </div>
             </div>
           ))}
@@ -108,7 +114,9 @@ export function AdminShell({
         <header className="cm-page-header">
           <div className="min-w-0">
             <div className="flex items-center gap-2 md:hidden">
-              <span className="grid size-7 place-items-center rounded-lg bg-primary font-mono text-[0.7rem] font-medium text-primary-foreground">CM</span>
+              <span className="grid size-7 place-items-center rounded-lg bg-primary text-primary-foreground">
+                <BrandIcon width={16} height={16} />
+              </span>
               <span className="text-xs text-muted-foreground">CoreMCP</span>
             </div>
             <h1 className="truncate text-sm font-medium text-foreground">{page.title}</h1>
