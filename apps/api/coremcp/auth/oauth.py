@@ -11,9 +11,12 @@ from urllib.parse import urlencode, urlparse
 
 import httpx
 import jwt
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from jwt.algorithms import RSAAlgorithm
 
+from coremcp.auth.rate_limit import FixedWindowRateLimiter
+from coremcp.credentials import CredentialVault
 from coremcp.db import Repository, new_id
 from coremcp.proxy import UrlSafetyChecker, UrlSafetyError
 from coremcp.settings import Settings
@@ -22,13 +25,24 @@ SUPPORTED_SCOPES = {"mcp:tools.read", "mcp:tools.call", "mcp:connections.manage"
 ACCESS_TOKEN_TTL_SECONDS = 3600
 AUTHORIZATION_CODE_TTL_SECONDS = 600
 CIMD_CACHE_TTL_SECONDS = 3600
+CIMD_RATE_LIMIT = 30
+CIMD_RATE_LIMIT_WINDOW_SECONDS = 3600
+REFRESH_TOKEN_TTL_SECONDS = 90 * 24 * 3600
 
 
 class OAuthError(ValueError):
-    def __init__(self, code: str, message: str, *, status_code: int = 400) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        status_code: int = 400,
+        retry_after_seconds: int | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.status_code = status_code
+        self.retry_after_seconds = retry_after_seconds
 
 
 @dataclass(slots=True)
@@ -47,55 +61,87 @@ class OAuthClient:
         return set(self.scope.split()) if self.scope else set()
 
 
-@dataclass(slots=True)
-class AuthorizationCode:
-    code: str
-    client_id: str
-    redirect_uri: str
-    resource: str
-    scope: str
-    code_challenge: str
-    expires_at: float
-    used: bool = False
-
-
-@dataclass(slots=True)
-class RefreshTokenRecord:
-    token: str
-    client_id: str
-    external_connection_id: str
-    resource: str
-    scope: str
-    expires_at: float
-    family_id: str
-    parent: str | None = None
-    issued_at: float = 0.0
-    used_at: float | None = None
-    revoked: bool = False
-    revoked_reason: str | None = None
-
-
 class OAuthService:
-    """Minimal OAuth 2.1 authorization server for personal CoreMCP mode."""
+    """Minimal OAuth 2.1 authorization server for personal CoreMCP mode.
 
-    def __init__(self, settings: Settings, repository: Repository, http_client: httpx.AsyncClient) -> None:
+    OAuth tokens and server state are persisted in SQLite so launchd/API restarts
+    do not invalidate active clients. Raw authorization codes and refresh tokens
+    are never stored; only SHA-256 hashes are persisted.
+    """
+
+    def __init__(
+        self,
+        settings: Settings,
+        repository: Repository,
+        http_client: httpx.AsyncClient,
+        *,
+        cimd_rate_limiter: FixedWindowRateLimiter | None = None,
+        vault: CredentialVault | None = None,
+    ) -> None:
         self.settings = settings
         self.repository = repository
         self.http_client = http_client
-        self._private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        self.kid = secrets.token_urlsafe(8)
-        self.clients: dict[str, OAuthClient] = {}
-        self.codes: dict[str, AuthorizationCode] = {}
-        self.refresh_tokens: dict[str, RefreshTokenRecord] = {}
-        self.revoked_jti: dict[str, float] = {}
-        self.cimd_cache: dict[str, tuple[float, OAuthClient]] = {}
+        self.cimd_rate_limiter = cimd_rate_limiter or FixedWindowRateLimiter()
+        self.vault = vault
+        self._private_key: rsa.RSAPrivateKey | None = None
+        self.kid: str | None = None
+
+    async def startup(self) -> None:
+        key = await self.repository.get_active_oauth_signing_key()
+        if key is None:
+            private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            pem = private_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption(),
+            ).decode("ascii")
+            kid = secrets.token_urlsafe(8)
+            private_material_ref = await self._store_private_key_pem(kid=kid, pem=pem)
+            await self.repository.create_oauth_signing_key(kid=kid, private_key_pem=private_material_ref, alg="RS256")
+            self._private_key = private_key
+            self.kid = kid
+            return
+        kid = str(key["kid"])
+        private_material = str(key["private_key_pem"])
+        pem = await self._load_private_key_pem(private_material)
+        if private_material == pem and self.vault is not None:
+            # Legacy rows may contain plaintext PEM from early local builds.
+            # Migrate in-place to a vault reference without rotating the key.
+            migrated_ref = await self._store_private_key_pem(kid=kid, pem=pem)
+            await self.repository.update_oauth_signing_key_private_material(kid=kid, private_key_pem=migrated_ref)
+        loaded_key = serialization.load_pem_private_key(pem.encode("ascii"), password=None)
+        if not isinstance(loaded_key, rsa.RSAPrivateKey):
+            raise RuntimeError("OAuth signing key must be an RSA private key")
+        self._private_key = loaded_key
+        self.kid = kid
+
+    async def _store_private_key_pem(self, *, kid: str, pem: str) -> str:
+        if self.vault is None:
+            return pem
+        return await self.vault.put(service_id=f"oauth-signing-key:{kid}", secret=pem)
+
+    async def _load_private_key_pem(self, private_material: str) -> str:
+        if private_material.startswith("-----BEGIN"):
+            return private_material
+        if self.vault is None:
+            raise RuntimeError("OAuth signing key is stored as a vault reference but no vault is configured")
+        pem = await self.vault.get(private_material)
+        if not pem:
+            raise RuntimeError("OAuth signing key could not be loaded from the credential vault")
+        return pem
+
+    @property
+    def private_key(self) -> rsa.RSAPrivateKey:
+        if self._private_key is None or self.kid is None:
+            raise RuntimeError("OAuthService.startup() has not loaded a signing key")
+        return self._private_key
 
     def jwks(self) -> dict[str, Any]:
-        public_jwk = json.loads(RSAAlgorithm.to_jwk(self._private_key.public_key()))
+        public_jwk = json.loads(RSAAlgorithm.to_jwk(self.private_key.public_key()))
         public_jwk.update({"use": "sig", "kid": self.kid, "alg": "RS256"})
         return {"keys": [public_jwk]}
 
-    def register_client(self, metadata: dict[str, Any]) -> OAuthClient:
+    async def register_client(self, metadata: dict[str, Any]) -> OAuthClient:
         redirect_uris = metadata.get("redirect_uris")
         if not isinstance(redirect_uris, list) or not redirect_uris or not all(isinstance(uri, str) for uri in redirect_uris):
             raise OAuthError("invalid_client_metadata", "redirect_uris is required")
@@ -109,24 +155,34 @@ class OAuthService:
         if method != "none":
             raise OAuthError("invalid_client_metadata", "only public clients with token_endpoint_auth_method=none are supported")
         scope = self._normalize_scope(str(metadata.get("scope") or "mcp:tools.read mcp:tools.call"))
-        client_id = f"cmcp_oauth_client_{secrets.token_urlsafe(24)}"
         client = OAuthClient(
-            client_id=client_id,
+            client_id=f"cmcp_oauth_client_{secrets.token_urlsafe(24)}",
             client_name=str(metadata.get("client_name") or "OAuth Client"),
             redirect_uris=redirect_uris,
             scope=scope,
             grant_types=[str(item) for item in grant_types],
             response_types=[str(item) for item in response_types],
+            token_endpoint_auth_method="none",
             source="dcr",
         )
-        self.clients[client_id] = client
+        await self.repository.upsert_oauth_client(
+            client_id=client.client_id,
+            client_name=client.client_name,
+            redirect_uris=client.redirect_uris,
+            scope=client.scope,
+            grant_types=client.grant_types or ["authorization_code", "refresh_token"],
+            response_types=client.response_types or ["code"],
+            token_endpoint_auth_method=client.token_endpoint_auth_method,
+            source=client.source,
+        )
         return client
 
-    async def resolve_client(self, client_id: str) -> OAuthClient:
-        if client_id in self.clients:
-            return self.clients[client_id]
+    async def resolve_client(self, client_id: str, *, client_ip: str | None = None) -> OAuthClient:
+        row = await self.repository.get_oauth_client(client_id)
+        if row is not None:
+            return self._client_from_row(row)
         if client_id.startswith("https://"):
-            return await self._resolve_cimd_client(client_id)
+            return await self._resolve_cimd_client(client_id, client_ip=client_ip)
         raise OAuthError("invalid_client", "client is not registered", status_code=401)
 
     async def create_authorization_code(
@@ -138,8 +194,9 @@ class OAuthService:
         scope: str,
         code_challenge: str,
         code_challenge_method: str,
+        client_ip: str | None = None,
     ) -> str:
-        client = await self.resolve_client(client_id)
+        client = await self.resolve_client(client_id, client_ip=client_ip)
         if redirect_uri not in client.redirect_uris:
             raise OAuthError("invalid_request", "redirect_uri is not registered")
         if code_challenge_method != "S256":
@@ -148,8 +205,8 @@ class OAuthService:
             raise OAuthError("invalid_request", "code_challenge length is invalid")
         normalized_scope = self._normalize_scope(scope or client.scope, allowed=client.scopes)
         code = f"cmcp_code_{secrets.token_urlsafe(32)}"
-        self.codes[code] = AuthorizationCode(
-            code=code,
+        await self.repository.create_oauth_authorization_code(
+            code_hash=self._hash_token(code),
             client_id=client.client_id,
             redirect_uri=redirect_uri,
             resource=resource,
@@ -174,65 +231,87 @@ class OAuthService:
         code_verifier: str,
         resource: str,
         issuer: str,
+        client_ip: str | None = None,
     ) -> dict[str, Any]:
-        record = self.codes.get(code)
-        if record is None or record.used or record.expires_at < time.time():
+        record = await self.repository.consume_oauth_authorization_code(
+            code_hash=self._hash_token(code),
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            resource=resource,
+            now=time.time(),
+        )
+        if record is None:
             raise OAuthError("invalid_grant", "authorization code is invalid or expired")
-        if record.client_id != client_id or record.redirect_uri != redirect_uri or record.resource != resource:
-            raise OAuthError("invalid_grant", "authorization code binding mismatch")
-        if self._pkce_challenge(code_verifier) != record.code_challenge:
+        if self._pkce_challenge(code_verifier) != record["code_challenge"]:
             raise OAuthError("invalid_grant", "PKCE verification failed")
-        record.used = True
-        client = await self.resolve_client(client_id)
+        client = await self.resolve_client(client_id, client_ip=client_ip)
         connection = await self.repository.create_external_connection(
             client_type="other",
             client_name=client.client_name,
+            oauth_client_id=client.client_id,
             protocol_version=None,
-            scopes=record.scope.split(),
+            scopes=record["scope"].split(),
         )
         return await self._issue_token_pair(
             client=client,
             external_connection_id=connection["id"],
             resource=resource,
-            scope=record.scope,
+            scope=record["scope"],
             issuer=issuer,
         )
 
-    async def refresh(self, *, refresh_token: str, client_id: str, resource: str, issuer: str) -> dict[str, Any]:
-        record = self.refresh_tokens.get(refresh_token)
+    async def refresh(
+        self,
+        *,
+        refresh_token: str,
+        client_id: str,
+        resource: str,
+        issuer: str,
+        client_ip: str | None = None,
+    ) -> dict[str, Any]:
+        token_hash = self._hash_token(refresh_token)
+        record = await self.repository.find_oauth_refresh_token_by_hash(token_hash)
         if record is None:
             raise OAuthError("invalid_grant", "refresh token is invalid or expired")
-        if record.used_at is not None:
+        if record.get("used_at") is not None:
             await self._revoke_refresh_family(
-                record.family_id,
+                str(record["family_id"]),
                 reason="reuse_detected",
-                triggering_token=refresh_token,
+                triggering_token_hash=token_hash,
+                triggering_parent_hash=record.get("parent_hash"),
                 client_id=client_id,
             )
             raise OAuthError("invalid_grant", "refresh token reuse detected")
-        if record.revoked or record.expires_at < time.time():
+        if record.get("revoked_at") is not None or float(record["expires_at"]) < time.time():
             raise OAuthError("invalid_grant", "refresh token is invalid or expired")
-        if record.client_id != client_id or record.resource != resource:
+        if record["client_id"] != client_id or record["resource"] != resource:
             raise OAuthError("invalid_grant", "refresh token binding mismatch")
         now = time.time()
-        record.used_at = now
-        record.revoked = True
-        record.revoked_reason = "rotated"
-        client = await self.resolve_client(client_id)
+        if not await self.repository.mark_oauth_refresh_token_rotated(token_hash=token_hash, now=now):
+            latest = await self.repository.find_oauth_refresh_token_by_hash(token_hash)
+            if latest and latest.get("used_at") is not None:
+                await self._revoke_refresh_family(
+                    str(latest["family_id"]),
+                    reason="reuse_detected",
+                    triggering_token_hash=token_hash,
+                    triggering_parent_hash=latest.get("parent_hash"),
+                    client_id=client_id,
+                )
+            raise OAuthError("invalid_grant", "refresh token is invalid or expired")
+        client = await self.resolve_client(client_id, client_ip=client_ip)
         return await self._issue_token_pair(
             client=client,
-            external_connection_id=record.external_connection_id,
+            external_connection_id=str(record["external_connection_id"]),
             resource=resource,
-            scope=record.scope,
+            scope=str(record["scope"]),
             issuer=issuer,
-            family_id=record.family_id,
-            parent=refresh_token,
+            family_id=str(record["family_id"]),
+            parent_hash=token_hash,
         )
 
     async def revoke(self, token: str) -> None:
-        if token in self.refresh_tokens:
-            self.refresh_tokens[token].revoked = True
-            self.refresh_tokens[token].revoked_reason = "revoked"
+        token_hash = self._hash_token(token)
+        if await self.repository.revoke_oauth_refresh_token(token_hash=token_hash, reason="revoked", now=time.time()):
             await self.repository.log_audit(action="oauth.revoke", resource_type="oauth_refresh_token")
             return
         try:
@@ -242,27 +321,30 @@ class OAuthService:
         jti = unverified.get("jti")
         exp = unverified.get("exp")
         if isinstance(jti, str):
-            self.revoked_jti[jti] = float(exp) if isinstance(exp, int) else time.time() + ACCESS_TOKEN_TTL_SECONDS
+            await self.repository.upsert_oauth_revoked_access_jti(
+                jti=jti,
+                expires_at=float(exp) if isinstance(exp, int) else time.time() + ACCESS_TOKEN_TTL_SECONDS,
+                now=time.time(),
+            )
             await self.repository.log_audit(action="oauth.revoke", resource_type="oauth_access_token", resource_id=jti)
 
-    def verify_access_token(self, token: str | None, *, issuer: str, audience: str) -> dict[str, Any] | None:
+    async def verify_access_token(self, token: str | None, *, issuer: str, audience: str) -> dict[str, Any] | None:
         if not token:
             return None
-        self._purge_revoked_jti()
         try:
-            claims = jwt.decode(token, self._private_key.public_key(), algorithms=["RS256"], audience=audience, issuer=issuer)
+            claims = jwt.decode(token, self.private_key.public_key(), algorithms=["RS256"], audience=audience, issuer=issuer)
         except jwt.PyJWTError:
             return None
         jti = claims.get("jti")
-        if isinstance(jti, str) and jti in self.revoked_jti:
+        if isinstance(jti, str) and await self.repository.is_oauth_access_jti_revoked(jti=jti, now=time.time()):
             return None
         return claims
 
     async def introspect(self, token: str, *, issuer: str, audience: str) -> dict[str, Any]:
-        claims = self.verify_access_token(token, issuer=issuer, audience=audience)
+        claims = await self.verify_access_token(token, issuer=issuer, audience=audience)
         if claims is None:
-            refresh = self.refresh_tokens.get(token)
-            return {"active": bool(refresh and not refresh.revoked and refresh.expires_at > time.time())}
+            refresh = await self.repository.find_oauth_refresh_token_by_hash(self._hash_token(token))
+            return {"active": bool(refresh and refresh.get("revoked_at") is None and float(refresh["expires_at"]) > time.time())}
         return {"active": True, **claims}
 
     async def _issue_token_pair(
@@ -274,7 +356,7 @@ class OAuthService:
         scope: str,
         issuer: str,
         family_id: str | None = None,
-        parent: str | None = None,
+        parent_hash: str | None = None,
     ) -> dict[str, Any]:
         now = int(time.time())
         jti = new_id("jti")
@@ -289,18 +371,18 @@ class OAuthService:
             "client_id": client.client_id,
             "external_connection_id": external_connection_id,
         }
-        access_token = jwt.encode(claims, self._private_key, algorithm="RS256", headers={"kid": self.kid})
+        access_token = jwt.encode(claims, self.private_key, algorithm="RS256", headers={"kid": self.kid})
         refresh_token = f"cmcp_refresh_{secrets.token_urlsafe(32)}"
         family_id = family_id or new_id("rtfam")
-        self.refresh_tokens[refresh_token] = RefreshTokenRecord(
-            token=refresh_token,
+        await self.repository.create_oauth_refresh_token(
+            token_hash=self._hash_token(refresh_token),
             client_id=client.client_id,
             external_connection_id=external_connection_id,
             resource=resource,
             scope=scope,
-            expires_at=time.time() + 90 * 24 * 3600,
+            expires_at=time.time() + REFRESH_TOKEN_TTL_SECONDS,
             family_id=family_id,
-            parent=parent,
+            parent_hash=parent_hash,
             issued_at=time.time(),
         )
         await self.repository.log_audit(
@@ -322,32 +404,39 @@ class OAuthService:
         family_id: str,
         *,
         reason: str,
-        triggering_token: str,
+        triggering_token_hash: str,
+        triggering_parent_hash: str | None,
         client_id: str,
     ) -> None:
-        revoked_count = 0
-        for record in self.refresh_tokens.values():
-            if record.family_id != family_id:
-                continue
-            if not record.revoked or record.revoked_reason != reason:
-                revoked_count += 1
-            record.revoked = True
-            record.revoked_reason = reason
+        revoked_count = await self.repository.revoke_oauth_refresh_family(family_id=family_id, reason=reason, now=time.time())
         await self.repository.log_audit(
             action="oauth.refresh_token.reuse_detected",
             resource_type="oauth_refresh_token_family",
             resource_id=family_id,
             metadata={
                 "client_id": client_id,
-                "triggering_token_parent": self.refresh_tokens[triggering_token].parent,
+                "triggering_token_hash_prefix": triggering_token_hash[:12],
+                "triggering_token_parent_hash_prefix": triggering_parent_hash[:12] if triggering_parent_hash else None,
                 "revoked_count": revoked_count,
             },
         )
 
-    async def _resolve_cimd_client(self, client_id: str) -> OAuthClient:
-        cached = self.cimd_cache.get(client_id)
-        if cached and cached[0] > time.time():
-            return cached[1]
+    async def _resolve_cimd_client(self, client_id: str, *, client_ip: str | None = None) -> OAuthClient:
+        decision = self.cimd_rate_limiter.check(
+            f"oauth:cimd:{client_ip or 'unknown'}",
+            limit=CIMD_RATE_LIMIT,
+            window_seconds=CIMD_RATE_LIMIT_WINDOW_SECONDS,
+        )
+        if not decision.allowed:
+            raise OAuthError(
+                "rate_limited",
+                "CIMD client_id metadata resolution rate limit exceeded",
+                status_code=429,
+                retry_after_seconds=decision.retry_after_seconds,
+            )
+        cached = await self.repository.get_cached_oauth_cimd_client(client_id=client_id, now=time.time())
+        if cached is not None:
+            return self._client_from_row(cached)
         checker = UrlSafetyChecker(self.settings)
         try:
             checker.assert_safe(client_id)
@@ -390,10 +479,37 @@ class OAuthService:
             scope=self._normalize_scope(str(metadata.get("scope") or "mcp:tools.read mcp:tools.call")),
             grant_types=[str(item) for item in metadata.get("grant_types", ["authorization_code", "refresh_token"])],
             response_types=[str(item) for item in metadata.get("response_types", ["code"])],
+            token_endpoint_auth_method="none",
             source="cimd",
         )
-        self.cimd_cache[client_id] = (time.time() + CIMD_CACHE_TTL_SECONDS, client)
+        await self.repository.upsert_oauth_cimd_client(
+            client_id=client.client_id,
+            client_name=client.client_name,
+            redirect_uris=client.redirect_uris,
+            scope=client.scope,
+            grant_types=client.grant_types or ["authorization_code", "refresh_token"],
+            response_types=client.response_types or ["code"],
+            token_endpoint_auth_method=client.token_endpoint_auth_method,
+            cached_until=time.time() + CIMD_CACHE_TTL_SECONDS,
+        )
         return client
+
+    @staticmethod
+    def _client_from_row(row: dict[str, Any]) -> OAuthClient:
+        return OAuthClient(
+            client_id=str(row["client_id"]),
+            client_name=str(row.get("client_name") or "OAuth Client"),
+            redirect_uris=[str(item) for item in row.get("redirect_uris") or []],
+            scope=str(row.get("scope") or "mcp:tools.read mcp:tools.call"),
+            grant_types=[str(item) for item in row.get("grant_types") or ["authorization_code", "refresh_token"]],
+            response_types=[str(item) for item in row.get("response_types") or ["code"]],
+            token_endpoint_auth_method=str(row.get("token_endpoint_auth_method") or "none"),
+            source=str(row.get("source") or "dcr"),
+        )
+
+    @staticmethod
+    def _hash_token(token: str) -> str:
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
     @staticmethod
     def _pkce_challenge(code_verifier: str) -> str:
@@ -424,9 +540,3 @@ class OAuthService:
         if not requested.issubset(allowed) or not requested.issubset(SUPPORTED_SCOPES):
             raise OAuthError("invalid_scope", "requested scope is not supported")
         return " ".join(sorted(requested))
-
-    def _purge_revoked_jti(self) -> None:
-        now = time.time()
-        expired = [jti for jti, exp in self.revoked_jti.items() if exp <= now]
-        for jti in expired:
-            self.revoked_jti.pop(jti, None)

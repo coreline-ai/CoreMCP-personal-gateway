@@ -18,6 +18,11 @@ class UrlSafetyResult:
     host: str
     resolved_ips: list[str]
     allowed_by: str
+    scheme: str = ""
+    port: int | None = None
+    path: str = ""
+    normalized_url: str = ""
+    destination_fingerprint: str = ""
 
 
 class UrlSafetyChecker:
@@ -50,21 +55,21 @@ class UrlSafetyChecker:
             self.allow_networks.append(ipaddress.ip_network("100.64.0.0/10"))
 
     def assert_safe(self, url: str) -> UrlSafetyResult:
-        parsed = urlparse(url)
-        if parsed.scheme not in {"http", "https"}:
-            raise UrlSafetyError("Only http/https MCP endpoints are allowed")
-        if not parsed.hostname:
-            raise UrlSafetyError("Endpoint URL must include a hostname")
-        if parsed.username or parsed.password:
-            raise UrlSafetyError("Credentials in endpoint URLs are not allowed")
-        if parsed.fragment:
-            raise UrlSafetyError("URL fragments are not allowed")
-
-        host = parsed.hostname.lower()
+        parsed, scheme, host, port, path, normalized_url, fingerprint = self._parse_destination(url)
         if host == "169.254.169.254":
             raise UrlSafetyError("AWS/GCP metadata endpoint is blocked")
         if host in self.allow_hosts:
-            return UrlSafetyResult(url=url, host=host, resolved_ips=[], allowed_by="host_allowlist")
+            return UrlSafetyResult(
+                url=url,
+                host=host,
+                resolved_ips=[],
+                allowed_by="host_allowlist",
+                scheme=scheme,
+                port=port,
+                path=path,
+                normalized_url=normalized_url,
+                destination_fingerprint=fingerprint,
+            )
 
         ips = self._resolve(host)
         if not ips:
@@ -76,16 +81,36 @@ class UrlSafetyChecker:
                 continue
             if self._is_private_like(ip):
                 raise UrlSafetyError(f"Private or unsafe address is blocked: {ip}")
-        return UrlSafetyResult(url=url, host=host, resolved_ips=[str(ip) for ip in ips], allowed_by="public_dns")
+        return UrlSafetyResult(
+            url=url,
+            host=host,
+            resolved_ips=[str(ip) for ip in ips],
+            allowed_by="public_dns",
+            scheme=parsed.scheme,
+            port=port,
+            path=path,
+            normalized_url=normalized_url,
+            destination_fingerprint=fingerprint,
+        )
 
     def assert_same_safe_destination(self, before: UrlSafetyResult, url: str) -> UrlSafetyResult:
         """Re-resolve before an outbound request to reduce DNS rebinding risk."""
 
+        _, scheme, host, port, path, _, fingerprint = self._parse_destination(url)
+        if before.scheme and before.scheme != scheme:
+            raise UrlSafetyError("Endpoint scheme changed before downstream request")
+        if before.host != host:
+            raise UrlSafetyError("Endpoint host changed before downstream request")
+        if before.port is not None and before.port != port:
+            raise UrlSafetyError("Endpoint port changed before downstream request")
+        if before.path and before.path != path:
+            raise UrlSafetyError("Endpoint path changed before downstream request")
+        if before.destination_fingerprint and before.destination_fingerprint != fingerprint:
+            raise UrlSafetyError("Endpoint destination changed before downstream request")
+
         after = self.assert_safe(url)
         if before.allowed_by == "host_allowlist" or after.allowed_by == "host_allowlist":
             return after
-        if before.host != after.host:
-            raise UrlSafetyError("Endpoint host changed before downstream request")
         if set(before.resolved_ips) != set(after.resolved_ips):
             raise UrlSafetyError("Endpoint DNS changed before downstream request")
         return after
@@ -112,6 +137,38 @@ class UrlSafetyChecker:
 
     def _ip_allowed_by_cidr(self, ip: ipaddress._BaseAddress) -> bool:
         return any(ip in network for network in self.allow_networks)
+
+    def _parse_destination(self, url: str):
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"}:
+            raise UrlSafetyError("Only http/https MCP endpoints are allowed")
+        if not parsed.hostname:
+            raise UrlSafetyError("Endpoint URL must include a hostname")
+        if parsed.username or parsed.password:
+            raise UrlSafetyError("Credentials in endpoint URLs are not allowed")
+        if parsed.fragment:
+            raise UrlSafetyError("URL fragments are not allowed")
+        try:
+            port = parsed.port or self._default_port(parsed.scheme)
+        except ValueError as exc:
+            raise UrlSafetyError("Endpoint URL port is invalid") from exc
+        host = parsed.hostname.lower()
+        path = parsed.path or "/"
+        normalized_url = self._normalized_url(parsed.scheme, host, port, path)
+        fingerprint = self._destination_fingerprint(parsed.scheme, host, port, path)
+        return parsed, parsed.scheme, host, port, path, normalized_url, fingerprint
+
+    @staticmethod
+    def _default_port(scheme: str) -> int:
+        return 443 if scheme == "https" else 80
+
+    @staticmethod
+    def _normalized_url(scheme: str, host: str, port: int, path: str) -> str:
+        return f"{scheme}://{host}:{port}{path}"
+
+    @staticmethod
+    def _destination_fingerprint(scheme: str, host: str, port: int, path: str) -> str:
+        return f"{scheme}|{host}|{port}|{path}"
 
     @classmethod
     def _is_private_like(cls, ip: ipaddress._BaseAddress) -> bool:

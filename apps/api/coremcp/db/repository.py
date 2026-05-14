@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Iterable
 from pathlib import Path
@@ -7,6 +8,8 @@ from typing import Any
 from uuid import uuid4
 
 import aiosqlite
+
+from coremcp.db.migrations import run_migrations
 
 LOCAL_USER_ID = "usr_local"
 DEFAULT_TOOLBOX_ID = "tbx_default"
@@ -30,9 +33,13 @@ class Repository:
         self._db: aiosqlite.Connection | None = None
 
     async def connect(self) -> None:
-        if str(self.database_path) != ":memory:":
-            self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        self._db = await aiosqlite.connect(str(self.database_path))
+        if str(self.database_path) == ":memory:":
+            raise RuntimeError("Repository database_path=':memory:' is not supported; use a file-backed SQLite path")
+
+        database_path = self.database_path.expanduser().resolve()
+        await asyncio.to_thread(run_migrations, database_path)
+
+        self._db = await aiosqlite.connect(str(database_path))
         self._db.row_factory = aiosqlite.Row
         await self._db.execute("PRAGMA foreign_keys = ON")
         await self.bootstrap()
@@ -54,8 +61,6 @@ class Repository:
         return bool(row and row["ok"] == 1)
 
     async def bootstrap(self) -> None:
-        await self.db.executescript(SCHEMA_SQL)
-        await self._ensure_legacy_columns()
         await self.db.execute(
             """
             INSERT OR IGNORE INTO users (id, email, name, bootstrap_completed_at)
@@ -71,51 +76,6 @@ class Repository:
             (DEFAULT_TOOLBOX_ID, LOCAL_USER_ID),
         )
         await self.db.commit()
-
-    async def _ensure_legacy_columns(self) -> None:
-        """Add nullable columns when a P0 local DB already exists.
-
-        SQLite cannot add every CHECK/NOT NULL constraint after the fact. For the
-        personal gateway this additive migration is enough to keep local smoke DBs
-        usable while Alembic covers fresh installs precisely.
-        """
-
-        columns = await self._table_columns("tool_invocations")
-        additions = {
-            "request_id": "TEXT",
-            "external_connection_id": "TEXT",
-            "service_id": "TEXT",
-            "service_tool_id": "TEXT",
-            "exposed_tool_name": "TEXT",
-            "downstream_tool_name": "TEXT",
-            "downstream_latency_ms": "INTEGER",
-            "error_message": "TEXT",
-            "input_size_bytes": "INTEGER",
-            "output_size_bytes": "INTEGER",
-            "protocol_version": "TEXT",
-            "idempotency_key": "TEXT",
-            "client_ip": "TEXT",
-            "user_agent": "TEXT",
-        }
-        for name, ddl in additions.items():
-            if name not in columns:
-                await self.db.execute(f"ALTER TABLE tool_invocations ADD COLUMN {name} {ddl}")
-
-        service_columns = await self._table_columns("mcp_services")
-        service_additions = {
-            "category": "TEXT",
-            "logo_url": "TEXT",
-            "homepage_url": "TEXT",
-            "documentation_url": "TEXT",
-        }
-        for name, ddl in service_additions.items():
-            if name not in service_columns:
-                await self.db.execute(f"ALTER TABLE mcp_services ADD COLUMN {name} {ddl}")
-
-    async def _table_columns(self, table_name: str) -> set[str]:
-        cursor = await self.db.execute(f"PRAGMA table_info({table_name})")
-        rows = await cursor.fetchall()
-        return {str(row["name"]) for row in rows}
 
     # ------------------------------------------------------------------
     # JSON helpers
@@ -280,6 +240,8 @@ class Repository:
         queries = {
             "mcp_services_total": "SELECT COUNT(*) AS count FROM mcp_services WHERE deleted_at IS NULL",
             "mcp_services_active": "SELECT COUNT(*) AS count FROM mcp_services WHERE deleted_at IS NULL AND status = 'active'",
+            "mcp_services_health_failing": "SELECT COUNT(*) AS count FROM mcp_services WHERE deleted_at IS NULL AND consecutive_failures > 0",
+            "mcp_services_circuit_open": "SELECT COUNT(*) AS count FROM mcp_services WHERE deleted_at IS NULL AND circuit_open_until IS NOT NULL AND circuit_open_until > CURRENT_TIMESTAMP",
             "external_connections_active": "SELECT COUNT(*) AS count FROM external_connections WHERE status = 'active'",
             "personal_access_tokens_active": "SELECT COUNT(*) AS count FROM personal_access_tokens WHERE status = 'active' AND revoked_at IS NULL",
             "mcp_requests_total": "SELECT COUNT(*) AS count FROM tool_invocations",
@@ -297,6 +259,82 @@ class Repository:
             row = await cursor.fetchone()
             snapshot[key] = int(row["count"])
         return snapshot
+
+    async def dashboard_summary(self) -> dict[str, Any]:
+        metrics = await self.metrics_snapshot()
+
+        cursor = await self.db.execute(
+            """
+            SELECT status, COUNT(*) AS count
+            FROM mcp_services
+            WHERE deleted_at IS NULL
+            GROUP BY status
+            ORDER BY status
+            """
+        )
+        service_status_counts = {str(row["status"]): int(row["count"]) for row in await cursor.fetchall()}
+
+        cursor = await self.db.execute(
+            """
+            SELECT
+              COUNT(*) AS calls,
+              SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END) AS errors,
+              COALESCE(AVG(latency_ms), 0) AS avg_latency_ms,
+              COALESCE(MAX(latency_ms), 0) AS max_latency_ms
+            FROM tool_invocations
+            WHERE method = 'tools/call' AND created_at >= datetime('now', '-24 hours')
+            """
+        )
+        row = await cursor.fetchone()
+        calls_24h = {
+            "calls": int(row["calls"] or 0),
+            "errors": int(row["errors"] or 0),
+            "avg_latency_ms": int(float(row["avg_latency_ms"] or 0)),
+            "max_latency_ms": int(row["max_latency_ms"] or 0),
+        }
+
+        cursor = await self.db.execute(
+            """
+            SELECT COALESCE(exposed_tool_name, tool_name, downstream_tool_name, 'unknown') AS tool,
+                   COUNT(*) AS calls,
+                   SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END) AS errors,
+                   COALESCE(AVG(latency_ms), 0) AS avg_latency_ms
+            FROM tool_invocations
+            WHERE method = 'tools/call' AND created_at >= datetime('now', '-24 hours')
+            GROUP BY tool
+            ORDER BY calls DESC, tool ASC
+            LIMIT 5
+            """
+        )
+        top_tools = [
+            {
+                "tool": str(item["tool"]),
+                "calls": int(item["calls"]),
+                "errors": int(item["errors"] or 0),
+                "avg_latency_ms": int(float(item["avg_latency_ms"] or 0)),
+            }
+            for item in await cursor.fetchall()
+        ]
+
+        cursor = await self.db.execute(
+            """
+            SELECT id, name, slug, status, consecutive_failures, last_health_check_at, circuit_open_until
+            FROM mcp_services
+            WHERE deleted_at IS NULL
+              AND (consecutive_failures > 0 OR (circuit_open_until IS NOT NULL AND circuit_open_until > CURRENT_TIMESTAMP))
+            ORDER BY consecutive_failures DESC, updated_at DESC
+            LIMIT 5
+            """
+        )
+        unhealthy_services = [dict(item) for item in await cursor.fetchall()]
+
+        return {
+            "metrics": metrics,
+            "service_status_counts": service_status_counts,
+            "calls_24h": calls_24h,
+            "top_tools_24h": top_tools,
+            "unhealthy_services": unhealthy_services,
+        }
 
     async def recent_invocations(self, limit: int = 20) -> list[dict[str, Any]]:
         cursor = await self.db.execute(
@@ -356,6 +394,7 @@ class Repository:
         client_type: str,
         client_name: str | None,
         toolbox_id: str | None = None,
+        oauth_client_id: str | None = None,
         protocol_version: str | None = None,
         scopes: list[str] | None = None,
         created_ip: str | None = None,
@@ -365,8 +404,8 @@ class Repository:
         await self.db.execute(
             """
             INSERT INTO external_connections
-              (id, user_id, toolbox_id, client_type, client_name, protocol_version, scopes, created_ip, created_user_agent)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+              (id, user_id, toolbox_id, client_type, client_name, oauth_client_id, protocol_version, scopes, created_ip, created_user_agent)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 connection_id,
@@ -374,6 +413,7 @@ class Repository:
                 toolbox_id or DEFAULT_TOOLBOX_ID,
                 client_type,
                 client_name,
+                oauth_client_id,
                 protocol_version,
                 self.dumps_json_array(scopes or []),
                 created_ip,
@@ -386,7 +426,7 @@ class Repository:
     async def get_external_connection(self, connection_id: str) -> dict[str, Any] | None:
         cursor = await self.db.execute(
             """
-            SELECT id, toolbox_id, client_type, client_name, protocol_version, status, scopes,
+            SELECT id, toolbox_id, client_type, client_name, oauth_client_id, protocol_version, status, scopes,
                    last_used_at, revoked_at, created_at, updated_at
             FROM external_connections
             WHERE id = ?
@@ -398,7 +438,7 @@ class Repository:
     async def list_external_connections(self, limit: int = 50) -> list[dict[str, Any]]:
         cursor = await self.db.execute(
             """
-            SELECT id, toolbox_id, client_type, client_name, protocol_version, status, scopes,
+            SELECT id, toolbox_id, client_type, client_name, oauth_client_id, protocol_version, status, scopes,
                    last_used_at, revoked_at, created_at, updated_at
             FROM external_connections
             ORDER BY created_at DESC, id DESC
@@ -597,6 +637,295 @@ class Repository:
         return item
 
     # ------------------------------------------------------------------
+    # OAuth persistence
+    # ------------------------------------------------------------------
+    async def get_active_oauth_signing_key(self) -> dict[str, Any] | None:
+        cursor = await self.db.execute(
+            """
+            SELECT kid, private_key_pem, alg, status, created_at
+            FROM oauth_signing_keys
+            WHERE status = 'active'
+            ORDER BY created_at DESC
+            LIMIT 1
+            """
+        )
+        return self._row_to_dict(await cursor.fetchone())
+
+    async def create_oauth_signing_key(self, *, kid: str, private_key_pem: str, alg: str = "RS256") -> dict[str, Any]:
+        await self.db.execute(
+            """
+            INSERT INTO oauth_signing_keys (kid, private_key_pem, alg, status)
+            VALUES (?, ?, ?, 'active')
+            """,
+            (kid, private_key_pem, alg),
+        )
+        await self.db.commit()
+        return await self.get_active_oauth_signing_key() or {}
+
+    async def update_oauth_signing_key_private_material(self, *, kid: str, private_key_pem: str) -> None:
+        await self.db.execute(
+            """
+            UPDATE oauth_signing_keys
+            SET private_key_pem = ?
+            WHERE kid = ?
+            """,
+            (private_key_pem, kid),
+        )
+        await self.db.commit()
+
+    async def upsert_oauth_client(
+        self,
+        *,
+        client_id: str,
+        client_name: str,
+        redirect_uris: list[str],
+        scope: str,
+        grant_types: list[str],
+        response_types: list[str],
+        token_endpoint_auth_method: str = "none",
+        source: str = "dcr",
+    ) -> dict[str, Any]:
+        await self.db.execute(
+            """
+            INSERT INTO oauth_clients
+              (client_id, client_name, redirect_uris, scope, grant_types, response_types, token_endpoint_auth_method, source)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(client_id) DO UPDATE SET
+              client_name = excluded.client_name,
+              redirect_uris = excluded.redirect_uris,
+              scope = excluded.scope,
+              grant_types = excluded.grant_types,
+              response_types = excluded.response_types,
+              token_endpoint_auth_method = excluded.token_endpoint_auth_method,
+              source = excluded.source,
+              updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                client_id,
+                client_name,
+                self.dumps_json_array(redirect_uris),
+                scope,
+                self.dumps_json_array(grant_types),
+                self.dumps_json_array(response_types),
+                token_endpoint_auth_method,
+                source,
+            ),
+        )
+        await self.db.commit()
+        return await self.get_oauth_client(client_id) or {}
+
+    async def get_oauth_client(self, client_id: str, *, source: str | None = None) -> dict[str, Any] | None:
+        where = "client_id = ?"
+        params: list[Any] = [client_id]
+        if source is not None:
+            where += " AND source = ?"
+            params.append(source)
+        cursor = await self.db.execute(
+            f"""
+            SELECT client_id, client_name, redirect_uris, scope, grant_types, response_types,
+                   token_endpoint_auth_method, source, created_at, updated_at
+            FROM oauth_clients
+            WHERE {where}
+            """,
+            params,
+        )
+        return self._row_to_dict(await cursor.fetchone(), json_fields=("redirect_uris", "grant_types", "response_types"))
+
+    async def create_oauth_authorization_code(
+        self,
+        *,
+        code_hash: str,
+        client_id: str,
+        redirect_uri: str,
+        resource: str,
+        scope: str,
+        code_challenge: str,
+        expires_at: float,
+    ) -> dict[str, Any]:
+        code_id = new_id("ocode")
+        await self.db.execute(
+            """
+            INSERT INTO oauth_authorization_codes
+              (id, code_hash, client_id, redirect_uri, resource, scope, code_challenge, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (code_id, code_hash, client_id, redirect_uri, resource, scope, code_challenge, expires_at),
+        )
+        await self.db.commit()
+        return {"id": code_id, "code_hash": code_hash}
+
+    async def consume_oauth_authorization_code(
+        self,
+        *,
+        code_hash: str,
+        client_id: str,
+        redirect_uri: str,
+        resource: str,
+        now: float,
+    ) -> dict[str, Any] | None:
+        cursor = await self.db.execute(
+            """
+            UPDATE oauth_authorization_codes
+            SET used_at = ?
+            WHERE code_hash = ?
+              AND client_id = ?
+              AND redirect_uri = ?
+              AND resource = ?
+              AND used_at IS NULL
+              AND expires_at > ?
+            RETURNING id, code_hash, client_id, redirect_uri, resource, scope, code_challenge, expires_at, used_at, created_at
+            """,
+            (now, code_hash, client_id, redirect_uri, resource, now),
+        )
+        row = await cursor.fetchone()
+        await self.db.commit()
+        return self._row_to_dict(row)
+
+    async def create_oauth_refresh_token(
+        self,
+        *,
+        token_hash: str,
+        client_id: str,
+        external_connection_id: str,
+        resource: str,
+        scope: str,
+        expires_at: float,
+        family_id: str,
+        parent_hash: str | None = None,
+        issued_at: float | None = None,
+    ) -> dict[str, Any]:
+        refresh_id = new_id("rtok")
+        await self.db.execute(
+            """
+            INSERT INTO oauth_refresh_tokens
+              (id, token_hash, client_id, external_connection_id, resource, scope, expires_at, family_id, parent_hash, issued_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (refresh_id, token_hash, client_id, external_connection_id, resource, scope, expires_at, family_id, parent_hash, issued_at),
+        )
+        await self.db.commit()
+        return await self.find_oauth_refresh_token_by_hash(token_hash) or {}
+
+    async def find_oauth_refresh_token_by_hash(self, token_hash: str) -> dict[str, Any] | None:
+        cursor = await self.db.execute(
+            """
+            SELECT id, token_hash, client_id, external_connection_id, resource, scope, expires_at,
+                   family_id, parent_hash, issued_at, used_at, revoked_at, revoked_reason, created_at
+            FROM oauth_refresh_tokens
+            WHERE token_hash = ?
+            """,
+            (token_hash,),
+        )
+        return self._row_to_dict(await cursor.fetchone())
+
+    async def mark_oauth_refresh_token_rotated(self, *, token_hash: str, now: float) -> bool:
+        cursor = await self.db.execute(
+            """
+            UPDATE oauth_refresh_tokens
+            SET used_at = ?, revoked_at = ?, revoked_reason = 'rotated'
+            WHERE token_hash = ? AND used_at IS NULL AND revoked_at IS NULL
+            """,
+            (now, now, token_hash),
+        )
+        await self.db.commit()
+        return cursor.rowcount > 0
+
+    async def revoke_oauth_refresh_token(self, *, token_hash: str, reason: str, now: float) -> bool:
+        cursor = await self.db.execute(
+            """
+            UPDATE oauth_refresh_tokens
+            SET revoked_at = COALESCE(revoked_at, ?), revoked_reason = COALESCE(revoked_reason, ?)
+            WHERE token_hash = ?
+            """,
+            (now, reason, token_hash),
+        )
+        await self.db.commit()
+        return cursor.rowcount > 0
+
+    async def revoke_oauth_refresh_family(self, *, family_id: str, reason: str, now: float) -> int:
+        cursor = await self.db.execute(
+            """
+            UPDATE oauth_refresh_tokens
+            SET revoked_at = COALESCE(revoked_at, ?), revoked_reason = ?
+            WHERE family_id = ?
+            """,
+            (now, reason, family_id),
+        )
+        await self.db.commit()
+        return cursor.rowcount
+
+    async def upsert_oauth_revoked_access_jti(self, *, jti: str, expires_at: float, now: float | None = None) -> None:
+        await self.db.execute(
+            """
+            INSERT INTO oauth_revoked_access_tokens (jti, expires_at, revoked_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(jti) DO UPDATE SET
+              expires_at = excluded.expires_at,
+              revoked_at = excluded.revoked_at
+            """,
+            (jti, expires_at, now if now is not None else 0.0),
+        )
+        await self.db.commit()
+
+    async def is_oauth_access_jti_revoked(self, *, jti: str, now: float) -> bool:
+        await self.db.execute("DELETE FROM oauth_revoked_access_tokens WHERE expires_at <= ?", (now,))
+        cursor = await self.db.execute(
+            "SELECT 1 AS revoked FROM oauth_revoked_access_tokens WHERE jti = ? AND expires_at > ?",
+            (jti, now),
+        )
+        row = await cursor.fetchone()
+        await self.db.commit()
+        return row is not None
+
+    async def upsert_oauth_cimd_client(
+        self,
+        *,
+        client_id: str,
+        client_name: str,
+        redirect_uris: list[str],
+        scope: str,
+        grant_types: list[str],
+        response_types: list[str],
+        token_endpoint_auth_method: str = "none",
+        cached_until: float,
+    ) -> dict[str, Any]:
+        await self.upsert_oauth_client(
+            client_id=client_id,
+            client_name=client_name,
+            redirect_uris=redirect_uris,
+            scope=scope,
+            grant_types=grant_types,
+            response_types=response_types,
+            token_endpoint_auth_method=token_endpoint_auth_method,
+            source="cimd",
+        )
+        await self.db.execute(
+            """
+            INSERT INTO oauth_cimd_cache (client_id, cached_until)
+            VALUES (?, ?)
+            ON CONFLICT(client_id) DO UPDATE SET
+              cached_until = excluded.cached_until,
+              updated_at = CURRENT_TIMESTAMP
+            """,
+            (client_id, cached_until),
+        )
+        await self.db.commit()
+        return await self.get_oauth_client(client_id, source="cimd") or {}
+
+    async def get_cached_oauth_cimd_client(self, *, client_id: str, now: float) -> dict[str, Any] | None:
+        cursor = await self.db.execute(
+            """
+            SELECT c.client_id, c.client_name, c.redirect_uris, c.scope, c.grant_types, c.response_types,
+                   c.token_endpoint_auth_method, c.source, c.created_at, c.updated_at, cache.cached_until
+            FROM oauth_clients c
+            JOIN oauth_cimd_cache cache ON cache.client_id = c.client_id
+            WHERE c.client_id = ? AND c.source = 'cimd' AND cache.cached_until > ?
+            """,
+            (client_id, now),
+        )
+        return self._row_to_dict(await cursor.fetchone(), json_fields=("redirect_uris", "grant_types", "response_types"))
+
+    # ------------------------------------------------------------------
     # MCP services / tools
     # ------------------------------------------------------------------
     async def create_mcp_service(
@@ -611,6 +940,12 @@ class Repository:
         logo_url: str | None = None,
         homepage_url: str | None = None,
         documentation_url: str | None = None,
+        transport_type: str = "http",
+        stdio_command: str | None = None,
+        stdio_args: list[str] | None = None,
+        stdio_env: dict[str, str] | None = None,
+        stdio_cwd: str | None = None,
+        stdio_idle_timeout_seconds: int = 300,
         status: str = "draft",
     ) -> dict[str, Any]:
         service_id = new_id("svc")
@@ -618,8 +953,9 @@ class Repository:
             """
             INSERT INTO mcp_services
               (id, owner_user_id, name, slug, description, endpoint_url, auth_type,
-               category, logo_url, homepage_url, documentation_url, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               category, logo_url, homepage_url, documentation_url, transport_type,
+               stdio_command, stdio_args, stdio_env, stdio_cwd, stdio_idle_timeout_seconds, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 service_id,
@@ -633,6 +969,12 @@ class Repository:
                 logo_url,
                 homepage_url,
                 documentation_url,
+                transport_type,
+                stdio_command,
+                self.dumps_json_array(stdio_args or []),
+                self.dumps_json(stdio_env or {}),
+                stdio_cwd,
+                stdio_idle_timeout_seconds,
                 status,
             ),
         )
@@ -652,7 +994,7 @@ class Repository:
             """,
             (service_id,),
         )
-        return self._row_to_dict(await cursor.fetchone(), json_fields=("validation_summary",))
+        return self._row_to_dict(await cursor.fetchone(), json_fields=("validation_summary", "stdio_args", "stdio_env"))
 
     async def list_mcp_services(self, limit: int = 50, status: str | None = None) -> list[dict[str, Any]]:
         where = "WHERE s.deleted_at IS NULL"
@@ -664,7 +1006,10 @@ class Repository:
         cursor = await self.db.execute(
             f"""
             SELECT s.id, s.name, s.slug, s.description, s.endpoint_url, s.auth_type, s.status,
-                   s.category, s.logo_url, s.homepage_url, s.documentation_url,
+                   s.category, s.logo_url, s.homepage_url, s.documentation_url, s.transport_type,
+                   s.stdio_command, s.stdio_args, s.stdio_env, s.stdio_cwd,
+                   s.stdio_idle_timeout_seconds, s.last_health_check_at, s.consecutive_failures,
+                   s.circuit_open_until,
                    s.risk_level, s.last_validated_at, s.updated_at, COUNT(st.id) AS tool_count
             FROM mcp_services s
             LEFT JOIN service_tools st ON st.service_id = s.id AND st.status = 'active'
@@ -675,7 +1020,10 @@ class Repository:
             """,
             params,
         )
-        return [dict(row) for row in await cursor.fetchall()]
+        return [
+            self._row_to_dict(row, json_fields=("stdio_args", "stdio_env")) or {}
+            for row in await cursor.fetchall()
+        ]
 
     async def update_mcp_service(self, service_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
         allowed = {
@@ -691,6 +1039,21 @@ class Repository:
             "logo_url",
             "homepage_url",
             "documentation_url",
+            "transport_type",
+            "stdio_command",
+            "stdio_args",
+            "stdio_env",
+            "stdio_cwd",
+            "stdio_idle_timeout_seconds",
+            "last_health_check_at",
+            "consecutive_failures",
+            "circuit_open_until",
+            "last_stdio_started_at",
+            "last_stdio_used_at",
+            "stdio_restart_count",
+            "last_stdio_exit_code",
+            "last_stdio_error",
+            "last_stdio_stderr_tail",
         }
         fields: list[str] = []
         values: list[Any] = []
@@ -698,6 +1061,10 @@ class Repository:
             if key not in allowed:
                 continue
             if key == "validation_summary":
+                value = self.dumps_json(value or {})
+            if key == "stdio_args":
+                value = self.dumps_json_array(value or [])
+            if key == "stdio_env":
                 value = self.dumps_json(value or {})
             fields.append(f"{key} = ?")
             values.append(value)
@@ -729,6 +1096,50 @@ class Repository:
             """,
             (status, protocol_version, self.dumps_json(summary or {}), service_id),
         )
+        await self.db.commit()
+
+    async def mark_service_health_probe(
+        self,
+        *,
+        service_id: str,
+        ok: bool,
+        error_message: str | None = None,
+        circuit_open_seconds: int = 30,
+        failure_threshold: int = 3,
+    ) -> None:
+        if ok:
+            await self.db.execute(
+                """
+                UPDATE mcp_services
+                SET last_health_check_at = CURRENT_TIMESTAMP,
+                    consecutive_failures = 0,
+                    circuit_open_until = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND deleted_at IS NULL
+                """,
+                (service_id,),
+            )
+        else:
+            await self.db.execute(
+                """
+                UPDATE mcp_services
+                SET last_health_check_at = CURRENT_TIMESTAMP,
+                    consecutive_failures = consecutive_failures + 1,
+                    circuit_open_until = CASE
+                        WHEN consecutive_failures + 1 >= ? THEN datetime('now', ?)
+                        ELSE circuit_open_until
+                    END,
+                    validation_summary = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND deleted_at IS NULL
+                """,
+                (
+                    failure_threshold,
+                    f"+{max(1, int(circuit_open_seconds))} seconds",
+                    self.dumps_json({"health_probe": {"status": "failed", "error": error_message or "probe_failed"}}),
+                    service_id,
+                ),
+            )
         await self.db.commit()
 
     async def soft_delete_mcp_service(self, service_id: str) -> bool:
@@ -862,6 +1273,157 @@ class Repository:
             or {}
             for row in await cursor.fetchall()
         ]
+
+    async def replace_service_resources(self, service_id: str, resources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        await self.db.execute("UPDATE service_resources SET status = 'disabled', disabled_at = CURRENT_TIMESTAMP WHERE service_id = ?", (service_id,))
+        saved: list[dict[str, Any]] = []
+        for resource in resources:
+            uri = resource.get("uri")
+            if not isinstance(uri, str) or not uri:
+                continue
+            cursor = await self.db.execute("SELECT id FROM service_resources WHERE service_id = ? AND uri = ?", (service_id, uri))
+            existing = await cursor.fetchone()
+            resource_id = existing["id"] if existing else new_id("res")
+            values = (
+                resource_id,
+                service_id,
+                uri,
+                resource.get("name") if isinstance(resource.get("name"), str) else None,
+                resource.get("title") if isinstance(resource.get("title"), str) else None,
+                resource.get("description") if isinstance(resource.get("description"), str) else None,
+                resource.get("mimeType") if isinstance(resource.get("mimeType"), str) else resource.get("mime_type"),
+                self.dumps_json(resource.get("annotations") or {}),
+                self.dumps_json(resource),
+            )
+            if existing:
+                await self.db.execute(
+                    """
+                    UPDATE service_resources
+                    SET name = ?, title = ?, description = ?, mime_type = ?, annotations = ?, metadata_json = ?,
+                        status = 'active', last_seen_at = CURRENT_TIMESTAMP, cached_at = CURRENT_TIMESTAMP, disabled_at = NULL
+                    WHERE id = ?
+                    """,
+                    values[3:] + (resource_id,),
+                )
+            else:
+                await self.db.execute(
+                    """
+                    INSERT INTO service_resources
+                      (id, service_id, uri, name, title, description, mime_type, annotations, metadata_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    values,
+                )
+            saved_item = await self.get_service_resource(resource_id)
+            if saved_item:
+                saved.append(saved_item)
+        await self.db.commit()
+        return saved
+
+    async def replace_service_resource_templates(self, service_id: str, templates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        await self.db.execute("UPDATE service_resource_templates SET status = 'disabled', disabled_at = CURRENT_TIMESTAMP WHERE service_id = ?", (service_id,))
+        saved: list[dict[str, Any]] = []
+        for template in templates:
+            uri_template = template.get("uriTemplate") or template.get("uri_template")
+            if not isinstance(uri_template, str) or not uri_template:
+                continue
+            cursor = await self.db.execute(
+                "SELECT id FROM service_resource_templates WHERE service_id = ? AND uri_template = ?",
+                (service_id, uri_template),
+            )
+            existing = await cursor.fetchone()
+            template_id = existing["id"] if existing else new_id("restpl")
+            values = (
+                template_id,
+                service_id,
+                uri_template,
+                template.get("name") if isinstance(template.get("name"), str) else None,
+                template.get("title") if isinstance(template.get("title"), str) else None,
+                template.get("description") if isinstance(template.get("description"), str) else None,
+                template.get("mimeType") if isinstance(template.get("mimeType"), str) else template.get("mime_type"),
+                self.dumps_json(template.get("annotations") or {}),
+                self.dumps_json(template),
+            )
+            if existing:
+                await self.db.execute(
+                    """
+                    UPDATE service_resource_templates
+                    SET name = ?, title = ?, description = ?, mime_type = ?, annotations = ?, metadata_json = ?,
+                        status = 'active', last_seen_at = CURRENT_TIMESTAMP, cached_at = CURRENT_TIMESTAMP, disabled_at = NULL
+                    WHERE id = ?
+                    """,
+                    values[3:] + (template_id,),
+                )
+            else:
+                await self.db.execute(
+                    """
+                    INSERT INTO service_resource_templates
+                      (id, service_id, uri_template, name, title, description, mime_type, annotations, metadata_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    values,
+                )
+            saved_item = await self.get_service_resource_template(template_id)
+            if saved_item:
+                saved.append(saved_item)
+        await self.db.commit()
+        return saved
+
+    async def replace_service_prompts(self, service_id: str, prompts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        await self.db.execute("UPDATE service_prompts SET status = 'disabled', disabled_at = CURRENT_TIMESTAMP WHERE service_id = ?", (service_id,))
+        saved: list[dict[str, Any]] = []
+        for prompt in prompts:
+            name = prompt.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            cursor = await self.db.execute("SELECT id FROM service_prompts WHERE service_id = ? AND name = ?", (service_id, name))
+            existing = await cursor.fetchone()
+            prompt_id = existing["id"] if existing else new_id("prm")
+            values = (
+                prompt_id,
+                service_id,
+                name,
+                prompt.get("title") if isinstance(prompt.get("title"), str) else None,
+                prompt.get("description") if isinstance(prompt.get("description"), str) else None,
+                self.dumps_json_array(prompt.get("arguments") or []),
+                self.dumps_json(prompt),
+            )
+            if existing:
+                await self.db.execute(
+                    """
+                    UPDATE service_prompts
+                    SET title = ?, description = ?, arguments_json = ?, metadata_json = ?,
+                        status = 'active', last_seen_at = CURRENT_TIMESTAMP, cached_at = CURRENT_TIMESTAMP, disabled_at = NULL
+                    WHERE id = ?
+                    """,
+                    values[3:] + (prompt_id,),
+                )
+            else:
+                await self.db.execute(
+                    """
+                    INSERT INTO service_prompts
+                      (id, service_id, name, title, description, arguments_json, metadata_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    values,
+                )
+            saved_item = await self.get_service_prompt(prompt_id)
+            if saved_item:
+                saved.append(saved_item)
+        await self.db.commit()
+        return saved
+
+    async def get_service_resource(self, resource_id: str) -> dict[str, Any] | None:
+        cursor = await self.db.execute("SELECT * FROM service_resources WHERE id = ?", (resource_id,))
+        return self._row_to_dict(await cursor.fetchone(), json_fields=("annotations", "metadata_json"))
+
+    async def get_service_resource_template(self, template_id: str) -> dict[str, Any] | None:
+        cursor = await self.db.execute("SELECT * FROM service_resource_templates WHERE id = ?", (template_id,))
+        return self._row_to_dict(await cursor.fetchone(), json_fields=("annotations", "metadata_json"))
+
+    async def get_service_prompt(self, prompt_id: str) -> dict[str, Any] | None:
+        cursor = await self.db.execute("SELECT * FROM service_prompts WHERE id = ?", (prompt_id,))
+        return self._row_to_dict(await cursor.fetchone(), json_fields=("arguments_json", "metadata_json"))
 
     # ------------------------------------------------------------------
     # Toolbox / catalog
@@ -1032,6 +1594,8 @@ class Repository:
                    st.input_schema_json, st.output_schema_json, st.structured_output_schema_json,
                    st.annotations, st.icons_json, st.schema_hash, st.risk_level, st.metadata_scan,
                    ta.exposed_name, s.slug AS service_slug, s.endpoint_url, s.auth_type, s.status AS service_status,
+                   s.transport_type, s.stdio_command, s.stdio_args, s.stdio_env, s.stdio_cwd,
+                   s.stdio_idle_timeout_seconds,
                    COALESCE(tto.enabled, 1) AS override_enabled,
                    COALESCE(tto.permission_level, 'callable') AS permission_level
             FROM toolbox_items tbi
@@ -1057,6 +1621,8 @@ class Repository:
                     "annotations",
                     "icons_json",
                     "metadata_scan",
+                    "stdio_args",
+                    "stdio_env",
                 ),
             )
             or {}
@@ -1065,6 +1631,91 @@ class Repository:
         for item in items:
             item["override_enabled"] = bool(item.get("override_enabled", True))
         return items
+
+    async def list_catalog_resources(self, toolbox_id: str = DEFAULT_TOOLBOX_ID) -> list[dict[str, Any]]:
+        cursor = await self.db.execute(
+            """
+            SELECT sr.*, s.slug AS service_slug, s.endpoint_url, s.transport_type,
+                   s.stdio_command, s.stdio_args, s.stdio_env, s.stdio_cwd, s.stdio_idle_timeout_seconds
+            FROM toolbox_items tbi
+            JOIN mcp_services s ON s.id = tbi.service_id AND s.deleted_at IS NULL AND s.status = 'active'
+            JOIN service_resources sr ON sr.service_id = s.id AND sr.status = 'active'
+            WHERE tbi.toolbox_id = ? AND tbi.deleted_at IS NULL AND tbi.enabled = 1
+            ORDER BY tbi.position ASC, s.slug ASC, sr.name ASC, sr.uri ASC
+            """,
+            (toolbox_id,),
+        )
+        return [
+            self._row_to_dict(row, json_fields=("annotations", "metadata_json", "stdio_args", "stdio_env")) or {}
+            for row in await cursor.fetchall()
+        ]
+
+    async def list_catalog_resource_templates(self, toolbox_id: str = DEFAULT_TOOLBOX_ID) -> list[dict[str, Any]]:
+        cursor = await self.db.execute(
+            """
+            SELECT srt.*, s.slug AS service_slug
+            FROM toolbox_items tbi
+            JOIN mcp_services s ON s.id = tbi.service_id AND s.deleted_at IS NULL AND s.status = 'active'
+            JOIN service_resource_templates srt ON srt.service_id = s.id AND srt.status = 'active'
+            WHERE tbi.toolbox_id = ? AND tbi.deleted_at IS NULL AND tbi.enabled = 1
+            ORDER BY tbi.position ASC, s.slug ASC, srt.name ASC, srt.uri_template ASC
+            """,
+            (toolbox_id,),
+        )
+        return [self._row_to_dict(row, json_fields=("annotations", "metadata_json")) or {} for row in await cursor.fetchall()]
+
+    async def list_catalog_prompts(self, toolbox_id: str = DEFAULT_TOOLBOX_ID) -> list[dict[str, Any]]:
+        cursor = await self.db.execute(
+            """
+            SELECT sp.*, s.slug AS service_slug, s.endpoint_url, s.transport_type,
+                   s.stdio_command, s.stdio_args, s.stdio_env, s.stdio_cwd, s.stdio_idle_timeout_seconds
+            FROM toolbox_items tbi
+            JOIN mcp_services s ON s.id = tbi.service_id AND s.deleted_at IS NULL AND s.status = 'active'
+            JOIN service_prompts sp ON sp.service_id = s.id AND sp.status = 'active'
+            WHERE tbi.toolbox_id = ? AND tbi.deleted_at IS NULL AND tbi.enabled = 1
+            ORDER BY tbi.position ASC, s.slug ASC, sp.name ASC
+            """,
+            (toolbox_id,),
+        )
+        return [
+            self._row_to_dict(row, json_fields=("arguments_json", "metadata_json", "stdio_args", "stdio_env")) or {}
+            for row in await cursor.fetchall()
+        ]
+
+    async def get_catalog_resource_by_uri(self, uri: str, toolbox_id: str = DEFAULT_TOOLBOX_ID) -> dict[str, Any] | None:
+        cursor = await self.db.execute(
+            """
+            SELECT sr.*, s.slug AS service_slug, s.endpoint_url, s.transport_type,
+                   s.stdio_command, s.stdio_args, s.stdio_env, s.stdio_cwd, s.stdio_idle_timeout_seconds
+            FROM toolbox_items tbi
+            JOIN mcp_services s ON s.id = tbi.service_id AND s.deleted_at IS NULL AND s.status = 'active'
+            JOIN service_resources sr ON sr.service_id = s.id AND sr.status = 'active'
+            WHERE tbi.toolbox_id = ? AND tbi.deleted_at IS NULL AND tbi.enabled = 1 AND sr.uri = ?
+            ORDER BY tbi.position ASC
+            LIMIT 1
+            """,
+            (toolbox_id, uri),
+        )
+        return self._row_to_dict(await cursor.fetchone(), json_fields=("annotations", "metadata_json", "stdio_args", "stdio_env"))
+
+    async def get_catalog_prompt_by_exposed_name(self, exposed_name: str, toolbox_id: str = DEFAULT_TOOLBOX_ID) -> dict[str, Any] | None:
+        if "." not in exposed_name:
+            return None
+        service_slug, prompt_name = exposed_name.split(".", 1)
+        cursor = await self.db.execute(
+            """
+            SELECT sp.*, s.slug AS service_slug, s.endpoint_url, s.transport_type,
+                   s.stdio_command, s.stdio_args, s.stdio_env, s.stdio_cwd, s.stdio_idle_timeout_seconds
+            FROM toolbox_items tbi
+            JOIN mcp_services s ON s.id = tbi.service_id AND s.deleted_at IS NULL AND s.status = 'active'
+            JOIN service_prompts sp ON sp.service_id = s.id AND sp.status = 'active'
+            WHERE tbi.toolbox_id = ? AND tbi.deleted_at IS NULL AND tbi.enabled = 1
+              AND s.slug = ? AND sp.name = ?
+            LIMIT 1
+            """,
+            (toolbox_id, service_slug, prompt_name),
+        )
+        return self._row_to_dict(await cursor.fetchone(), json_fields=("arguments_json", "metadata_json", "stdio_args", "stdio_env"))
 
     # ------------------------------------------------------------------
     # Credentials / jobs
@@ -1172,312 +1823,25 @@ class Repository:
         cursor = await self.db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
         return self._row_to_dict(await cursor.fetchone(), json_fields=("payload", "result", "error"))
 
-
-SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS users (
-  id TEXT PRIMARY KEY,
-  email TEXT NOT NULL UNIQUE DEFAULT 'me@local',
-  name TEXT NOT NULL DEFAULT 'Personal',
-  avatar_url TEXT,
-  locale TEXT NOT NULL DEFAULT 'ko',
-  is_active INTEGER NOT NULL DEFAULT 1,
-  bootstrap_completed_at TIMESTAMP,
-  last_login_at TIMESTAMP,
-  workspace_id TEXT,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  deleted_at TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS toolboxes (
-  id TEXT PRIMARY KEY,
-  owner_user_id TEXT NOT NULL REFERENCES users(id),
-  workspace_id TEXT,
-  name TEXT NOT NULL,
-  slug TEXT,
-  is_default INTEGER NOT NULL DEFAULT 0,
-  visibility TEXT NOT NULL DEFAULT 'private',
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  deleted_at TIMESTAMP
-);
-CREATE UNIQUE INDEX IF NOT EXISTS uq_default_toolbox_per_user ON toolboxes(owner_user_id) WHERE is_default = 1 AND deleted_at IS NULL;
-CREATE INDEX IF NOT EXISTS idx_toolboxes_owner ON toolboxes(owner_user_id);
-
-CREATE TABLE IF NOT EXISTS mcp_services (
-  id TEXT PRIMARY KEY,
-  owner_user_id TEXT NOT NULL REFERENCES users(id),
-  workspace_id TEXT,
-  name TEXT NOT NULL,
-  slug TEXT NOT NULL,
-  description TEXT,
-  endpoint_url TEXT NOT NULL,
-  auth_type TEXT NOT NULL DEFAULT 'none' CHECK (auth_type IN ('none', 'bearer_token', 'api_key_header', 'oauth_delegated', 'service_account')),
-  visibility TEXT NOT NULL DEFAULT 'private' CHECK (visibility IN ('private', 'unlisted', 'public', 'review_pending', 'rejected')),
-  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'validating', 'active', 'error', 'disabled', 'auth_required', 'deleted')),
-  category TEXT,
-  logo_url TEXT,
-  homepage_url TEXT,
-  documentation_url TEXT,
-  risk_level TEXT NOT NULL DEFAULT 'unknown' CHECK (risk_level IN ('unknown', 'low', 'medium', 'high', 'critical')),
-  validation_summary TEXT NOT NULL DEFAULT '{}',
-  last_validated_at TIMESTAMP,
-  last_tool_refresh_at TIMESTAMP,
-  protocol_version TEXT,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  deleted_at TIMESTAMP
-);
-CREATE UNIQUE INDEX IF NOT EXISTS uq_mcp_services_owner_slug_active ON mcp_services(owner_user_id, slug) WHERE deleted_at IS NULL;
-CREATE INDEX IF NOT EXISTS idx_mcp_services_owner ON mcp_services(owner_user_id);
-CREATE INDEX IF NOT EXISTS idx_mcp_services_status ON mcp_services(status);
-
-CREATE TABLE IF NOT EXISTS service_tools (
-  id TEXT PRIMARY KEY,
-  service_id TEXT NOT NULL REFERENCES mcp_services(id) ON DELETE CASCADE,
-  original_name TEXT NOT NULL,
-  title TEXT,
-  description TEXT,
-  input_schema_json TEXT NOT NULL DEFAULT '{}',
-  output_schema_json TEXT,
-  structured_output_schema_json TEXT,
-  annotations TEXT NOT NULL DEFAULT '{}',
-  icons_json TEXT NOT NULL DEFAULT '[]',
-  schema_hash TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled', 'deprecated')),
-  risk_level TEXT NOT NULL DEFAULT 'unknown',
-  metadata_scan TEXT NOT NULL DEFAULT '{}',
-  first_seen_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  last_seen_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  cached_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  disabled_at TIMESTAMP,
-  UNIQUE(service_id, original_name)
-);
-CREATE INDEX IF NOT EXISTS idx_service_tools_service ON service_tools(service_id);
-CREATE INDEX IF NOT EXISTS idx_service_tools_hash ON service_tools(schema_hash);
-
-CREATE TABLE IF NOT EXISTS tool_aliases (
-  id TEXT PRIMARY KEY,
-  service_tool_id TEXT NOT NULL REFERENCES service_tools(id) ON DELETE CASCADE,
-  exposed_name TEXT NOT NULL,
-  is_primary INTEGER NOT NULL DEFAULT 1,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  deprecated_at TIMESTAMP
-);
-CREATE UNIQUE INDEX IF NOT EXISTS uq_tool_aliases_exposed_name_active ON tool_aliases(exposed_name) WHERE deprecated_at IS NULL;
-CREATE INDEX IF NOT EXISTS idx_tool_aliases_tool ON tool_aliases(service_tool_id);
-CREATE UNIQUE INDEX IF NOT EXISTS uq_primary_alias_per_tool ON tool_aliases(service_tool_id) WHERE is_primary = 1 AND deprecated_at IS NULL;
-
-CREATE TABLE IF NOT EXISTS service_validation_runs (
-  id TEXT PRIMARY KEY,
-  service_id TEXT NOT NULL REFERENCES mcp_services(id) ON DELETE CASCADE,
-  triggered_by TEXT NOT NULL DEFAULT 'user' CHECK (triggered_by IN ('user', 'system_ttl', 'system_event', 'manual_refresh')),
-  status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'running', 'success', 'failed')),
-  stages TEXT NOT NULL DEFAULT '[]',
-  tools_found INTEGER NOT NULL DEFAULT 0,
-  errors TEXT NOT NULL DEFAULT '[]',
-  warnings TEXT NOT NULL DEFAULT '[]',
-  started_at TIMESTAMP,
-  finished_at TIMESTAMP,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS idx_val_runs_service ON service_validation_runs(service_id, created_at DESC);
-
-CREATE TABLE IF NOT EXISTS toolbox_items (
-  id TEXT PRIMARY KEY,
-  toolbox_id TEXT NOT NULL REFERENCES toolboxes(id) ON DELETE CASCADE,
-  service_id TEXT NOT NULL REFERENCES mcp_services(id),
-  enabled INTEGER NOT NULL DEFAULT 1,
-  added_by_user_id TEXT NOT NULL REFERENCES users(id),
-  position INTEGER NOT NULL DEFAULT 0,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  deleted_at TIMESTAMP
-);
-CREATE UNIQUE INDEX IF NOT EXISTS uq_toolbox_items_active ON toolbox_items(toolbox_id, service_id) WHERE deleted_at IS NULL;
-CREATE INDEX IF NOT EXISTS idx_tbi_toolbox ON toolbox_items(toolbox_id);
-
-CREATE TABLE IF NOT EXISTS toolbox_tool_overrides (
-  id TEXT PRIMARY KEY,
-  toolbox_id TEXT NOT NULL REFERENCES toolboxes(id) ON DELETE CASCADE,
-  service_id TEXT NOT NULL REFERENCES mcp_services(id) ON DELETE CASCADE,
-  service_tool_id TEXT NOT NULL REFERENCES service_tools(id) ON DELETE CASCADE,
-  enabled INTEGER NOT NULL DEFAULT 1,
-  permission_level TEXT NOT NULL DEFAULT 'callable' CHECK (permission_level IN ('hidden', 'visible_only', 'callable')),
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE(toolbox_id, service_tool_id)
-);
-CREATE INDEX IF NOT EXISTS idx_tto_toolbox_service ON toolbox_tool_overrides(toolbox_id, service_id);
-CREATE INDEX IF NOT EXISTS idx_tto_tool ON toolbox_tool_overrides(service_tool_id);
-
-CREATE TABLE IF NOT EXISTS service_credentials (
-  id TEXT PRIMARY KEY,
-  service_id TEXT NOT NULL REFERENCES mcp_services(id) ON DELETE CASCADE,
-  owner_user_id TEXT NOT NULL REFERENCES users(id),
-  credential_type TEXT NOT NULL CHECK (credential_type IN ('none', 'bearer_token', 'api_key_header', 'oauth_delegated', 'service_account')),
-  secret_ref TEXT NOT NULL,
-  header_name TEXT,
-  masked_value TEXT,
-  scopes TEXT NOT NULL DEFAULT '[]',
-  status TEXT NOT NULL DEFAULT 'connected' CHECK (status IN ('not_connected', 'connected', 'expired', 'revoked', 'error')),
-  last_error_code TEXT,
-  last_error_message TEXT,
-  expires_at TIMESTAMP,
-  rotated_at TIMESTAMP,
-  revoked_at TIMESTAMP,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE UNIQUE INDEX IF NOT EXISTS uq_service_credentials_service_active ON service_credentials(service_id) WHERE revoked_at IS NULL;
-
-CREATE TABLE IF NOT EXISTS external_connections (
-  id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL REFERENCES users(id),
-  toolbox_id TEXT REFERENCES toolboxes(id),
-  client_type TEXT NOT NULL CHECK (client_type IN ('codex_cli', 'claude_code', 'claude', 'claude_desktop', 'chatgpt', 'openclaw', 'cursor', 'windsurf', 'other')),
-  client_name TEXT,
-  oauth_client_id TEXT,
-  protocol_version TEXT,
-  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
-  scopes TEXT NOT NULL DEFAULT '[]',
-  client_quirks TEXT NOT NULL DEFAULT '{}',
-  created_ip TEXT,
-  created_user_agent TEXT,
-  last_used_at TIMESTAMP,
-  revoked_at TIMESTAMP,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS idx_ext_user ON external_connections(user_id);
-CREATE INDEX IF NOT EXISTS idx_ext_client ON external_connections(client_type, status);
-
-CREATE TABLE IF NOT EXISTS connection_tokens (
-  id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL REFERENCES users(id),
-  toolbox_id TEXT REFERENCES toolboxes(id),
-  token_hash TEXT NOT NULL UNIQUE,
-  client_type TEXT NOT NULL,
-  requested_scopes TEXT NOT NULL DEFAULT '[]',
-  created_ip TEXT,
-  created_user_agent TEXT,
-  used_ip TEXT,
-  used_user_agent TEXT,
-  expires_at TIMESTAMP NOT NULL,
-  used_at TIMESTAMP,
-  revoked_at TIMESTAMP,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS idx_otk_expires ON connection_tokens(expires_at);
-
-CREATE TABLE IF NOT EXISTS personal_access_tokens (
-  id TEXT PRIMARY KEY,
-  external_connection_id TEXT REFERENCES external_connections(id) ON DELETE CASCADE,
-  user_id TEXT NOT NULL REFERENCES users(id),
-  token_hash TEXT NOT NULL,
-  token_prefix TEXT NOT NULL,
-  scopes TEXT NOT NULL DEFAULT '[]',
-  protocol_version TEXT,
-  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
-  last_used_at TIMESTAMP,
-  expires_at TIMESTAMP,
-  revoked_at TIMESTAMP,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT chk_pat_revoked_consistency CHECK (
-    (status = 'revoked' AND revoked_at IS NOT NULL) OR
-    (status = 'active' AND revoked_at IS NULL)
-  )
-);
-CREATE UNIQUE INDEX IF NOT EXISTS uq_pat_hash_active ON personal_access_tokens(token_hash) WHERE revoked_at IS NULL;
-CREATE INDEX IF NOT EXISTS idx_pat_external_conn ON personal_access_tokens(external_connection_id);
-CREATE INDEX IF NOT EXISTS idx_pat_user ON personal_access_tokens(user_id);
-CREATE INDEX IF NOT EXISTS idx_pat_status_revoked ON personal_access_tokens(status, revoked_at);
-CREATE INDEX IF NOT EXISTS idx_pat_expires ON personal_access_tokens(expires_at) WHERE expires_at IS NOT NULL AND revoked_at IS NULL;
-
-CREATE TABLE IF NOT EXISTS mcp_sessions (
-  id TEXT PRIMARY KEY,
-  session_id TEXT NOT NULL UNIQUE,
-  user_id TEXT NOT NULL REFERENCES users(id),
-  external_connection_id TEXT REFERENCES external_connections(id),
-  client_name TEXT,
-  client_version TEXT,
-  protocol_version TEXT,
-  capabilities_json TEXT NOT NULL DEFAULT '{}',
-  status TEXT NOT NULL DEFAULT 'active',
-  initialized_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  last_seen_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  expires_at TIMESTAMP,
-  terminated_at TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS idx_sess_user ON mcp_sessions(user_id);
-
-CREATE TABLE IF NOT EXISTS tool_invocations (
-  id TEXT PRIMARY KEY,
-  request_id TEXT,
-  user_id TEXT NOT NULL REFERENCES users(id),
-  external_connection_id TEXT REFERENCES external_connections(id),
-  toolbox_id TEXT REFERENCES toolboxes(id),
-  service_id TEXT REFERENCES mcp_services(id),
-  service_tool_id TEXT REFERENCES service_tools(id),
-  session_id TEXT,
-  method TEXT,
-  tool_name TEXT,
-  exposed_tool_name TEXT,
-  downstream_tool_name TEXT,
-  status TEXT NOT NULL CHECK (status IN ('success', 'error', 'timeout', 'cancelled', 'policy_denied', 'auth_failed', 'rate_limited')),
-  latency_ms INTEGER,
-  downstream_latency_ms INTEGER,
-  error_code TEXT,
-  error_message TEXT,
-  input_size_bytes INTEGER,
-  output_size_bytes INTEGER,
-  protocol_version TEXT,
-  idempotency_key TEXT,
-  client_ip TEXT,
-  user_agent TEXT,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS idx_inv_user_created ON tool_invocations(user_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_inv_service_created ON tool_invocations(service_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_inv_request ON tool_invocations(request_id);
-CREATE INDEX IF NOT EXISTS idx_inv_idempotency ON tool_invocations(idempotency_key) WHERE idempotency_key IS NOT NULL;
-
-CREATE TABLE IF NOT EXISTS audit_logs (
-  id TEXT PRIMARY KEY,
-  request_id TEXT,
-  actor_user_id TEXT REFERENCES users(id),
-  action TEXT NOT NULL,
-  resource_type TEXT NOT NULL,
-  resource_id TEXT,
-  ip TEXT,
-  user_agent TEXT,
-  metadata TEXT NOT NULL DEFAULT '{}',
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS idx_aud_actor_created ON audit_logs(actor_user_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_aud_resource ON audit_logs(resource_type, resource_id);
-
-CREATE TABLE IF NOT EXISTS debug_traces (
-  id TEXT PRIMARY KEY,
-  invocation_id TEXT NOT NULL REFERENCES tool_invocations(id) ON DELETE CASCADE,
-  arguments_json TEXT,
-  result_json TEXT,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  expires_at TIMESTAMP NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_dt_expires ON debug_traces(expires_at);
-
-CREATE TABLE IF NOT EXISTS jobs (
-  id TEXT PRIMARY KEY,
-  kind TEXT NOT NULL CHECK (kind IN ('service_validation', 'service_refresh', 'credential_rotate', 'export', 'cleanup')),
-  status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'running', 'success', 'failed', 'cancelled')),
-  progress REAL NOT NULL DEFAULT 0.0,
-  payload TEXT NOT NULL DEFAULT '{}',
-  result TEXT,
-  error TEXT,
-  started_at TIMESTAMP,
-  finished_at TIMESTAMP,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
-"""
+    async def mark_stuck_jobs_failed(self, *, max_age_seconds: int, now_epoch: float | None = None) -> int:
+        now_expr = "strftime('%s','now')" if now_epoch is None else "?"
+        params: list[Any] = []
+        if now_epoch is not None:
+            params.append(float(now_epoch))
+        params.append(max(1, int(max_age_seconds)))
+        cursor = await self.db.execute(
+            f"""
+            UPDATE jobs
+            SET status = 'failed',
+                error = ?,
+                finished_at = CURRENT_TIMESTAMP
+            WHERE status IN ('queued', 'running')
+              AND ({now_expr} - strftime('%s', COALESCE(started_at, created_at))) >= ?
+            """,
+            [
+                self.dumps_json({"code": "stuck_job_reaped", "message": "Job exceeded max runtime and was marked failed"}),
+                *params,
+            ],
+        )
+        await self.db.commit()
+        return int(cursor.rowcount or 0)

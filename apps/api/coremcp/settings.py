@@ -5,6 +5,14 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+DEFAULT_CORS_ALLOWED_ORIGINS = (
+    "http://localhost:3000,"
+    "http://localhost:3003,"
+    "http://127.0.0.1:3000,"
+    "http://127.0.0.1:3003"
+)
+
+
 class Settings(BaseSettings):
     """Runtime settings loaded from environment variables."""
 
@@ -27,8 +35,31 @@ class Settings(BaseSettings):
     downstream_read_timeout_seconds: float = Field(
         default=30.0, alias="COREMCP_DOWNSTREAM_READ_TIMEOUT_SECONDS"
     )
+    service_health_probe_enabled: bool = Field(default=True, alias="COREMCP_SERVICE_HEALTH_PROBE_ENABLED")
+    service_health_probe_interval_seconds: float = Field(
+        default=60.0, alias="COREMCP_SERVICE_HEALTH_PROBE_INTERVAL_SECONDS"
+    )
+    service_health_probe_timeout_seconds: float = Field(
+        default=2.0, alias="COREMCP_SERVICE_HEALTH_PROBE_TIMEOUT_SECONDS"
+    )
+    initialize_downstream_timeout_seconds: float = Field(
+        default=2.0, alias="COREMCP_INITIALIZE_DOWNSTREAM_TIMEOUT_SECONDS"
+    )
     downstream_max_response_bytes: int = Field(
         default=1024 * 1024, alias="COREMCP_DOWNSTREAM_MAX_RESPONSE_BYTES"
+    )
+    max_request_body_bytes: int = Field(default=1024 * 1024, alias="COREMCP_MAX_REQUEST_BODY_BYTES")
+    stdio_max_concurrent_processes: int = Field(
+        default=8, alias="COREMCP_STDIO_MAX_CONCURRENT_PROCESSES"
+    )
+    stdio_default_idle_timeout_seconds: int = Field(
+        default=300, alias="COREMCP_STDIO_DEFAULT_IDLE_TIMEOUT_SECONDS"
+    )
+    auth_rate_limit_per_minute: int = Field(default=60, alias="COREMCP_AUTH_RATE_LIMIT_PER_MINUTE")
+    mcp_rate_limit_per_minute: int = Field(default=120, alias="COREMCP_MCP_RATE_LIMIT_PER_MINUTE")
+    cors_allowed_origins: str = Field(
+        default=DEFAULT_CORS_ALLOWED_ORIGINS,
+        alias="COREMCP_CORS_ALLOWED_ORIGINS",
     )
     auth_mode: str = Field(default="static_bearer", alias="AUTH_MODE")
     expose_resource_metadata_in_static_mode: bool = Field(
@@ -68,6 +99,10 @@ class Settings(BaseSettings):
     @property
     def ssrf_allow_cidr_list(self) -> list[str]:
         return [cidr.strip() for cidr in self.ssrf_allow_cidrs.split(",") if cidr.strip()]
+
+    @property
+    def cors_allowed_origin_list(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_allowed_origins.split(",") if origin.strip()]
 
 
 @lru_cache

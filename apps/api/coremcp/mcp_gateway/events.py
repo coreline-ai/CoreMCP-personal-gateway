@@ -69,6 +69,9 @@ class ListChangedEventBus:
 
         for queue in subscribers:
             if queue.full():
+                # list_changed is a coalescing invalidation signal. A slow SSE
+                # consumer only needs the newest "catalog changed" notice, so
+                # drop the oldest queued event instead of blocking publishers.
                 try:
                     queue.get_nowait()
                 except asyncio.QueueEmpty:

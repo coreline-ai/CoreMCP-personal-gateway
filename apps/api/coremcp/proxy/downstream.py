@@ -1,4 +1,5 @@
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -50,14 +51,15 @@ class DownstreamMcpClient:
         safety_result: UrlSafetyResult | None = None,
         expect_response: bool = True,
         correlation_id: str | None = None,
+        timeout: httpx.Timeout | float | None = None,
     ) -> dict[str, Any]:
         request_url = url or self.url
         if url_safety_checker is not None:
             try:
                 if safety_result is not None:
-                    url_safety_checker.assert_same_safe_destination(safety_result, request_url)
+                    safety_result = url_safety_checker.assert_same_safe_destination(safety_result, request_url)
                 else:
-                    url_safety_checker.assert_safe(request_url)
+                    safety_result = url_safety_checker.assert_safe(request_url)
             except UrlSafetyError as exc:
                 raise DownstreamMcpError(f"unsafe downstream endpoint: {exc}", code=-32003) from exc
 
@@ -84,7 +86,24 @@ class DownstreamMcpClient:
                     headers[name] = value
 
         try:
-            response = await self.client.post(request_url, json=payload, headers=headers, follow_redirects=False)
+            send_url = request_url
+            extensions: dict[str, Any] | None = None
+            if safety_result is not None:
+                send_url, pinned_host_header, pinned_sni_hostname = self._pinned_destination(request_url, safety_result)
+                if pinned_host_header:
+                    headers["Host"] = pinned_host_header
+                if pinned_sni_hostname:
+                    extensions = {"sni_hostname": pinned_sni_hostname}
+
+            request = self.client.build_request(
+                "POST",
+                send_url,
+                json=payload,
+                headers=headers,
+                timeout=timeout,
+                extensions=extensions,
+            )
+            response = await self.client.send(request, follow_redirects=False)
             if 300 <= response.status_code < 400:
                 raise DownstreamMcpError("downstream redirect is not allowed", code=-32003)
             response.raise_for_status()
@@ -123,3 +142,29 @@ class DownstreamMcpClient:
                 raise DownstreamToolError(str(message), code=int(code))
             raise DownstreamMcpError(str(message), code=int(code))
         return data
+
+    @staticmethod
+    def _pinned_destination(request_url: str, safety_result: UrlSafetyResult) -> tuple[str, str | None, str | None]:
+        """Return an IP-pinned URL while preserving the original HTTP authority.
+
+        For DNS hosts, CoreMCP connects to the pre-validated IP address so httpx
+        does not perform another DNS lookup after SSRF validation. The original
+        host is kept in the Host header, and HTTPS keeps SNI on the original
+        hostname via httpcore's request extension.
+        """
+
+        if safety_result.allowed_by == "host_allowlist" or not safety_result.resolved_ips:
+            return request_url, None, None
+
+        original = urlparse(request_url)
+        original_host = original.hostname
+        if not original_host:
+            return request_url, None, None
+
+        pinned_ip = safety_result.resolved_ips[0]
+        pinned_url = str(httpx.URL(request_url).copy_with(host=pinned_ip))
+        host_header = original_host
+        if original.port is not None:
+            host_header = f"{host_header}:{original.port}"
+        sni_hostname = original_host if original.scheme == "https" else None
+        return pinned_url, host_header, sni_hostname

@@ -42,13 +42,13 @@ class CredentialVault(ABC):
 
 
 class FileVaultBackend(CredentialVault):
-    """Portable encrypted-at-rest placeholder for P1 local development.
+    """Legacy base64-only vault retained for old local development data.
 
-    Values are base64 encoded to prevent accidental plaintext grep/log leaks.
-    Production Mac usage should prefer KeychainBackend where available.
+    This backend is not encryption. New file-backed credentials should use
+    FernetBackend via build_vault().
     """
 
-    prefix = "fernet"
+    prefix = "legacy-base64"
 
     def __init__(self, path: Path) -> None:
         self.path = path.expanduser()
@@ -220,7 +220,8 @@ class KeychainBackend(CredentialVault):
         account = f"{service_id}:{uuid4().hex}"
         ref = f"{self.prefix}:coremcp:{account}"
         result = subprocess.run(
-            ["security", "add-generic-password", "-a", account, "-s", "coremcp", "-w", secret, "-U"],
+            ["security", "add-generic-password", "-a", account, "-s", "coremcp", "-U", "-w"],
+            input=f"{secret}\n",
             capture_output=True,
             text=True,
             check=False,

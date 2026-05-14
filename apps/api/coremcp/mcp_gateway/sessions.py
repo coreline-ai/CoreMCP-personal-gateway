@@ -10,6 +10,7 @@ class McpSession:
     initialized: bool = False
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    last_seen: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 class SessionStore:
@@ -33,7 +34,34 @@ class SessionStore:
         if session is None:
             return
         session.initialized = True
-        session.updated_at = datetime.now(UTC)
+        self.touch(session_id)
+
+    def touch(self, session_id: str | None, now: datetime | None = None) -> bool:
+        session = self.get(session_id)
+        if session is None:
+            return False
+        current = now or datetime.now(UTC)
+        session.last_seen = current
+        session.updated_at = current
+        return True
+
+    def reap_idle(self, max_idle_seconds: float, now: datetime | None = None) -> int:
+        """Delete sessions idle for at least ``max_idle_seconds`` and return count.
+
+        TODO: Wire this pure in-memory helper into the gateway operations loop
+        owned by main.py once the scheduler/inflight job reaper contract is added.
+        """
+        if max_idle_seconds < 0:
+            raise ValueError("max_idle_seconds must be >= 0")
+        current = now or datetime.now(UTC)
+        expired_ids = [
+            session_id
+            for session_id, session in self._sessions.items()
+            if (current - session.last_seen).total_seconds() >= max_idle_seconds
+        ]
+        for session_id in expired_ids:
+            self._sessions.pop(session_id, None)
+        return len(expired_ids)
 
     def delete(self, session_id: str | None) -> bool:
         if not session_id:

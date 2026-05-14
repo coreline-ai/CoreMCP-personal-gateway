@@ -42,6 +42,9 @@ class IdempotencyCache:
         while len(self._items) > self.max_entries:
             self._items.popitem(last=False)
 
+    def clear(self) -> None:
+        self._items.clear()
+
     def _purge(self) -> None:
         now = time.time()
         expired = [key for key, (expires_at, _) in self._items.items() if expires_at <= now]
