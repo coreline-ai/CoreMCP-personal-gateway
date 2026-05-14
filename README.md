@@ -66,29 +66,45 @@ CoreMCP는 본인 1명이 Mac mini에서 운영하는 protected MCP gateway다. 
 
 **한 줄 가치**: AI 클라이언트마다 MCP를 따로 등록하지 않고, 한 곳에 모아 어디서나 동일한 도구함을 쓴다.
 
-### Implementation Status — 2026-05-13
+### Implementation Status — 2026-05-14
 
 - Root monorepo scaffold, `apps/api`, `apps/fake-mcp`, `apps/web`, `packages/*`, `infra/*`가 생성되었습니다.
-- P1 backend core는 Alembic/SQLite schema, client token DB hash, service registry, toolbox catalog, 실제 Fernet/Keychain credential vault, SSRF guard, validation, DB 기반 `/mcp tools/list/call`까지 구현되었습니다.
-- OAuth optional flow는 `AUTH_MODE=oauth`에서 DCR/CIMD, authorize/code, token, JWKS, refresh rotation, revoke/introspect까지 로컬 테스트로 고정했습니다.
+- P1 backend core는 Alembic 단일 schema source, client token DB hash, service registry, toolbox catalog, 실제 Fernet/Keychain credential vault, SSRF guard, validation, DB 기반 `/mcp tools/list/call`까지 구현되었습니다.
+- OAuth optional flow는 `AUTH_MODE=oauth`에서 DCR/CIMD, authorize/code, token, JWKS, refresh rotation, revoke/introspect까지 로컬 테스트로 고정했습니다. RSA signing key는 vault reference로 보관하고, DCR client, authorization code hash, refresh token hash/family, revoked access JTI, CIMD cache는 SQLite에 영속화됩니다.
 - OAuth 미지원 client용 one-time connection token issue/exchange와 기본 off Prometheus `/metrics` endpoint를 구현하고 API 회귀 테스트로 고정했습니다.
 - 개인 도구함 tool-level override(`hidden`, `visible_only`, `callable`)와 preset(`readonly`, `dangerous_off`, `full_access`), client/OAuth scope enforcement, schema drift detail, `X-Request-ID` 전파, policy deny/audit/invocation 관측성을 구현하고 API 회귀 테스트로 고정했습니다.
+- HTTP/STDIO service transport foundation을 추가했습니다. `transport_type=stdio` service는 command/args/env/cwd metadata로 등록·검증·호출 가능하며, CoreMCP admin/client/Authorization 계열 env는 저장/전달하지 않습니다. STDIO runtime/crash snapshot은 `mcp_services` 컬럼에 영속화합니다.
+- MCP `resources/list`, `resources/read`, `resources/templates/list`, `prompts/list`, `prompts/get` live proxy를 추가해 tools-only gateway 한계를 줄였습니다. `resources/read` 대형 text/blob는 client context 보호를 위해 CoreMCP metadata와 함께 truncate합니다.
+- 운영 안정성 module로 in-memory circuit breaker, idle session reaper, stdio process client cache를 추가했고, `coremcp` CLI foundation(`doctor`, `service add/validate`, `tool call`, `token issue/revoke`, `export/import dry-run`)과 Makefile CLI thin wrappers를 제공합니다.
 - Fake downstream MCP fixture는 `initialize`, `tools/list`, `tools/call`, `ping`과 production test fixture(`cancellation`, `schema-change`, `cimd-test`, `dcr-test`, `icons-rich`)를 지원하며 12개 테스트로 고정했습니다.
-- Web Admin UI는 nonce 기반 CSP/security headers, `/services`, `/services/[id]`, `/toolbox`, `/clients`, `/settings`, `/playground`, `/logs` route split, Service Detail Tool Control, Logs filter, client 연결 카드와 Playwright CLI route smoke script를 통과했습니다.
+- Web Admin UI는 nonce 기반 CSP/security headers, `/services`, `/services/[id]`, `/toolbox`, `/clients`, `/settings`, `/playground`, `/logs` route split, Service Detail Tool Control, Services 검색/필터/sort, Playground schema form/replay/diff/pin, Logs filter, client 연결 카드와 Playwright CLI route smoke script를 통과했습니다.
+- API CORS는 `COREMCP_CORS_ALLOWED_ORIGINS` 환경변수로 허용 origin을 관리하며, Web UI ↔ API ↔ demo MCP 통합 흐름은 `make ui-smoke`로 검증합니다.
 - Web Admin 디자인 시스템은 `docs/design/`에 code-level audit, component pattern, token JSON/CSS/SVG asset으로 정리했고, `cm-*` semantic primitive를 전체 admin route에 반영했습니다.
+- Local demo MCP suite는 `apps/demo-mcp-suite`에서 8개 가상 MCP endpoint를 제공하며, 외부 credential 없이 CoreMCP service 등록/validation/도구함/preset/Playground 흐름을 시연할 수 있습니다.
 - Codex CLI `exec` 연결 helper를 추가했습니다. `make codex-install`은 Codex 전용 client token을 발급해 `~/.coremcp/codex-client-token`에 저장하고, `codex mcp add coremcp --url ... --bearer-token-env-var COREMCP_CLIENT_TOKEN` 구성을 등록합니다.
 - launchd fake-mcp/API/Web/backup/logrotate/refresh 실제 load smoke와 plist 검증을 통과했습니다. Reboot 검증은 실제 재부팅이 필요하며, Tailscale 검증은 현재 머신에 CLI가 없어 skipped 상태입니다.
 
 ---
 
 
-### Remaining Work Split — 2026-05-13
+### Remaining Work Classification — 2026-05-14
 
 | 구분 | 남은 항목 |
 |---|---|
-| 목적 부합 코드 미구현 | 없음 — P0/P1 및 연결 편의 기능 구현 완료 |
-| 외부환경 검증 필요 | actual macOS reboot recovery, Tailscale CLI install/login/Serve/ACL smoke, real external OAuth client compatibility |
-| 선택 Polish | 실제 모바일 기기 visual QA, 장기 운영 관측 튜닝 |
+| 목적 부합 core 미구현 | 현재 known blocker 없음. personal gateway 목적 범위의 core blocker는 로컬 검증 기준 해소됨 |
+| 이번 안정화 batch 완료 | STDIO process cap/default idle timeout/delete cleanup, admin `/v1` + `/mcp` fixed-window rate limit, CLI import 실제 restore/path traversal/overwrite/0600 hardening 구현 및 테스트 통과 |
+| 외부환경 검증 필요 | actual macOS reboot recovery, Tailscale CLI install/login/Serve/ACL smoke, real external OAuth client compatibility, 실제 모바일 visual QA, long soak — `make external-env-validate`, `make mobile-qa-checklist`, `make soak-check`로 운영 host에서 결과 기록 |
+| 선택 Polish | Web Admin UX polish, 관측 dashboard/metric tuning, proactive health probe tuning은 지속 개선 대상 |
+
+### Stabilization Batch Notes — 2026-05-14
+
+- 권장 commit split은 `dev-plan/implement_20260514_224500.md`에 기록되어 있습니다. 이 문서/code patch는 commit split을 **계획만** 하며, 사용자가 `commit/push`를 명시 요청하기 전에는 commit을 만들지 않습니다.
+- STDIO resource limits, admin/MCP rate limit, CLI import hardening은 통합 완료했습니다. 검증: `make test` **PASS** (API 122 + fake-mcp 12 + demo-mcp-suite 21), `pnpm lint && pnpm build && pnpm test` **PASS**, `make ui-smoke` **PASS**, `git diff --check` **PASS**.
+- 외부환경 검증 대표 명령:
+  - `make external-env-validate`
+  - `COREMCP_EXTERNAL_API_URL=https://<host>/health COREMCP_EXTERNAL_WEB_URL=https://<host>/ make external-env-validate`
+  - `make mobile-qa-checklist`
+  - `COREMCP_SOAK_DURATION_SECONDS=3600 COREMCP_SOAK_INTERVAL_SECONDS=30 make soak-check`
 
 ## 📦 Features
 
@@ -98,6 +114,7 @@ CoreMCP는 본인 1명이 Mac mini에서 운영하는 protected MCP gateway다. 
 | **Protocol** | MCP 2025-11-25 + 2025-06-18 병행 지원 (ADR-029) | implemented + tested |
 | **Authentication** | Admin file bearer + per-client DB hash token + MCP scope enforcement | implemented + tested |
 | **Codex CLI exec** | Codex MCP config 등록 + client token env wrapper + non-LLM MCP smoke | implemented + tested |
+| **Demo MCP Suite** | 8개 local demo MCP endpoint + registration payload + preset demo tools | implemented + tested |
 | **MCP Registry** | private service 등록, category/homepage/docs/logo metadata, validation, schema cache + schema diff detail | implemented + tested |
 | **Toolbox** | default toolbox, item enable/disable, tool-level override(`hidden`/`visible_only`/`callable`), preset(`readonly`/`dangerous_off`/`full_access`), dynamic catalog | implemented + tested |
 | **Tool Alias** | `service_slug.tool_name` 매핑, primary alias | implemented |
@@ -141,6 +158,7 @@ make run
 make status
 infra/scripts/ops-smoke.sh
 infra/scripts/web-route-smoke.sh
+make ui-smoke
 
 # 3. Web Admin
 open http://127.0.0.1:3003
@@ -346,6 +364,7 @@ CoreMCP는 단일 사용자 환경이지만 **SaaS급 보안 원칙**을 적용�
 | **Token boundary** | CoreMCP token은 downstream에 **절대 전달 금지** | ADR-004 |
 | **Dual token revoke** | admin 회전 / client per-connection 즉시 invalidate | ADR-030 |
 | **SSRF allowlist** | 기본 private/loopback/CGNAT 전부 차단, `ALLOW_TAILSCALE_DOWNSTREAM` 등 명시 opt-in 구현 | ADR-033 |
+| **DNS pinning** | DNS host downstream은 검증된 IP로 request URL을 pinning하고 원래 Host/SNI를 유지 | ADR-033 |
 | **CIMD validation** | `client_id` byte-exact match, content-type charset 허용, TTL fixed 1h | ADR-036 |
 | **SVG XSS 방어** | `<img>` only 렌더링, CSP `img-src 'self' data:`, `ICON_SVG_ENABLED=false` default 권장 | 06 §6.2 |
 | **AUTH_MODE 분리** | `static_bearer` default 시 `/.well-known/oauth-protected-resource` = **404** | ADR-032 |
@@ -355,6 +374,8 @@ CoreMCP는 단일 사용자 환경이지만 **SaaS급 보안 원칙**을 적용�
 | **Partial unique** | soft-delete 호환 (mcp_services, toolbox_items, tool_aliases, etc.) | ADR-035 |
 
 ---
+
+OAuth 운영 경고: `AUTH_MODE=oauth`는 개인 단일 사용자용 옵션이며 현재 별도 사람-클릭 consent UI 없이 local authorization을 자동 승인한다. Tailscale/localhost 접근 권한을 본인 장비로 제한하고, 외부 user-agent가 `/oauth/authorize`에 접근할 수 없도록 ACL/방화벽을 먼저 적용해야 한다.
 
 ## ⚙️ Configuration
 
@@ -389,6 +410,9 @@ DOWNSTREAM_CONNECT_TIMEOUT_MS=3000
 DOWNSTREAM_READ_TIMEOUT_MS=30000
 DOWNSTREAM_MAX_BODY_MB=5
 DOWNSTREAM_MAX_REDIRECTS=0
+COREMCP_SERVICE_HEALTH_PROBE_ENABLED=true
+COREMCP_SERVICE_HEALTH_PROBE_INTERVAL_SECONDS=60
+COREMCP_SERVICE_HEALTH_PROBE_TIMEOUT_SECONDS=2
 
 # SSRF (ADR-033)
 COREMCP_SSRF_ALLOW_HOSTS=127.0.0.1,localhost  # fake-mcp/local MCP 개발용

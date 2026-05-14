@@ -691,7 +691,7 @@ CREATE INDEX idx_cimd_expires ON oauth_cimd_clients(expires_at);
 16. jobs
 17. oauth_* (옵션, Phase P3+)
 
-Alembic 사용. SQLite 대상 시 `render_as_batch=True`.
+DB schema의 단일 source of truth는 Alembic migration이다. Runtime `Repository.bootstrap()`은 사용자/기본 도구함 seed만 담당하고, 테이블/컬럼/인덱스 생성은 `alembic upgrade head`가 담당한다. 신규 migration은 SQLite 대상에서 expand-only를 기본 원칙으로 하며, table rebuild/drop이 필요한 legacy compatibility migration은 guard + fixture 테스트가 있는 경우에만 허용한다.
 
 ## 15. Data Retention
 

@@ -648,6 +648,8 @@ downstream MCP 호출은 HTTPS 강제 (localhost 예외 §7.4).
 
 ## 14. Acceptance Checklist
 
+> 2026-05-14 동기화 메모: 이 체크리스트는 보안 acceptance matrix다. 미체크 항목은 현재 코드 backlog와 1:1 대응하지 않으며, 실행 완료 snapshot은 `../TESTING.md`를 우선한다. OAuth DCR/CIMD rate limit은 이번 배치에서 구현되어 `TESTING.md` snapshot에 반영되어 있다.
+
 - [ ] `/mcp` 모든 request bearer 검증
 - [ ] Bearer 비교는 hmac.compare_digest
 - [ ] CoreMCP token이 downstream으로 전달 안 됨 (integration test)
@@ -661,7 +663,7 @@ downstream MCP 호출은 HTTPS 강제 (localhost 예외 §7.4).
 - [x] one-time token hash 저장
 - [x] one-time token 1회 사용 후 invalid
 - [ ] audit events 빠짐없이 기록
-- [ ] rate limit (global) 작동
+- [x] OAuth DCR/CIMD rate limit 작동 — DCR 10/hour/IP, CIMD 30/hour/IP, 429 + Retry-After
 - [ ] Origin / CORS 정책 적용
 - [ ] admin token은 DB에 없음 (grep)
 - [ ] client token은 hash만 DB에 있음

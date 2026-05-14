@@ -3,6 +3,8 @@
 문서 버전: v1.0
 작성일: 2026-05-11
 
+> 2026-05-14 문서 동기화 메모: 이 파일은 broad QA matrix이며, 아래 unchecked box는 “현재 코드 미구현 목록”과 1:1로 대응하지 않는다. 실제로 이번 배치에서 실행·통과한 snapshot은 [`../TESTING.md`](../TESTING.md)의 **Current verification snapshot**이 정본이다. 본 문서의 오래된 미체크 항목은 external validation, 운영 반복 점검, 또는 향후 회귀 테스트 matrix일 수 있다.
+
 ---
 
 ## 1. 테스트 목표
@@ -613,23 +615,35 @@ GitHub Actions 또는 로컬:
 - E2E는 main 푸시 시 fake-mcp matrix
 
 
-## 11.1 현재 자동/운영 검증 스냅샷 — 2026-05-13
+## 11.1 현재 자동/운영 검증 스냅샷 — 2026-05-14
+
+> 상세 실행 명령과 최신 pass count는 [`../TESTING.md`](../TESTING.md)를 따른다. 이 섹션은 broad matrix 안에서 현재 분류만 요약한다.
 
 | 영역 | 결과 | 비고 |
 |---|---:|---|
-| API pytest | 49 passed | `cd apps/api && uv run pytest -q`; downstream sanitizer + tool preset + metadata regression 포함 |
+| API pytest | 122 passed | `cd apps/api && uv run pytest -q` |
 | fake-mcp pytest | 12 passed | cancellation/schema-change/cimd-test/dcr-test/icons-rich fixture 명시 테스트 포함 |
+| demo-mcp-suite pytest | pass | 8개 local demo MCP endpoint regression |
 | launchd plist lint | 6 OK | fake-mcp/api/web/backup/logrotate/refresh |
 | refresh runner smoke | pass | `python -m coremcp.refresh` no-service run exit 0 |
-| ops-smoke label logic | pass | mocked/actual `launchctl list`로 api/web/backup/logrotate/refresh label 확인 로직 검증 |
+| ops-smoke label logic | pass | actual load smoke 기준 fake-mcp/api/web/backup/logrotate/refresh label 확인 |
+| Web/Codex/UI smoke | pass | route smoke, `make ui-smoke`, `make codex-install && make codex-smoke`는 TESTING.md snapshot 참조 |
 
-잔여 항목 구분:
+Remaining Work Classification:
 
 | 구분 | 항목 |
 |---|---|
-| 목적 부합 코드 미구현 | 없음 — one-time token, `/metrics`, service detail, cancellation downstream forward 포함 구현 완료 |
-| 외부환경 검증 필요 | actual reboot recovery, Tailscale CLI install/login/Serve/ACL, real external OAuth client compatibility |
-| 선택 Polish | 실제 모바일 기기 visual QA, 장기 운영 관측 튜닝 |
+| 목적 부합 core 미구현 | 현재 known blocker 없음. personal gateway 목적 범위의 core blocker는 로컬 검증 기준 해소됨 |
+| 이번 안정화 batch 완료 | STDIO process cap/default idle timeout/delete cleanup, admin `/v1` + `/mcp` fixed-window rate limit, CLI import 실제 restore/path traversal/overwrite/0600 hardening 구현 및 테스트 통과 |
+| 외부환경 검증 필요 | actual reboot recovery, Tailscale CLI install/login/Serve/ACL, real external OAuth client compatibility, 실제 모바일 기기 visual QA, long soak — 운영 host에서 helper 명령으로 결과 기록 |
+| 선택 Polish | Web Admin UX polish, 관측 dashboard/metric tuning, proactive health probe tuning |
+
+이번 안정화 batch 검증 결과:
+
+- STDIO resource limits, admin/MCP rate limit, CLI import hardening은 통합 완료했고 관련 단독 테스트와 전체 smoke가 통과했다.
+- 검증: `make test` **PASS** (API 122 + fake-mcp 12 + demo-mcp-suite 21), `pnpm lint && pnpm build && pnpm test` **PASS**, `make ui-smoke` **PASS**, `make external-env-validate` **PASS with Tailscale/external URL skips**, `git diff --check` **PASS**.
+- Commit split은 권장 계획이며 이 문서 patch에서는 수행하지 않는다.
+- 외부환경 검증은 `make external-env-validate`, `make mobile-qa-checklist`, `COREMCP_SOAK_DURATION_SECONDS=3600 COREMCP_SOAK_INTERVAL_SECONDS=30 make soak-check` 결과를 운영 host 기준으로 기록한다.
 
 ---
 
@@ -668,7 +682,7 @@ GitHub Actions 또는 로컬:
 - [ ] launchd 부트 자동 시작 + 5분 내 정상화 — 실제 reboot 후 수동 확인 필요
 - [ ] Tailscale 외부 접근 동작 — CLI 설치/로그인 후 확인 필요
 - [x] daily backup 실행
-- [x] log rotation 동작 — script/plist/label logic 검증, actual label load는 운영 host 재로드 후 확인
+- [x] log rotation 동작 — script/plist/label logic 및 launchd load smoke 검증, actual reboot 후 지속성은 외부환경 검증
 - [x] listChanged emission 동작
 
 ---

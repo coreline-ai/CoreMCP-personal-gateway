@@ -5,6 +5,8 @@
 
 본 문서는 개인 Mac mini 환경에서 실제로 발생 가능한 risk만 추린다. SaaS급 ATO 방어, refresh token theft, compliance violation 등은 `production_docs_donotuse/11-risk-review.md` 참조.
 
+> 2026-05-14 동기화 메모: 본 문서의 Acceptance/Pre-Beta 체크리스트는 risk 운영 점검표다. 미체크 항목은 자동으로 “코드 미구현”을 뜻하지 않으며, 실제 reboot/Tailscale/mobile/long soak처럼 운영 환경에서 반복 확인해야 하는 항목을 포함한다. 현재 실행 완료 snapshot과 remaining work 분류는 [`../TESTING.md`](../TESTING.md)를 우선한다.
+
 ---
 
 ## 1. 적용 가능한 Risk Matrix
@@ -301,6 +303,8 @@ admin token 회전 + client token 일괄 revoke 누락 시 보안 hole. 또는 e
 
 ## 17. Pre-Beta Checklist (개인 컨텍스트)
 
+아래 목록은 구현 gap 리스트가 아니라 release 전 risk 확인표다. 외부환경 검증, 운영 반복 점검, 보안 수동 확인이 섞여 있으므로 stale unchecked box만 보고 backend backlog로 해석하지 않는다.
+
 - [ ] R-101 token passthrough test pass
 - [ ] R-102 credential encryption 확인
 - [ ] R-103 SSRF guard 작동
@@ -314,7 +318,7 @@ admin token 회전 + client token 일괄 revoke 누락 시 보안 hole. 또는 e
 - [ ] R-111 Tailscale ACL 점검 (해당 시) — Tailscale CLI 설치/로그인 후 외부환경 검증
 - [ ] R-112 schema drift 알림 동작
 - [ ] R-113 rate limit 동작
-- [x] R-114 log rotation 설정 — `rotate-logs.sh` + `com.coremcp.logrotate.plist`; actual label load는 운영 host 재로드 후 확인
+- [x] R-114 log rotation 설정 — `rotate-logs.sh` + `com.coremcp.logrotate.plist`; launchd load smoke 통과, reboot 지속성은 외부환경 검증
 - [ ] R-115 admin/client token 일관성 확인 (CASCADE 동작)
 - [ ] ~/.coremcp/admin-token chmod 600
 - [ ] Web UI에 client token 발급 modal 안전 경고 표시

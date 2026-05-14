@@ -918,7 +918,12 @@ admin token 회전. 새 정적 token 생성 → 응답 본문에 평문 1회 노
 { "new_token": "cmcp_admin_<new>", "expires_at": null }
 ```
 
-기존 admin token은 즉시 invalid.
+기대 동작:
+- file-backed static bearer가 기준이다. `COREMCP_ADMIN_TOKEN_FILE`이 설정되어 있고 파일이 writable이면 새 `cmcp_admin_*` 값을 atomic write로 저장하고 파일 권한은 `0600`을 유지/강제한다.
+- 성공 직후 기존 admin token은 즉시 invalid이며, 새 token은 `/v1/*`와 `/mcp` admin fallback에서 다음 요청부터 유효하다.
+- 응답 본문의 `new_token`은 1회만 표시한다. DB에는 admin token 평문 또는 hash를 저장하지 않는다.
+- env-only/static value(`COREMCP_ADMIN_TOKEN_VALUE` 등)로 부팅한 dev/test 환경에서는 API가 파일을 회전할 수 없다. 이 경우 성공으로 가장하지 말고 `409 Conflict`(또는 동등한 명시 오류)로 "file-backed admin token만 rotate 가능, env 값은 수동 변경 + 재시작 필요"를 반환한다.
+- audit event는 `admin_token.rotate`로 남기되 token 원문은 기록하지 않는다.
 
 ### POST /v1/settings/client-tokens
 Request:

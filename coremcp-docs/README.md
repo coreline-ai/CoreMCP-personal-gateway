@@ -24,8 +24,8 @@
 |---|---|
 | 적용 범위 | 개인 사용 (본인 1명, Mac mini 단일 호스트) |
 | 언어 | 한국어 우선 |
-| 현재 Phase | **P1 Core + P2 Route Smoke + OAuth Local Flow + Ops Polish** |
-| 문서 버전 | v1.2 (2026-05-13), fake-mcp/logrotate/ops smoke 반영 |
+| 현재 Phase | **P1 Core + P2 Web + P3 Ops/OAuth Local + MCP 확장 hardening** |
+| 문서 버전 | v1.3 (2026-05-14), STDIO/resources/prompts/CLI/remaining-work sync 반영 |
 | ADR 개수 | 36 (ADR-001 ~ ADR-036) |
 | MCP Spec | 2025-11-25 + 2025-06-18 병행 (ADR-029) |
 | Token Model | Dual — admin file + client DB hash (ADR-030) |
@@ -34,25 +34,29 @@
 > 본 문서팩이 **실제 구현의 정본**이다.
 > 프로덕션 SaaS 청사진은 `../production_docs_donotuse/`에 보관되어 있으며, 본 프로젝트에는 적용하지 않는다.
 
-### 구현 반영 상태 — 2026-05-13
+### 구현 반영 상태 — 2026-05-14
 
-- `apps/api`: FastAPI MCP gateway, SQLite/Alembic, per-client token, registry/toolbox, Keychain/Fernet encrypted vault, SSRF/redirect guard, OAuth local full flow, one-time token exchange, optional `/metrics`, cancellation downstream forward 구현.
+- `apps/api`: FastAPI MCP gateway, Alembic 단일 schema source, per-client token, registry/toolbox, Keychain/Fernet encrypted vault, SSRF/redirect guard, OAuth local flow/persistence, one-time token exchange, optional `/metrics`, cancellation downstream forward, HTTP/STDIO transport, `resources/*`/`prompts/*` proxy/cache, circuit breaker/reaper/CLI foundation 구현.
 - `apps/fake-mcp`: P0/P1 테스트용 downstream MCP fixture + cancellation/schema-change/cimd-test/dcr-test/icons-rich fixture 구현, 12개 테스트 통과.
+- `apps/demo-mcp-suite`: 외부 credential 없이 MCP 추가/등록, 도구함, preset, Playground 흐름을 시연하는 8개 demo endpoint 구현.
 - `apps/web`: P2 Web Admin route split, sessionStorage token, nonce CSP/security headers, Playwright CLI route smoke script, `cm-*` semantic design primitive 기반 UI 일관화 구현.
 - `../docs/design`: Web Admin design system, code-level audit, component pattern, token JSON/CSS/SVG asset 정리.
 - `infra`: launchd API/Web/backup/logrotate/refresh actual load smoke, backup/restore/log rotation/scheduled refresh helper, `com.coremcp.logrotate`/`com.coremcp.refresh` plist, api/web/backup/logrotate/refresh ops label logic 구현.
 - `Codex CLI`: `make codex-install`/`make codex-smoke`/`infra/scripts/codex-exec-coremcp.sh`로 Codex CLI `exec` 연결 경로 구현.
 - `TESTING.md`: unit/integration/e2e/ops smoke 명령과 현재 통과 결과 정리.
-- 다음 우선순위: 실제 reboot 후 자동 복귀, Tailscale CLI 설치/로그인 후 외부 접근, 실제 OAuth client compatibility.
+- 다음 우선순위: 실제 reboot 후 자동 복귀, Tailscale CLI 설치/로그인 후 외부 접근, 실제 OAuth client compatibility, 실제 모바일 visual QA, 운영 host long soak.
 
 
-### 잔여 항목 구분 — 2026-05-13
+### Remaining Work Classification — 2026-05-14
 
 | 구분 | 항목 |
 |---|---|
-| 목적 부합 코드 미구현 | 없음 — P0/P1 및 client 연결 편의 기능 구현 완료 |
-| 외부환경 검증 필요 | actual macOS reboot recovery, Tailscale CLI install/login/Serve/ACL smoke, real external OAuth client compatibility |
-| 선택 Polish | 실제 모바일 기기 visual QA, 장기 운영 관측 튜닝 |
+| 목적 부합 core 미구현 | 현재 known blocker 없음. personal gateway 목적 범위의 core blocker는 로컬 검증 기준 해소됨 |
+| 이번 안정화 batch 완료 | STDIO process cap/default idle timeout/delete cleanup, admin `/v1` + `/mcp` fixed-window rate limit, CLI import 실제 restore/path traversal/overwrite/0600 hardening 구현 및 테스트 통과 |
+| 외부환경 검증 필요 | actual macOS reboot recovery, Tailscale CLI install/login/Serve/ACL smoke, real external OAuth client compatibility, 실제 모바일 visual QA, long soak — `make external-env-validate`, `make mobile-qa-checklist`, `make soak-check`로 운영 host에서 결과 기록 |
+| 선택 Polish | Web Admin UX polish, 관측 dashboard/metric tuning, proactive health probe tuning은 지속 개선 대상 |
+
+> Commit split은 `../dev-plan/implement_20260514_224500.md`의 권장 실행 계획이다. 본 문서 update 자체는 commit/push를 수행하지 않는다. 이번 안정화 batch는 로컬 통합 검증까지 완료했다.
 
 ---
 

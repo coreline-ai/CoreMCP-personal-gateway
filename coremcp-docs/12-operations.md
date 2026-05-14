@@ -3,6 +3,8 @@
 문서 버전: v1.0
 작성일: 2026-05-11
 
+> 2026-05-14 동기화 메모: 이 문서는 운영 runbook이다. 체크리스트의 미체크 항목은 구현 backlog가 아니라 daily/weekly/monthly recurring task 또는 실제 Mac mini/Tailscale/mobile/long-soak 환경에서 확인할 operational validation일 수 있다. 실행된 테스트 snapshot은 [`../TESTING.md`](../TESTING.md)를 우선한다.
+
 ---
 
 ## 1. 운영 목표
@@ -44,6 +46,7 @@ Mac mini에서 무인 운영하면서:
     <key>COREMCP_DATA_DIR</key><string>/Users/me/.coremcp</string>
     <key>DATABASE_URL</key><string>sqlite+aiosqlite:////Users/me/.coremcp/data/db.sqlite3</string>
     <key>COREMCP_ADMIN_TOKEN_FILE</key><string>/Users/me/.coremcp/admin-token</string>
+    <key>COREMCP_CORS_ALLOWED_ORIGINS</key><string>http://localhost:3003,http://127.0.0.1:3003</string>
     <key>AUTH_MODE</key><string>static_bearer</string>
     <key>SECRET_BACKEND</key><string>keychain</string>
     <key>ALLOW_LOOPBACK_DOWNSTREAM</key><string>true</string>
@@ -95,6 +98,7 @@ chmod 700 ~/.coremcp
 pnpm build
 infra/scripts/coremcp-launchctl.sh load
 infra/scripts/ops-smoke.sh
+make ui-smoke
 
 # 재부팅 후 수동 검증
 infra/scripts/ops-smoke.sh --post-reboot
@@ -174,7 +178,7 @@ launchctl list | grep -E "com.coremcp.(logrotate|refresh)"
 - `*.log` 파일이 10MB를 넘으면 gzip 압축
 - `*.log`와 `*.log.gz` 모두 `COREMCP_LOG_RETENTION_DAYS`(기본 7일) 초과분 삭제
 
-2026-05-13 상태: plist syntax와 `ops-smoke.sh`의 `fake-mcp/api/web/backup/logrotate/refresh` label logic은 통과. 실제 reboot 검증은 운영 host 재부팅 후 `ops-smoke.sh --post-reboot`로 확인한다.
+2026-05-14 상태: plist syntax와 `ops-smoke.sh`의 `fake-mcp/api/web/backup/logrotate/refresh` label logic/load smoke는 통과. 실제 reboot 검증은 운영 host 재부팅 후 `ops-smoke.sh --post-reboot`로 확인한다.
 
 ---
 
@@ -198,12 +202,22 @@ curl http://localhost:8787/live
 `METRICS_ENABLED=true` 환경 변수 → `/metrics` Prometheus format.
 Mac mini에 grafana + prometheus 띄울 시 활용.
 
+2026-05-14 상태: API runtime은 proactive service health probe를 백그라운드로 실행한다.
+
+```bash
+COREMCP_SERVICE_HEALTH_PROBE_ENABLED=true
+COREMCP_SERVICE_HEALTH_PROBE_INTERVAL_SECONDS=60
+COREMCP_SERVICE_HEALTH_PROBE_TIMEOUT_SECONDS=2
+```
+
 본인용 주요 metric:
 - `mcp_requests_total{method,status}`
 - `mcp_request_duration_ms{method}`
 - `downstream_requests_total{service,status}`
 - `downstream_latency_ms{service}`
 - `tool_invocations_total{service,status}`
+- `coremcp_mcp_services_health_failing`
+- `coremcp_mcp_services_circuit_open`
 - `cache_hits_total{layer}`
 - `cache_misses_total{layer}`
 - `vault_resolve_latency_ms`
@@ -291,7 +305,7 @@ tailscale serve --bg --https=443 http://localhost:8787
 infra/scripts/ops-smoke.sh --require-tailscale
 ```
 
-2026-05-12 현재 검증 머신에는 `tailscale` CLI가 설치되어 있지 않아 Tailscale access 401/200 검증은 skipped 상태다.
+2026-05-14 현재 검증 머신에는 `tailscale` CLI가 설치되어 있지 않아 Tailscale install/login/Serve/ACL smoke는 skipped 상태다.
 
 ### 6.3 ACL
 admin console에서 본인 디바이스만 접근 허용.
@@ -416,6 +430,8 @@ audit log 확인:
 
 ## 9. Maintenance 체크리스트
 
+아래 항목은 운영자가 계속 반복하는 maintenance calendar다. 체크가 비어 있어도 코드가 빠졌다는 의미가 아니며, 실제 운영 환경에서 수행/기록할 때마다 갱신한다.
+
 ### 매일
 - [ ] Web UI Dashboard 상태 확인 (수동)
 
@@ -457,3 +473,33 @@ production_docs_donotuse/12-operations-observability.md의 다음은 본 프로�
 - Sentry / Datadog production tier (옵션 free tier만)
 - PagerDuty / Opsgenie
 - SOC2 audit
+
+## 9. External Validation / Soak / Mobile QA Helpers
+
+2026-05-14 추가 상태:
+
+- `make external-env-validate`: local `ops-smoke`를 재사용하고, `COREMCP_EXTERNAL_API_URL` / `COREMCP_EXTERNAL_WEB_URL`이 주어지면 Tailscale/Caddy 외부 URL까지 확인한다.
+- `make soak-check`: 지정 시간 동안 `/ready`와 `/v1/dashboard/summary`를 반복 확인해 long soak의 실패 횟수를 종료 코드로 신호한다.
+- `make mobile-qa-checklist`: 실제 모바일 브라우저에서 확인할 URL과 점검 순서를 출력한다.
+
+대표 실행:
+
+```bash
+# 로컬 launchd/ops smoke + 선택적 외부 URL 확인
+make external-env-validate
+COREMCP_EXTERNAL_API_URL=https://<tailscale-or-public-host>/health \
+COREMCP_EXTERNAL_WEB_URL=https://<tailscale-or-public-host>/ \
+  make external-env-validate
+
+# 실제 모바일 기기에서 열 URL과 수동 점검 항목 출력
+make mobile-qa-checklist
+
+# long soak; 운영 환경에 맞게 시간/간격 조정
+COREMCP_SOAK_DURATION_SECONDS=3600 \
+COREMCP_SOAK_INTERVAL_SECONDS=30 \
+  make soak-check
+```
+
+실제 reboot, Tailscale 로그인/ACL, real external OAuth client compatibility는 환경 의존 검증이므로 운영 host에서 위 helper를 실행해 결과를 기록한다.
+
+이번 안정화 batch의 code hardening(STDIO resource limits, admin/MCP rate limit, CLI import hardening)은 통합 완료했다. 로컬 검증 결과는 `../TESTING.md`의 2026-05-14 snapshot을 따른다. 실제 reboot, Tailscale Serve/ACL, real external OAuth client, 모바일 기기 QA, long soak은 운영 host에서 별도 기록한다.

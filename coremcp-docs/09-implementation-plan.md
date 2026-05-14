@@ -4,6 +4,8 @@
 작성일: 2026-05-11
 대상: 1인 개발 (본인), 4~5주 기간
 
+> 2026-05-14 동기화 메모: 이 파일은 초기 phase 설계/계획 문서다. 아래 Phase별 unchecked task는 현재 remaining backlog와 1:1 대응하지 않는다. 실제 구현 상태와 남은 항목 분류는 `../README.md`, `../TESTING.md`, `../dev-plan/implement_20260511_221842.md`, `../dev-plan/implement_20260514_201743.md`, `../dev-plan/implement_20260514_224500.md`를 우선한다.
+
 ---
 
 ## 1. 개발 전략
