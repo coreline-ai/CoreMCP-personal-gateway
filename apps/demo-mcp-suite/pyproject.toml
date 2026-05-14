@@ -1,0 +1,26 @@
+[project]
+name = "demo-mcp-suite"
+version = "0.1.0"
+description = "Eight local demo MCP servers for CoreMCP personal gateway demos."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.30.0",
+  "httpx>=0.27.0",
+  "pytest>=8.0.0",
+]
+
+[project.scripts]
+demo-mcp-suite = "demo_mcp_suite.main:run"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["demo_mcp_suite*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
