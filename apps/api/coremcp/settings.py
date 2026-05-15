@@ -57,6 +57,7 @@ class Settings(BaseSettings):
     )
     auth_rate_limit_per_minute: int = Field(default=60, alias="COREMCP_AUTH_RATE_LIMIT_PER_MINUTE")
     mcp_rate_limit_per_minute: int = Field(default=120, alias="COREMCP_MCP_RATE_LIMIT_PER_MINUTE")
+    service_rate_limit_per_minute: int = Field(default=120, alias="COREMCP_SERVICE_RATE_LIMIT_PER_MINUTE")
     cors_allowed_origins: str = Field(
         default=DEFAULT_CORS_ALLOWED_ORIGINS,
         alias="COREMCP_CORS_ALLOWED_ORIGINS",

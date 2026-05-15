@@ -86,15 +86,15 @@ make test && pnpm lint && pnpm build && pnpm test && make smoke && make codex-sm
 - `dev-plan/.artifacts/ui-smoke/events.json`
 - `dev-plan/.artifacts/ui-smoke/screenshots/*.png`
 
-## Current verification snapshot — 2026-05-14
+## Current verification snapshot — 2026-05-15
 
-- `cd apps/api && uv run pytest -q`: **122 passed**.
+- `cd apps/api && uv run pytest -q`: **140 passed**.
 - `cd apps/fake-mcp && uv run pytest -q`: **12 passed**.
 - `cd apps/demo-mcp-suite && uv run pytest -q`: **21 passed**.
 - `make test`: **PASS** (API + fake-mcp + demo-mcp-suite).
 - `pnpm lint`, `pnpm build`, `pnpm test`: **PASS**.
 - `make smoke`: **PASS**.
-- Alembic fresh migration smoke: **PASS** (`20260512_0001` → `20260514_0007`, OAuth persistence + service transport + resources/prompts cache + STDIO runtime state columns present).
+- Alembic fresh migration smoke: **PASS** (`20260512_0001` → `20260515_0008`, OAuth persistence + service transport + resources/prompts cache + STDIO runtime state + service capabilities columns present).
 - `plutil -lint infra/launchd/*.plist`: **6 plist OK** (`fake-mcp`, `api`, `web`, `backup`, `logrotate`, `refresh`).
 - `python -m coremcp.refresh` no-service smoke: **PASS** (`services_checked=0`, exit 0).
 - `infra/scripts/coremcp-launchctl.sh restart && infra/scripts/ops-smoke.sh`: **PASS** (`fake-mcp/api/web/backup/logrotate/refresh` labels loaded, Fake/API/Web ready; Tailscale CLI missing so skipped).
@@ -105,6 +105,10 @@ make test && pnpm lint && pnpm build && pnpm test && make smoke && make codex-sm
 - OAuth persistence smoke: **PASS** (`tests/test_oauth_persistence.py`, app recreate 후 access token/refresh rotation/revocation 유지, signing private key vault reference 저장).
 - STDIO transport/CLI/ops modules: **PASS** (`tests/test_stdio_transport.py`, `tests/test_cli.py`, `tests/test_ops_stability.py`).
 - MCP resources/prompts proxy smoke: **PASS** (`resources/list`, `resources/read` large-content truncate, `resources/templates/list`, `prompts/list`, `prompts/get` API regression).
+- MCP catalog notification smoke: **PASS** (`notifications/{tools,resources,prompts}/list_changed` category emission, `Last-Event-Id` SSE replay, unsupported protocol downgrade warning).
+- MCP batch/progress notification smoke: **PASS** (JSON-RPC batch mixed/notification-only/empty-array behavior, downstream `notifications/progress` + `notifications/resources/updated` SSE fan-out, STDIO notification callback, app/repository facade imports).
+- Multi-MCP hardening smoke: **PASS** (dotted downstream tool name namespace 강제, active-service `resources/read` catalog miss no-broadcast, duplicate resource URI ambiguous reject, HTTP downstream session id mapping, downstream `notifications/tools/list_changed` fan-in).
+- Multi-MCP P1 운영성 smoke: **PASS** (dynamic capability merge, tool args JSON Schema validation, per-service rate limit, `tools/list` unavailable metadata, health-probe schema drift refresh, downstream `Idempotency-Key` forwarding).
 - Phase 7~10 hardening smoke: **PASS** (`tests/test_stdio_transport.py` 9 cases, `tests/test_reaper.py`, CLI token/export/import, resources/prompts cache validation/routing).
 - Follow-up backlog smoke: **PASS** (STDIO crash-state DB persistence regression, Makefile CLI wrapper dry-run without token echo, Web UX Phase 6 lint/build/route smoke).
 - CORS config smoke: **PASS** (`tests/test_cors.py`, default origins + custom `COREMCP_CORS_ALLOWED_ORIGINS`).
@@ -124,7 +128,7 @@ Remaining Work Classification — 2026-05-14:
 | Category | Items |
 |---|---|
 | 목적 부합 core 미구현 | 현재 known blocker 없음. personal gateway 목적 범위의 core blocker는 로컬 검증 기준 해소됨 |
-| 이번 안정화 batch 완료 | STDIO process cap/default idle timeout/delete cleanup, admin `/v1` + `/mcp` fixed-window rate limit, CLI import 실제 restore/path traversal/overwrite/0600 hardening 구현 및 테스트 통과 |
+| 이번 안정화 batch 완료 | STDIO process cap/default idle timeout/delete cleanup, admin `/v1` + `/mcp` fixed-window rate limit, CLI import hardening, Multi-MCP namespace/session/resource routing/P1 운영성 hardening 구현 및 테스트 통과 |
 | 외부환경 검증 필요 | actual macOS reboot recovery (`--post-reboot`), Tailscale CLI install/login/Serve/ACL smoke, real external OAuth client compatibility, 실제 모바일 visual QA, long soak — 자동화 entrypoint는 `make external-env-validate`, `make mobile-qa-checklist`, `make soak-check` |
 | 선택 Polish | Web Admin UX polish, proactive health probe, dashboard/metric tuning은 지속 개선 대상 |
 

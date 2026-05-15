@@ -15,7 +15,7 @@ CoreMCP는 Mac mini에서 단일 프로세스(또는 백엔드 + 웹 별도 프�
 ### 2.1 MCP Transport
 - Streamable HTTP 준수
 - POST /mcp: client → server JSON-RPC
-- GET /mcp: SSE keepalive + `notifications/tools/list_changed` emit
+- GET /mcp: SSE keepalive + `notifications/{tools,resources,prompts}/list_changed`, `notifications/progress`, `notifications/resources/updated` emit
 - DELETE /mcp: session termination
 - `Mcp-Session-Id` 헤더 처리
 - MCP-Protocol-Version 헤더 처리 (ADR-029):
@@ -55,14 +55,18 @@ CoreMCP는 Mac mini에서 단일 프로세스(또는 백엔드 + 웹 별도 프�
 - token 검증: every HTTP request
 
 ### 2.3 MCP Methods 지원
+- JSON-RPC batch: 지원 (sequential 처리, notification-only batch는 202)
 - initialize: 지원
+- initialize capabilities: default toolbox active service union 기반 동적 생성
 - tools/list: 지원 (pagination cursor 포함)
-- tools/call: 지원 (idempotency_key, cancellation 포함)
+- tools/call: 지원 (JSON Schema args 사전 검증, idempotency_key, cancellation, per-service quota 포함)
 - notifications/initialized: 처리
 - notifications/cancelled (client→server): forward to downstream
-- notifications/tools/list_changed (server→client): emit
+- notifications/{tools,resources,prompts}/list_changed (server→client): CoreMCP catalog 변경 및 downstream notification fan-in 시 emit
+- notifications/progress, notifications/resources/updated: downstream → CoreMCP SSE fan-out
 - ping: 응답
-- resources/* prompts/* sampling/* elicitation/* logging/*: -32601 reject
+- resources/*, prompts/*: proxy 지원
+- sampling/* elicitation/* logging/*: -32601 reject
 - tasks/*: client → CoreMCP 요청 시 -32601 (Method not found). MCP 2025-11-25 experimental method. downstream으로 forward하지 않음.
 
 ### 2.4 Target Clients (우선순위)
@@ -214,7 +218,7 @@ HTTP /mcp request
 - manual refresh
 - TTL expiry
 - downstream tools/call schema error
-- downstream notifications/tools/list_changed (long-lived session 옵션)
+- downstream notifications/{tools,resources,prompts}/list_changed (HTTP SSE/STDIO notification fan-in)
 
 ## 9. REST API 개요
 

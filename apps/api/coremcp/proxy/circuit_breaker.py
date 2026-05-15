@@ -38,12 +38,11 @@ class _CircuitEntry:
 class CircuitBreaker:
     """In-memory per-service circuit breaker for downstream MCP calls.
 
-    Integration contract TODO:
-    - Gateway/proxy call sites should invoke ``before_request(service_id)`` before
+    Integration contract:
+    - Gateway/proxy call sites invoke ``before_request(service_id)`` before
       dispatching a downstream request.
-    - On successful downstream response, call ``record_success(service_id)``.
-    - On timeout/network/5xx-style downstream failure, call
-      ``record_failure(service_id)``.
+    - Successful downstream responses call ``record_success(service_id)``.
+    - Timeout/network/5xx-style downstream failures call ``record_failure(service_id)``.
     - Main/repository-owned inflight/job cleanup should use a separate scheduler;
       this helper intentionally has no DB or FastAPI dependencies.
     """

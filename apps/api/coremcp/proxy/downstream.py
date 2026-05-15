@@ -1,3 +1,5 @@
+import json
+from collections.abc import Awaitable, Callable
 from typing import Any
 from urllib.parse import urlparse
 
@@ -52,6 +54,8 @@ class DownstreamMcpClient:
         expect_response: bool = True,
         correlation_id: str | None = None,
         timeout: httpx.Timeout | float | None = None,
+        session_id_callback: Callable[[str], Awaitable[None] | None] | None = None,
+        notification_callback: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
     ) -> dict[str, Any]:
         request_url = url or self.url
         if url_safety_checker is not None:
@@ -68,7 +72,7 @@ class DownstreamMcpClient:
             payload["params"] = params
 
         headers = {
-            "Accept": "application/json",
+            "Accept": "application/json, text/event-stream",
             "Content-Type": "application/json",
         }
         if protocol_version:
@@ -82,7 +86,7 @@ class DownstreamMcpClient:
                 # CoreMCP's own Authorization is never copied from the incoming
                 # request. Only explicit service credentials may be attached by
                 # registry/vault code.
-                if name.lower() in {"authorization", "x-api-key"}:
+                if name.lower() in {"authorization", "x-api-key", "idempotency-key"}:
                     headers[name] = value
 
         try:
@@ -103,35 +107,58 @@ class DownstreamMcpClient:
                 timeout=timeout,
                 extensions=extensions,
             )
-            response = await self.client.send(request, follow_redirects=False)
+            response = await self.client.send(request, follow_redirects=False, stream=True)
             if 300 <= response.status_code < 400:
+                await response.aclose()
                 raise DownstreamMcpError("downstream redirect is not allowed", code=-32003)
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                await response.aclose()
+                raise DownstreamMcpError(f"downstream request failed: {exc}") from exc
+            downstream_session_id = response.headers.get("Mcp-Session-Id")
+            if downstream_session_id:
+                await self._emit_session_id(session_id_callback, downstream_session_id)
         except httpx.TimeoutException as exc:
             raise DownstreamTimeoutError("downstream request timed out", code=-32008) from exc
         except httpx.HTTPError as exc:
             raise DownstreamMcpError(f"downstream request failed: {exc}") from exc
 
-        if not expect_response and (response.status_code in {202, 204} or not response.content):
-            return {"jsonrpc": "2.0", "id": request_id, "result": {}}
-
-        if not response.content:
-            raise DownstreamMcpError("downstream returned empty response")
-        if len(response.content) > self.max_response_bytes:
-            raise DownstreamMcpError(
-                f"downstream response exceeds {self.max_response_bytes} bytes",
-                code=-32009,
-            )
-        content_type = response.headers.get("content-type", "").lower()
-        media_type = content_type.partition(";")[0].strip()
-        if media_type != "application/json":
-            raise DownstreamMcpError("downstream returned non-JSON content-type", code=-32010)
-
         try:
-            data = response.json()
-        except ValueError as exc:
-            raise DownstreamMcpError("downstream returned non-JSON response") from exc
+            content_type = response.headers.get("content-type", "").lower()
+            media_type = content_type.partition(";")[0].strip()
+            if media_type == "text/event-stream":
+                data = await self._read_sse_json_response(
+                    response,
+                    notification_callback=notification_callback,
+                    expect_response=expect_response,
+                    request_id=request_id,
+                )
+            else:
+                content = await response.aread()
+                if not expect_response and (response.status_code in {202, 204} or not content):
+                    return {"jsonrpc": "2.0", "id": request_id, "result": {}}
 
+                if not content:
+                    raise DownstreamMcpError("downstream returned empty response")
+                if len(content) > self.max_response_bytes:
+                    raise DownstreamMcpError(
+                        f"downstream response exceeds {self.max_response_bytes} bytes",
+                        code=-32009,
+                    )
+                if media_type != "application/json":
+                    raise DownstreamMcpError("downstream returned non-JSON content-type", code=-32010)
+
+                try:
+                    data = response.json()
+                except ValueError as exc:
+                    raise DownstreamMcpError("downstream returned non-JSON response") from exc
+        finally:
+            await response.aclose()
+
+        return self._jsonrpc_response_or_raise(data, method=method)
+
+    def _jsonrpc_response_or_raise(self, data: Any, *, method: str) -> dict[str, Any]:
         if not isinstance(data, dict):
             raise DownstreamMcpError("downstream returned invalid JSON-RPC response")
         if "error" in data:
@@ -142,6 +169,98 @@ class DownstreamMcpClient:
                 raise DownstreamToolError(str(message), code=int(code))
             raise DownstreamMcpError(str(message), code=int(code))
         return data
+
+    async def _read_sse_json_response(
+        self,
+        response: httpx.Response,
+        *,
+        notification_callback: Callable[[dict[str, Any]], Awaitable[None] | None] | None,
+        expect_response: bool,
+        request_id: Any,
+    ) -> dict[str, Any]:
+        if not expect_response:
+            async for _ in response.aiter_bytes():
+                pass
+            return {"jsonrpc": "2.0", "id": request_id, "result": {}}
+
+        total_bytes = 0
+        buffer = ""
+        final_data: dict[str, Any] | None = None
+
+        async for chunk in response.aiter_bytes():
+            total_bytes += len(chunk)
+            if total_bytes > self.max_response_bytes:
+                raise DownstreamMcpError(
+                    f"downstream response exceeds {self.max_response_bytes} bytes",
+                    code=-32009,
+                )
+            buffer += chunk.decode("utf-8", errors="replace")
+            while "\n\n" in buffer:
+                raw_event, buffer = buffer.split("\n\n", 1)
+                event_data = self._parse_sse_event_data(raw_event)
+                if event_data is None:
+                    continue
+                try:
+                    data = json.loads(event_data)
+                except ValueError:
+                    continue
+                if not isinstance(data, dict):
+                    continue
+                if isinstance(data.get("method"), str) and "id" not in data:
+                    await self._emit_notification(notification_callback, data)
+                    continue
+                final_data = data
+
+        if buffer.strip():
+            event_data = self._parse_sse_event_data(buffer)
+            if event_data:
+                try:
+                    data = json.loads(event_data)
+                except ValueError:
+                    data = None
+                if isinstance(data, dict):
+                    if isinstance(data.get("method"), str) and "id" not in data:
+                        await self._emit_notification(notification_callback, data)
+                    else:
+                        final_data = data
+
+        if final_data is None:
+            raise DownstreamMcpError("downstream SSE response did not include a JSON-RPC response")
+        return final_data
+
+    @staticmethod
+    def _parse_sse_event_data(raw_event: str) -> str | None:
+        data_lines: list[str] = []
+        for line in raw_event.splitlines():
+            if not line or line.startswith(":"):
+                continue
+            if line.startswith("data:"):
+                data_lines.append(line.removeprefix("data:").lstrip())
+        if not data_lines:
+            return None
+        return "\n".join(data_lines)
+
+    @staticmethod
+    async def _emit_notification(
+        callback: Callable[[dict[str, Any]], Awaitable[None] | None] | None,
+        data: dict[str, Any],
+    ) -> None:
+        if callback is None:
+            return
+        result = callback(data)
+        if result is not None:
+            await result
+
+    @staticmethod
+    async def _emit_session_id(
+        callback: Callable[[str], Awaitable[None] | None] | None,
+        session_id: str,
+    ) -> None:
+        if callback is None:
+            return
+        result = callback(session_id)
+        if result is not None:
+            await result
 
     @staticmethod
     def _pinned_destination(request_url: str, safety_result: UrlSafetyResult) -> tuple[str, str | None, str | None]:

@@ -31,6 +31,7 @@ kakao.send_message
 
 ### 3.1 Exposed Name 형식
 - `{service_slug}.{tool_name}`
+- downstream tool name에 `.`이 이미 포함되어 있어도 service slug prefix를 반드시 붙인다. namespace authority는 downstream service가 아니라 CoreMCP registry가 가진다.
 - service_slug: lowercase [a-z0-9-]+, 3-32 chars
 - tool_name part: lowercase [a-z0-9_]+, 1-48 chars
 - 총 길이 **64자 — CoreMCP 정책상의 보수적 제한** (MCP 2025-11-25 spec 자체에는 tool name length의 hard cap 명시 없음, 단 일부 client UI에서 긴 이름이 truncate되거나 regex 검증 실패 가능)
@@ -274,7 +275,9 @@ Validation 시점:
 ```
 
 ### 6.4 Capabilities Forwarding
-CoreMCP는 downstream에 자체 capabilities만:
+CoreMCP는 downstream initialize 결과의 capabilities를 service별 `mcp_services.capabilities_json`에 저장하고, client initialize 응답에서는 default toolbox active service의 capability union을 반환한다. `tools`는 CoreMCP gateway 기본 capability로 유지하고, `resources`/`prompts`는 지원 service가 있을 때만 노출한다.
+
+CoreMCP가 downstream에 보내는 client capabilities는 gateway 자체 capabilities만:
 ```json
 {
   "name": "CoreMCP Proxy",
@@ -288,6 +291,12 @@ CoreMCP는 downstream에 자체 capabilities만:
 ```
 
 downstream → CoreMCP `sampling/createMessage` / `elicitation/create` / `roots/list` 요청 시: -32601 반환 (Phase P3+ 결정 보류).
+
+Tools call guard:
+- catalog의 `input_schema_json`으로 `tools/call.params.arguments`를 JSON Schema 사전 검증한다.
+- 실패 시 downstream 호출 없이 JSON-RPC `-32602 Invalid tool arguments`와 `policy.invalid_args` audit를 남긴다.
+- HTTP downstream에는 안전 헤더로 `Idempotency-Key`를 forward한다.
+- service별 fixed-window quota 초과 시 tool-level `rate_limited` 오류로 응답한다.
 
 client → CoreMCP `tasks/*` / `sampling/createMessage` / `elicitation/create` / `roots/list` 요청:
 - MVP: -32601 Method not found 반환
@@ -457,17 +466,23 @@ idempotency_key
 
 ## 12. listChanged Emission
 
-다음 경우 active SSE 채널에 `notifications/tools/list_changed` emit:
-1. toolbox 변경 (item add/remove/enable/disable)
-2. service status 변경 (active ↔ disabled/error)
-3. service tool schema_hash 변경 (validation 후)
-4. credential 변경 → service reachable 상태 변경
+다음 경우 active SSE 채널에 `notifications/{tools,resources,prompts}/list_changed` emit:
+1. toolbox 변경 (item add/remove/enable/disable) → `tools/list_changed`
+2. tool permission/preset 변경 → `tools/list_changed`
+3. service status 변경 (active ↔ disabled/error) → `tools/resources/prompts/list_changed` broadcast
+4. service tool/resource/prompt catalog 변경 (validation 후) → `tools/resources/prompts/list_changed` broadcast
+5. credential 변경 → service reachable 상태 변경 시 catalog invalidation
 
 구현:
 - domain event 발생 시 in-process event bus 호출
 - 단일 프로세스: 직접 SSE handler 호출
-- 다중 프로세스: Redis pub/sub `events:user:{user_id}`
+- 최근 event ring buffer로 `Last-Event-Id` reconnect backfill 지원
+- downstream HTTP `text/event-stream` response와 STDIO JSON-RPC notification line에서 `notifications/progress`, `notifications/resources/updated`, `notifications/{tools,resources,prompts}/list_changed` fan-out
 - emission 빈도 제한: 1초당 1회 debounce
+
+Resource routing:
+- active service가 하나 이상 있으면 `resources/read`는 toolbox catalog에 존재하는 URI만 해당 service로 라우팅한다.
+- catalog miss 또는 동일 URI가 여러 active service에 존재하는 ambiguous 상태는 downstream broadcast/first-hit 대신 `-32602 Unknown resource`로 실패한다.
 
 icons 변경(service refresh 후 icons_json 갱신)은 schema_hash 계산에 포함되지 않으면 listChanged emit 안 함. 단 schema_hash 계산에 icons 포함하면 emit 트리거. 권장: icons는 schema_hash 계산에 포함하지 않음 (LLM context에 영향 미미).
 

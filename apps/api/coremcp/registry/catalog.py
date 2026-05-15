@@ -105,7 +105,7 @@ def normalize_downstream_tools(tools: list[Any], *, service_slug: str, settings:
             continue
         original_name = str(raw["name"]).strip()
         safe_name = slugify_tool_name(original_name)
-        exposed_name = original_name if "." in original_name else f"{service_slug}.{safe_name}"
+        exposed_name = f"{service_slug}.{safe_name}"
         input_schema = raw.get("inputSchema") if isinstance(raw.get("inputSchema"), dict) else {"type": "object"}
         scan = scan_tool_metadata(raw)
         icons, icon_warnings = normalize_icons(raw, settings)

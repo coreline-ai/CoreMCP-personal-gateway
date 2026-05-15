@@ -79,6 +79,9 @@ for line in sys.stdin:
             send({"jsonrpc": "2.0", "id": request_id, "result": {"content": [{"type": "text", "text": "echo:" + text}]}})
     elif method == "ping":
         send({"jsonrpc": "2.0", "id": request_id, "result": {}})
+    elif method == "notify":
+        send({"jsonrpc": "2.0", "method": "notifications/progress", "params": {"progressToken": "stdio", "progress": 1}})
+        send({"jsonrpc": "2.0", "id": request_id, "result": {"ok": True}})
     elif method == "stderr":
         sys.stderr.write(str(params.get("text", "")))
         sys.stderr.flush()
@@ -187,6 +190,28 @@ async def test_stdio_expect_response_false_returns_empty_result(stdio_script: Pa
     try:
         response = await client.request("no_response", request_id="notify-1", expect_response=False)
         assert response == {"jsonrpc": "2.0", "id": "notify-1", "result": {}}
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_stdio_notification_callback_receives_downstream_notifications(stdio_script: Path) -> None:
+    notifications: list[dict[str, Any]] = []
+
+    async def callback(notification: dict[str, Any]) -> None:
+        notifications.append(notification)
+
+    client = await _new_client(stdio_script, notification_callback=callback)
+    try:
+        response = await client.request("notify", request_id="notify-callback")
+        assert response["result"] == {"ok": True}
+        assert notifications == [
+            {
+                "jsonrpc": "2.0",
+                "method": "notifications/progress",
+                "params": {"progressToken": "stdio", "progress": 1},
+            }
+        ]
     finally:
         await client.aclose()
 

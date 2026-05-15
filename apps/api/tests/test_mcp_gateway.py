@@ -404,6 +404,57 @@ async def test_protocol_negotiation_missing_and_future(app_client):
 
     future = await initialize(client, "2099-01-01")
     assert future.json()["result"]["protocolVersion"] == "2025-11-25"
+    assert future.json()["result"]["_coremcp"]["code"] == "future_protocol_downgraded"
+
+    unsupported = await initialize(client, "2025-01-01")
+    assert unsupported.json()["result"]["protocolVersion"] == "2025-11-25"
+    assert unsupported.json()["result"]["_coremcp"]["code"] == "unsupported_protocol_downgraded"
+
+
+@pytest.mark.asyncio
+async def test_jsonrpc_batch_mixed_requests_and_notifications(app_client):
+    client, _, _ = app_client
+    response = await client.post(
+        "/mcp",
+        headers=auth_headers(),
+        json=[
+            {"jsonrpc": "2.0", "id": "init", "method": "initialize", "params": {"protocolVersion": "2025-06-18"}},
+            {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+            {"jsonrpc": "2.0", "id": "ping", "method": "ping"},
+            "invalid item",
+        ],
+    )
+
+    assert response.status_code == 200
+    assert response.headers.get("Mcp-Session-Id")
+    payload = response.json()
+    assert [item.get("id") for item in payload] == ["init", "ping", None]
+    assert payload[0]["result"]["protocolVersion"] == "2025-06-18"
+    assert payload[1]["result"] == {}
+    assert payload[2]["error"]["code"] == -32600
+
+
+@pytest.mark.asyncio
+async def test_jsonrpc_batch_notification_only_returns_accepted(app_client):
+    client, _, _ = app_client
+    response = await client.post(
+        "/mcp",
+        headers=auth_headers(),
+        json=[
+            {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+            {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": "missing"}},
+        ],
+    )
+    assert response.status_code == 202
+    assert response.content == b""
+
+
+@pytest.mark.asyncio
+async def test_jsonrpc_batch_empty_array_is_invalid(app_client):
+    client, _, _ = app_client
+    response = await client.post("/mcp", headers=auth_headers(), json=[])
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == -32600
 
 
 @pytest.mark.asyncio
@@ -650,6 +701,155 @@ async def test_sse_emits_list_changed_on_toolbox_catalog_change(app_client):
     assert sse.status_code == 200
     assert "event: listChanged" in sse.text
     assert "notifications/tools/list_changed" in sse.text
+    assert "notifications/resources/list_changed" not in sse.text
+    assert "notifications/prompts/list_changed" not in sse.text
+
+
+@pytest.mark.asyncio
+async def test_sse_service_catalog_change_emits_tools_resources_and_prompts(app_client):
+    client, _, _ = app_client
+    created = await client.post(
+        "/v1/mcp-services",
+        headers=auth_headers(),
+        json={"name": "SSE Catalog", "slug": "sse-catalog", "endpoint_url": "http://fake.local/mcp"},
+    )
+    service_id = created.json()["id"]
+
+    sse_task = asyncio.create_task(
+        client.get("/mcp?max_events=3", headers={**auth_headers(), "Accept": "text/event-stream"})
+    )
+    await asyncio.sleep(0.05)
+    validated = await client.post(f"/v1/mcp-services/{service_id}/validate", headers=auth_headers())
+    assert validated.status_code == 200
+
+    sse = await asyncio.wait_for(sse_task, timeout=2)
+    assert sse.status_code == 200
+    assert "notifications/tools/list_changed" in sse.text
+    assert "notifications/resources/list_changed" in sse.text
+    assert "notifications/prompts/list_changed" in sse.text
+
+
+@pytest.mark.asyncio
+async def test_sse_replays_events_after_last_event_id(app_client):
+    client, _, app = app_client
+    first = await app.state.list_changed_bus.publish_list_changed(
+        category="tools",
+        reason="test.first",
+        resource_id="first",
+    )
+    second = await app.state.list_changed_bus.publish_list_changed(
+        category="resources",
+        reason="test.second",
+        resource_id="second",
+    )
+    third = await app.state.list_changed_bus.publish_list_changed(
+        category="prompts",
+        reason="test.third",
+        resource_id="third",
+    )
+
+    sse = await client.get(
+        "/mcp?max_events=2",
+        headers={
+            **auth_headers(),
+            "Accept": "text/event-stream",
+            "Last-Event-Id": str(first.id),
+        },
+    )
+
+    assert sse.status_code == 200
+    assert f"id: {first.id}\n" not in sse.text
+    assert f"id: {second.id}\n" in sse.text
+    assert f"id: {third.id}\n" in sse.text
+    assert "notifications/resources/list_changed" in sse.text
+    assert "notifications/prompts/list_changed" in sse.text
+
+
+@pytest.mark.asyncio
+async def test_downstream_sse_progress_and_resource_updated_notifications_fan_out(tmp_path: Path):
+    async def transport(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        method = body.get("method")
+        request_id = body.get("id")
+        if method == "tools/list":
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "tools": [{"name": "echo", "description": "Echo", "inputSchema": {"type": "object"}}],
+                        "nextCursor": None,
+                    },
+                },
+            )
+        if method == "tools/call":
+            events = [
+                {
+                    "jsonrpc": "2.0",
+                    "method": "notifications/progress",
+                    "params": {"progressToken": "p1", "progress": 0.5, "total": 1},
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "method": "notifications/resources/updated",
+                    "params": {"uri": "memory://note/1"},
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "method": "notifications/tools/list_changed",
+                    "params": {},
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {"content": [{"type": "text", "text": "done"}]},
+                },
+            ]
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                content="".join(f"data: {json.dumps(event)}\n\n" for event in events),
+            )
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": request_id, "result": {}})
+
+    downstream_client = httpx.AsyncClient(transport=httpx.MockTransport(transport))
+    app = create_app(
+        settings=Settings(
+            COREMCP_ADMIN_TOKEN_VALUE=TOKEN,
+            COREMCP_ADMIN_TOKEN_FILE=tmp_path / "missing-admin-token",
+            COREMCP_DB_PATH=tmp_path / "progress.sqlite3",
+            FAKE_MCP_URL="http://fake.local/mcp",
+            COREMCP_SSRF_ALLOW_HOSTS="fake.local",
+            COREMCP_SECRET_BACKEND="fernet",
+            COREMCP_SECRETS_FILE=tmp_path / "progress-secrets.json",
+        ),
+        http_client=downstream_client,
+    )
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+            sse_task = asyncio.create_task(
+                client.get("/mcp?max_events=3", headers={**auth_headers(), "Accept": "text/event-stream"})
+            )
+            await asyncio.sleep(0.05)
+            called = await client.post(
+                "/mcp",
+                headers=auth_headers(),
+                json={
+                    "jsonrpc": "2.0",
+                    "id": "call-progress",
+                    "method": "tools/call",
+                    "params": {"name": "fake.echo", "arguments": {}},
+                },
+            )
+            assert called.status_code == 200
+            assert called.json()["result"]["content"][0]["text"] == "done"
+            sse = await asyncio.wait_for(sse_task, timeout=2)
+            assert "notifications/progress" in sse.text
+            assert "notifications/resources/updated" in sse.text
+            assert "notifications/tools/list_changed" in sse.text
+            assert "memory://note/1" in sse.text
+    await downstream_client.aclose()
 
 
 @pytest.mark.asyncio
@@ -852,6 +1052,8 @@ async def test_service_validation_toolbox_catalog_and_db_backed_call(app_client)
 
     init = await initialize(client)
     session_id = init.headers["Mcp-Session-Id"]
+    assert "resources" in init.json()["result"]["capabilities"]
+    assert "prompts" in init.json()["result"]["capabilities"]
     listed = await client.post(
         "/mcp",
         headers={**auth_headers(), "Mcp-Session-Id": session_id},
@@ -915,6 +1117,357 @@ async def test_service_validation_toolbox_catalog_and_db_backed_call(app_client)
     assert prompt.status_code == 200
     assert prompt.json()["result"]["messages"][0]["content"]["text"] == "Summarize this."
     assert await app.state.repository.count_invocations() >= 2
+
+
+@pytest.mark.asyncio
+async def test_resources_read_catalog_miss_with_active_service_does_not_broadcast(app_client):
+    client, recorder, _ = app_client
+    created = await client.post(
+        "/v1/mcp-services",
+        headers=auth_headers(),
+        json={"name": "Strict Resource Fake", "slug": "strict-resource", "endpoint_url": "http://fake.local/mcp"},
+    )
+    service_id = created.json()["id"]
+    assert (await client.post(f"/v1/mcp-services/{service_id}/validate", headers=auth_headers())).status_code == 200
+    assert (await client.post("/v1/toolboxes/tbx_default/items", headers=auth_headers(), json={"service_id": service_id})).status_code == 201
+    init = await initialize(client)
+    session_id = init.headers["Mcp-Session-Id"]
+
+    before = len([request for request in recorder.requests if request["body"]["method"] == "resources/read"])
+    missing = await client.post(
+        "/mcp",
+        headers={**auth_headers(), "Mcp-Session-Id": session_id},
+        json={"jsonrpc": "2.0", "id": 207, "method": "resources/read", "params": {"uri": "memory://missing"}},
+    )
+    after = len([request for request in recorder.requests if request["body"]["method"] == "resources/read"])
+
+    assert missing.status_code == 200
+    assert missing.json()["error"]["code"] == -32602
+    assert missing.json()["error"]["message"] == "Unknown resource"
+    assert after == before
+
+
+@pytest.mark.asyncio
+async def test_duplicate_resource_uri_is_not_first_hit_routed(app_client):
+    client, recorder, _ = app_client
+    service_ids: list[str] = []
+    for suffix in ("a", "b"):
+        created = await client.post(
+            "/v1/mcp-services",
+            headers=auth_headers(),
+            json={"name": f"Duplicate Resource {suffix}", "slug": f"dup-resource-{suffix}", "endpoint_url": "http://fake.local/mcp"},
+        )
+        service_id = created.json()["id"]
+        service_ids.append(service_id)
+        assert (await client.post(f"/v1/mcp-services/{service_id}/validate", headers=auth_headers())).status_code == 200
+        assert (await client.post("/v1/toolboxes/tbx_default/items", headers=auth_headers(), json={"service_id": service_id})).status_code == 201
+
+    init = await initialize(client)
+    session_id = init.headers["Mcp-Session-Id"]
+    before = len([request for request in recorder.requests if request["body"]["method"] == "resources/read"])
+    collided = await client.post(
+        "/mcp",
+        headers={**auth_headers(), "Mcp-Session-Id": session_id},
+        json={"jsonrpc": "2.0", "id": 208, "method": "resources/read", "params": {"uri": "memory://note/1"}},
+    )
+    after = len([request for request in recorder.requests if request["body"]["method"] == "resources/read"])
+
+    assert len(service_ids) == 2
+    assert collided.status_code == 200
+    assert collided.json()["error"]["code"] == -32602
+    assert collided.json()["error"]["message"] == "Unknown resource"
+    assert after == before
+
+
+@pytest.mark.asyncio
+async def test_http_downstream_session_id_is_mapped_after_initialize(tmp_path: Path):
+    records: list[dict[str, Any]] = []
+
+    async def transport(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        records.append({"headers": dict(request.headers), "body": body})
+        method = body.get("method")
+        request_id = body.get("id")
+        if method == "initialize":
+            return httpx.Response(
+                200,
+                headers={"Mcp-Session-Id": "downstream-session-1"},
+                json={
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {"protocolVersion": body.get("params", {}).get("protocolVersion")},
+                },
+            )
+        if method == "tools/list":
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "tools": [{"name": "echo", "inputSchema": {"type": "object"}}],
+                        "nextCursor": None,
+                    },
+                },
+            )
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": request_id, "result": {"resources": [], "prompts": []}})
+
+    downstream_client = httpx.AsyncClient(transport=httpx.MockTransport(transport))
+    app = create_app(
+        settings=Settings(
+            COREMCP_ADMIN_TOKEN_VALUE=TOKEN,
+            COREMCP_ADMIN_TOKEN_FILE=tmp_path / "missing-admin-token",
+            COREMCP_DB_PATH=tmp_path / "downstream-session.sqlite3",
+            FAKE_MCP_URL="http://fake.local/mcp",
+            COREMCP_SSRF_ALLOW_HOSTS="fake.local",
+            COREMCP_SECRET_BACKEND="fernet",
+            COREMCP_SECRETS_FILE=tmp_path / "downstream-session-secrets.json",
+        ),
+        http_client=downstream_client,
+    )
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+            created = await client.post(
+                "/v1/mcp-services",
+                headers=auth_headers(),
+                json={"name": "Session MCP", "slug": "session-mcp", "endpoint_url": "http://fake.local/mcp"},
+            )
+            service_id = created.json()["id"]
+            validated = await client.post(f"/v1/mcp-services/{service_id}/validate", headers=auth_headers())
+            assert validated.status_code == 200
+
+    tools_list_request = next(record for record in records if record["body"]["method"] == "tools/list")
+    assert records[0]["body"]["method"] == "initialize"
+    assert records[0]["headers"].get("mcp-session-id") is None
+    assert tools_list_request["headers"].get("mcp-session-id") == "downstream-session-1"
+    await downstream_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_dynamic_capabilities_omit_resources_and_prompts_when_services_do_not_support_them(tmp_path: Path):
+    async def transport(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        method = body.get("method")
+        request_id = body.get("id")
+        if method == "initialize":
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "protocolVersion": body.get("params", {}).get("protocolVersion"),
+                        "capabilities": {"tools": {"listChanged": True}},
+                    },
+                },
+            )
+        if method == "tools/list":
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {"tools": [{"name": "echo", "inputSchema": {"type": "object"}}], "nextCursor": None},
+                },
+            )
+        return httpx.Response(
+            200,
+            json={"jsonrpc": "2.0", "id": request_id, "error": {"code": -32601, "message": "Method not found"}},
+        )
+
+    downstream_client = httpx.AsyncClient(transport=httpx.MockTransport(transport))
+    app = create_app(
+        settings=Settings(
+            COREMCP_ADMIN_TOKEN_VALUE=TOKEN,
+            COREMCP_ADMIN_TOKEN_FILE=tmp_path / "missing-admin-token",
+            COREMCP_DB_PATH=tmp_path / "dynamic-caps.sqlite3",
+            FAKE_MCP_URL="http://fake.local/mcp",
+            COREMCP_SSRF_ALLOW_HOSTS="fake.local",
+            COREMCP_SECRET_BACKEND="fernet",
+            COREMCP_SECRETS_FILE=tmp_path / "dynamic-caps-secrets.json",
+        ),
+        http_client=downstream_client,
+    )
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+            created = await client.post(
+                "/v1/mcp-services",
+                headers=auth_headers(),
+                json={"name": "Tools Only", "slug": "tools-only", "endpoint_url": "http://fake.local/mcp"},
+            )
+            service_id = created.json()["id"]
+            validated = await client.post(f"/v1/mcp-services/{service_id}/validate", headers=auth_headers())
+            assert validated.status_code == 200
+            assert validated.json()["resource_prompt_catalog"]["resources_supported"] is False
+            assert (await client.post("/v1/toolboxes/tbx_default/items", headers=auth_headers(), json={"service_id": service_id})).status_code == 201
+
+            init = await initialize(client)
+            caps = init.json()["result"]["capabilities"]
+            assert "tools" in caps
+            assert "resources" not in caps
+            assert "prompts" not in caps
+    await downstream_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_tool_args_schema_validation_blocks_downstream_call(app_client):
+    client, recorder, app = app_client
+    created = await client.post(
+        "/v1/mcp-services",
+        headers=auth_headers(),
+        json={"name": "Schema Fake", "slug": "schema-fake", "endpoint_url": "http://fake.local/mcp"},
+    )
+    service_id = created.json()["id"]
+    assert (await client.post(f"/v1/mcp-services/{service_id}/validate", headers=auth_headers())).status_code == 200
+    assert (await client.post("/v1/toolboxes/tbx_default/items", headers=auth_headers(), json={"service_id": service_id})).status_code == 201
+    init = await initialize(client)
+    session_id = init.headers["Mcp-Session-Id"]
+
+    before = len([request for request in recorder.requests if request["body"]["method"] == "tools/call"])
+    invalid = await client.post(
+        "/mcp",
+        headers={**auth_headers(), "Mcp-Session-Id": session_id},
+        json={
+            "jsonrpc": "2.0",
+            "id": "invalid-args",
+            "method": "tools/call",
+            "params": {"name": "schema-fake.echo", "arguments": {}},
+        },
+    )
+    after = len([request for request in recorder.requests if request["body"]["method"] == "tools/call"])
+
+    assert invalid.status_code == 200
+    assert invalid.json()["error"]["code"] == -32602
+    assert "text" in invalid.json()["error"]["data"]["details"]
+    assert after == before
+    audit = await app.state.repository.recent_audit_logs(limit=5, action="policy.invalid_args")
+    assert audit and audit[0]["resource_type"] == "service_tool"
+
+
+@pytest.mark.asyncio
+async def test_per_service_rate_limit_blocks_repeated_tool_calls(tmp_path: Path):
+    recorder = DownstreamRecorder()
+    downstream_client = httpx.AsyncClient(transport=httpx.MockTransport(recorder))
+    app = create_app(
+        settings=Settings(
+            COREMCP_ADMIN_TOKEN_VALUE=TOKEN,
+            COREMCP_ADMIN_TOKEN_FILE=tmp_path / "missing-admin-token",
+            COREMCP_DB_PATH=tmp_path / "service-rate.sqlite3",
+            FAKE_MCP_URL="http://fake.local/mcp",
+            COREMCP_SSRF_ALLOW_HOSTS="fake.local",
+            COREMCP_SECRET_BACKEND="fernet",
+            COREMCP_SECRETS_FILE=tmp_path / "service-rate-secrets.json",
+            COREMCP_SERVICE_RATE_LIMIT_PER_MINUTE=1,
+        ),
+        http_client=downstream_client,
+    )
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+            created = await client.post(
+                "/v1/mcp-services",
+                headers=auth_headers(),
+                json={"name": "Rate Fake", "slug": "rate-fake", "endpoint_url": "http://fake.local/mcp"},
+            )
+            service_id = created.json()["id"]
+            assert (await client.post(f"/v1/mcp-services/{service_id}/validate", headers=auth_headers())).status_code == 200
+            assert (await client.post("/v1/toolboxes/tbx_default/items", headers=auth_headers(), json={"service_id": service_id})).status_code == 201
+            init = await initialize(client)
+            session_id = init.headers["Mcp-Session-Id"]
+            payload = {
+                "jsonrpc": "2.0",
+                "method": "tools/call",
+                "params": {"name": "rate-fake.echo", "arguments": {"text": "limited"}},
+            }
+            first = await client.post("/mcp", headers={**auth_headers(), "Mcp-Session-Id": session_id}, json={**payload, "id": "rate-1"})
+            second = await client.post("/mcp", headers={**auth_headers(), "Mcp-Session-Id": session_id}, json={**payload, "id": "rate-2"})
+
+            assert first.status_code == 200
+            assert first.json()["result"]["content"][0]["text"] == "echo:limited"
+            assert second.status_code == 200
+            assert second.json()["result"]["isError"] is True
+            assert second.json()["result"]["_meta"]["coremcp"]["error_code"] == "rate_limited"
+    downstream_calls = [request for request in recorder.requests if request["body"]["method"] == "tools/call"]
+    assert len(downstream_calls) == 1
+    await downstream_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_tools_list_includes_unavailable_service_metadata(app_client):
+    client, _, app = app_client
+    created = await client.post(
+        "/v1/mcp-services",
+        headers=auth_headers(),
+        json={"name": "Unavailable Fake", "slug": "unavailable", "endpoint_url": "http://fake.local/mcp"},
+    )
+    service_id = created.json()["id"]
+    assert (await client.post(f"/v1/mcp-services/{service_id}/validate", headers=auth_headers())).status_code == 200
+    assert (await client.post("/v1/toolboxes/tbx_default/items", headers=auth_headers(), json={"service_id": service_id})).status_code == 201
+    for _ in range(app.state.circuit_breaker.failure_threshold):
+        app.state.circuit_breaker.record_failure(service_id)
+
+    init = await initialize(client)
+    listed = await client.post(
+        "/mcp",
+        headers={**auth_headers(), "Mcp-Session-Id": init.headers["Mcp-Session-Id"]},
+        json={"jsonrpc": "2.0", "id": "unavailable-list", "method": "tools/list", "params": {}},
+    )
+
+    assert listed.status_code == 200
+    unavailable = listed.json()["result"]["_meta"]["coremcp"]["unavailable_services"]
+    assert unavailable[0]["service_id"] == service_id
+    assert unavailable[0]["status"] == "circuit_open"
+
+
+@pytest.mark.asyncio
+async def test_health_probe_detects_tool_schema_drift_and_refreshes_catalog(tmp_path: Path):
+    version = {"value": 1}
+
+    async def transport(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        method = body.get("method")
+        request_id = body.get("id")
+        if method == "initialize":
+            return httpx.Response(
+                200,
+                json={"jsonrpc": "2.0", "id": request_id, "result": {"protocolVersion": body.get("params", {}).get("protocolVersion"), "capabilities": {"tools": {}}}},
+            )
+        if method == "tools/list":
+            tools = [{"name": "echo", "inputSchema": {"type": "object"}}]
+            if version["value"] == 2:
+                tools.append({"name": "new_tool", "inputSchema": {"type": "object"}})
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": request_id, "result": {"tools": tools, "nextCursor": None}})
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": request_id, "error": {"code": -32601, "message": "Method not found"}})
+
+    downstream_client = httpx.AsyncClient(transport=httpx.MockTransport(transport))
+    app = create_app(
+        settings=Settings(
+            COREMCP_ADMIN_TOKEN_VALUE=TOKEN,
+            COREMCP_ADMIN_TOKEN_FILE=tmp_path / "missing-admin-token",
+            COREMCP_DB_PATH=tmp_path / "health-drift.sqlite3",
+            FAKE_MCP_URL="http://fake.local/mcp",
+            COREMCP_SSRF_ALLOW_HOSTS="fake.local",
+            COREMCP_SECRET_BACKEND="fernet",
+            COREMCP_SECRETS_FILE=tmp_path / "health-drift-secrets.json",
+            COREMCP_SERVICE_HEALTH_PROBE_ENABLED=False,
+        ),
+        http_client=downstream_client,
+    )
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+            created = await client.post(
+                "/v1/mcp-services",
+                headers=auth_headers(),
+                json={"name": "Drift MCP", "slug": "drift", "endpoint_url": "http://fake.local/mcp"},
+            )
+            service_id = created.json()["id"]
+            assert (await client.post(f"/v1/mcp-services/{service_id}/validate", headers=auth_headers())).status_code == 200
+            version["value"] = 2
+            probe = await _run_service_health_probe_once(app)
+            assert probe == {"checked": 1, "failed": 0}
+            tools = await client.get(f"/v1/mcp-services/{service_id}/tools", headers=auth_headers())
+            exposed = {item["exposed_name"] for item in tools.json()["items"]}
+            assert exposed == {"drift.echo", "drift.new_tool"}
+    await downstream_client.aclose()
 
 
 @pytest.mark.asyncio
@@ -1517,6 +2070,7 @@ async def test_idempotency_key_reuses_tools_call_result(app_client):
     assert second.json()["result"]["content"][0]["text"] == "echo:first"
     downstream_tool_calls = [request for request in recorder.requests if request["body"]["method"] == "tools/call"]
     assert len(downstream_tool_calls) == 1
+    assert downstream_tool_calls[0]["headers"].get("idempotency-key") == "idem-key-1"
 
 
 @pytest.mark.asyncio
@@ -1902,7 +2456,7 @@ async def test_inflight_entries_include_reaper_timestamps_on_timeout(tmp_path: P
             await client.post(
                 "/mcp",
                 headers={**auth_headers(), "Mcp-Session-Id": session_id},
-                json={"jsonrpc": "2.0", "id": "inflight-1", "method": "tools/call", "params": {"name": "inflight.echo", "arguments": {}}},
+                json={"jsonrpc": "2.0", "id": "inflight-1", "method": "tools/call", "params": {"name": "inflight.echo", "arguments": {"text": "slow"}}},
             )
 
     assert observed_inflight["method"] == "tools/call"
@@ -1934,6 +2488,18 @@ def test_svg_icons_are_blocked_by_default_but_png_icons_survive(tmp_path: Path):
         {"src": "data:image/png;base64,AAAA", "mimeType": "image/png", "sizes": ["64x64"]}
     ]
     assert any(warning["code"] == "icon_svg_blocked" for warning in warnings)
+
+
+def test_downstream_tool_names_with_dots_are_still_service_namespaced(tmp_path: Path):
+    tools, warnings = normalize_downstream_tools(
+        [{"name": "admin.echo", "inputSchema": {"type": "object"}}],
+        service_slug="safe",
+        settings=Settings(COREMCP_ADMIN_TOKEN_FILE=tmp_path / "missing-admin-token"),
+    )
+
+    assert warnings == []
+    assert tools[0]["original_name"] == "admin.echo"
+    assert tools[0]["exposed_name"] == "safe.admin.echo"
 
 
 @pytest.mark.asyncio

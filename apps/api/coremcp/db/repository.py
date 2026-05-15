@@ -994,7 +994,7 @@ class Repository:
             """,
             (service_id,),
         )
-        return self._row_to_dict(await cursor.fetchone(), json_fields=("validation_summary", "stdio_args", "stdio_env"))
+        return self._row_to_dict(await cursor.fetchone(), json_fields=("validation_summary", "stdio_args", "stdio_env", "capabilities_json"))
 
     async def list_mcp_services(self, limit: int = 50, status: str | None = None) -> list[dict[str, Any]]:
         where = "WHERE s.deleted_at IS NULL"
@@ -1009,7 +1009,7 @@ class Repository:
                    s.category, s.logo_url, s.homepage_url, s.documentation_url, s.transport_type,
                    s.stdio_command, s.stdio_args, s.stdio_env, s.stdio_cwd,
                    s.stdio_idle_timeout_seconds, s.last_health_check_at, s.consecutive_failures,
-                   s.circuit_open_until,
+                   s.circuit_open_until, s.capabilities_json,
                    s.risk_level, s.last_validated_at, s.updated_at, COUNT(st.id) AS tool_count
             FROM mcp_services s
             LEFT JOIN service_tools st ON st.service_id = s.id AND st.status = 'active'
@@ -1021,7 +1021,7 @@ class Repository:
             params,
         )
         return [
-            self._row_to_dict(row, json_fields=("stdio_args", "stdio_env")) or {}
+            self._row_to_dict(row, json_fields=("stdio_args", "stdio_env", "capabilities_json")) or {}
             for row in await cursor.fetchall()
         ]
 
@@ -1054,6 +1054,7 @@ class Repository:
             "last_stdio_exit_code",
             "last_stdio_error",
             "last_stdio_stderr_tail",
+            "capabilities_json",
         }
         fields: list[str] = []
         values: list[Any] = []
@@ -1061,6 +1062,8 @@ class Repository:
             if key not in allowed:
                 continue
             if key == "validation_summary":
+                value = self.dumps_json(value or {})
+            if key == "capabilities_json":
                 value = self.dumps_json(value or {})
             if key == "stdio_args":
                 value = self.dumps_json_array(value or [])
@@ -1085,16 +1088,17 @@ class Repository:
         status: str,
         protocol_version: str | None = None,
         summary: dict[str, Any] | None = None,
+        capabilities: dict[str, Any] | None = None,
     ) -> None:
         await self.db.execute(
             """
             UPDATE mcp_services
-            SET status = ?, protocol_version = ?, validation_summary = ?,
+            SET status = ?, protocol_version = ?, validation_summary = ?, capabilities_json = ?,
                 last_validated_at = CURRENT_TIMESTAMP, last_tool_refresh_at = CURRENT_TIMESTAMP,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
             """,
-            (status, protocol_version, self.dumps_json(summary or {}), service_id),
+            (status, protocol_version, self.dumps_json(summary or {}), self.dumps_json(capabilities or {}), service_id),
         )
         await self.db.commit()
 
@@ -1691,12 +1695,15 @@ class Repository:
             JOIN mcp_services s ON s.id = tbi.service_id AND s.deleted_at IS NULL AND s.status = 'active'
             JOIN service_resources sr ON sr.service_id = s.id AND sr.status = 'active'
             WHERE tbi.toolbox_id = ? AND tbi.deleted_at IS NULL AND tbi.enabled = 1 AND sr.uri = ?
-            ORDER BY tbi.position ASC
-            LIMIT 1
+            ORDER BY tbi.position ASC, s.slug ASC
+            LIMIT 2
             """,
             (toolbox_id, uri),
         )
-        return self._row_to_dict(await cursor.fetchone(), json_fields=("annotations", "metadata_json", "stdio_args", "stdio_env"))
+        rows = await cursor.fetchall()
+        if len(rows) != 1:
+            return None
+        return self._row_to_dict(rows[0], json_fields=("annotations", "metadata_json", "stdio_args", "stdio_env"))
 
     async def get_catalog_prompt_by_exposed_name(self, exposed_name: str, toolbox_id: str = DEFAULT_TOOLBOX_ID) -> dict[str, Any] | None:
         if "." not in exposed_name:

@@ -7,7 +7,7 @@ import pytest
 
 from coremcp.db.repository import DEFAULT_TOOLBOX_ID, LOCAL_USER_ID, Repository
 
-HEAD_REVISION = "20260514_0007"
+HEAD_REVISION = "20260515_0008"
 
 
 def _table_names(db_path: Path) -> set[str]:

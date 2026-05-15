@@ -127,6 +127,7 @@ CREATE TABLE mcp_services (
   risk_level TEXT NOT NULL DEFAULT 'unknown'
     CHECK (risk_level IN ('unknown', 'low', 'medium', 'high', 'critical')),
   validation_summary JSON NOT NULL DEFAULT '{}',
+  capabilities_json JSON NOT NULL DEFAULT '{}',
   last_validated_at TIMESTAMP,
   last_tool_refresh_at TIMESTAMP,
   protocol_version TEXT,

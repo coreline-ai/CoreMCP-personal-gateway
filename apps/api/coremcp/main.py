@@ -12,6 +12,8 @@ from typing import Any
 from urllib.parse import parse_qs
 
 import httpx
+from jsonschema import SchemaError, ValidationError
+from jsonschema.validators import validator_for
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
@@ -37,10 +39,13 @@ from coremcp.db import DEFAULT_TOOLBOX_ID, Repository
 from coremcp.logging import configure_logging
 from coremcp.mcp_gateway import (
     IdempotencyCache,
+    LIST_CHANGED_CATEGORIES,
+    ListChangedCategory,
     ListChangedEventBus,
     SessionStore,
     negotiate_protocol_version,
     reap_stale_inflight,
+    protocol_negotiation_warning,
     run_reaper_loop,
 )
 from coremcp.proxy import (
@@ -79,6 +84,17 @@ SERVICE_HEALTH_FAILURE_THRESHOLD = 3
 SERVICE_HEALTH_CIRCUIT_OPEN_SECONDS = 30
 RESOURCE_READ_MAX_TEXT_CHARS = 20_000
 RESOURCE_READ_MAX_BLOB_CHARS = 1_000_000
+DEFAULT_DOWNSTREAM_SESSION_KEY = "__default__"
+LIST_CHANGED_METHOD_CATEGORIES: dict[str, ListChangedCategory] = {
+    "notifications/tools/list_changed": "tools",
+    "notifications/resources/list_changed": "resources",
+    "notifications/prompts/list_changed": "prompts",
+}
+DOWNSTREAM_NOTIFICATION_METHODS = {
+    "notifications/progress",
+    "notifications/resources/updated",
+    *LIST_CHANGED_METHOD_CATEGORIES.keys(),
+}
 DANGEROUS_TOOL_KEYWORDS = (
     "delete",
     "remove",
@@ -224,13 +240,9 @@ def tool_error_result(
     }
 
 
-def _is_future_protocol(value: str | None) -> bool:
-    return bool(value and value > "2025-11-25")
-
-
 def _normalize_downstream_tool(tool: dict[str, Any]) -> tuple[dict[str, Any], str]:
     original_name = str(tool.get("name", "")).strip()
-    exposed_name = original_name if "." in original_name else f"fake.{original_name}"
+    exposed_name = f"fake.{slugify_tool_name(original_name)}"
     normalized = dict(tool)
     normalized["name"] = exposed_name
     return normalized, original_name
@@ -474,6 +486,11 @@ async def _stdio_client_for_config(app: FastAPI, config: dict[str, Any]) -> Stdi
     async with lock:
         existing = clients.get(service_key)
         if existing is not None and existing[0] == signature:
+            existing[1].notification_callback = _downstream_notification_callback(
+                app,
+                service_id=service_key,
+                source="stdio",
+            )
             return existing[1]
         if existing is not None:
             clients.pop(service_key, None)
@@ -489,6 +506,11 @@ async def _stdio_client_for_config(app: FastAPI, config: dict[str, Any]) -> Stdi
             timeout=float(app.state.settings.downstream_timeout_seconds),
             idle_timeout_seconds=int(signature[4]),
             max_response_bytes=app.state.settings.downstream_max_response_bytes,
+        )
+        client.notification_callback = _downstream_notification_callback(
+            app,
+            service_id=service_key,
+            source="stdio",
         )
         clients[service_key] = (signature, client)
         return client
@@ -564,6 +586,15 @@ def _rate_limit_response(request: Request, *, route_kind: str, retry_after_secon
     return response
 
 
+def _rate_limit_tool_error(retry_after_seconds: int | None) -> dict[str, Any]:
+    return tool_error_result(
+        "rate_limited",
+        "Downstream service rate limit exceeded",
+        retry_after_seconds=float(retry_after_seconds or 1),
+        reason="service_rate_limit_exceeded",
+    )
+
+
 def _check_in_process_rate_limit(request: Request, *, route_kind: str, limit_per_minute: int) -> JSONResponse | None:
     if limit_per_minute <= 0:
         return None
@@ -590,6 +621,15 @@ def _check_in_process_rate_limit(request: Request, *, route_kind: str, limit_per
     )
 
 
+def _check_service_rate_limit(app: FastAPI, *, service_id: str, method: str, tool_name: str | None = None):
+    limit = int(getattr(app.state.settings, "service_rate_limit_per_minute", 0) or 0)
+    if limit <= 0 or not service_id:
+        return None
+    key = ":".join(("service", service_id, method, tool_name or "*"))
+    decision = app.state.service_rate_limiter.check(key, limit=limit, window_seconds=60)
+    return None if decision.allowed else decision
+
+
 async def _downstream_headers_for_service(app: FastAPI, service_id: str | None) -> dict[str, str]:
     if not service_id:
         return {}
@@ -606,11 +646,187 @@ async def _downstream_headers_for_service(app: FastAPI, service_id: str | None) 
     return {}
 
 
-async def _publish_list_changed(app: FastAPI, *, reason: str, resource_id: str | None = None) -> None:
+def _idempotency_downstream_header(request: Request) -> dict[str, str]:
+    value = request.headers.get("Idempotency-Key")
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    return {"Idempotency-Key": value.strip()}
+
+
+def _parse_last_event_id(value: str | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        return max(0, int(value.strip()))
+    except ValueError:
+        return None
+
+
+def _invalidate_catalog_caches(app: FastAPI) -> None:
     app.state.tool_registry = {}
     if hasattr(app.state, "idempotency_cache"):
         app.state.idempotency_cache.clear()
-    await app.state.list_changed_bus.publish_list_changed(reason=reason, resource_id=resource_id)
+
+
+def _downstream_session_key(service_id: str | None) -> str:
+    return str(service_id or DEFAULT_DOWNSTREAM_SESSION_KEY)
+
+
+def _downstream_session_id(app: FastAPI, service_id: str | None) -> str | None:
+    sessions = getattr(app.state, "downstream_sessions", {})
+    session_id = sessions.get(_downstream_session_key(service_id))
+    return session_id if isinstance(session_id, str) and session_id else None
+
+
+def _downstream_session_callback(app: FastAPI, service_id: str | None):
+    async def callback(session_id: str) -> None:
+        cleaned = session_id.strip()
+        if not cleaned:
+            return
+        app.state.downstream_sessions[_downstream_session_key(service_id)] = cleaned
+
+    return callback
+
+
+def _forget_downstream_session(app: FastAPI, service_id: str | None) -> None:
+    sessions = getattr(app.state, "downstream_sessions", None)
+    if isinstance(sessions, dict):
+        sessions.pop(_downstream_session_key(service_id), None)
+
+
+def _capability_present(capabilities: dict[str, Any], key: str) -> bool:
+    value = capabilities.get(key)
+    return isinstance(value, dict)
+
+
+def _summary_supports(summary: dict[str, Any], *keys: str) -> bool:
+    catalog = summary.get("resource_prompt_catalog") if isinstance(summary.get("resource_prompt_catalog"), dict) else {}
+    return any(bool(catalog.get(key)) for key in keys)
+
+
+async def _server_capabilities_for_default_toolbox(app: FastAPI) -> dict[str, Any]:
+    items = [
+        item
+        for item in await app.state.repository.list_toolbox_items(DEFAULT_TOOLBOX_ID)
+        if bool(item.get("enabled")) and item.get("service_status") == "active"
+    ]
+    if not items:
+        return dict(SERVER_CAPABILITIES)
+
+    capabilities: dict[str, Any] = {"tools": {"listChanged": True}}
+    resources_supported = False
+    prompts_supported = False
+    for item in items:
+        service = await app.state.repository.get_mcp_service(str(item.get("service_id") or ""))
+        if not service:
+            continue
+        downstream_capabilities = service.get("capabilities_json") if isinstance(service.get("capabilities_json"), dict) else {}
+        summary = service.get("validation_summary") if isinstance(service.get("validation_summary"), dict) else {}
+        resources_supported = resources_supported or _capability_present(downstream_capabilities, "resources") or _summary_supports(
+            summary,
+            "resources_supported",
+            "resource_templates_supported",
+            "resources_found",
+            "resource_templates_found",
+        )
+        prompts_supported = prompts_supported or _capability_present(downstream_capabilities, "prompts") or _summary_supports(
+            summary,
+            "prompts_supported",
+            "prompts_found",
+        )
+
+    if resources_supported:
+        capabilities["resources"] = {"listChanged": True, "subscribe": False}
+    if prompts_supported:
+        capabilities["prompts"] = {"listChanged": True}
+    return capabilities
+
+
+def _validate_tool_arguments(schema: Any, arguments: Any) -> str | None:
+    if not isinstance(schema, dict):
+        return None
+    try:
+        validator_cls = validator_for(schema)
+        validator_cls.check_schema(schema)
+        validator = validator_cls(schema)
+        error = next(validator.iter_errors(arguments), None)
+    except SchemaError:
+        # Downstream supplied an invalid schema. Do not block the call on a
+        # malformed catalog entry; validation/service refresh will surface it.
+        return None
+    except ValidationError as exc:
+        error = exc
+    if error is None:
+        return None
+    path = ".".join(str(part) for part in error.absolute_path)
+    prefix = f"{path}: " if path else ""
+    return f"{prefix}{error.message}"
+
+
+async def _publish_list_changed(
+    app: FastAPI,
+    *,
+    reason: str,
+    resource_id: str | None = None,
+    categories: tuple[ListChangedCategory, ...] = LIST_CHANGED_CATEGORIES,
+) -> None:
+    _invalidate_catalog_caches(app)
+    for category in categories:
+        await app.state.list_changed_bus.publish_list_changed(
+            category=category,
+            reason=reason,
+            resource_id=resource_id,
+        )
+
+
+async def _publish_downstream_notification(
+    app: FastAPI,
+    notification: dict[str, Any],
+    *,
+    service_id: str | None = None,
+    source: str = "downstream",
+) -> None:
+    method = notification.get("method")
+    if not isinstance(method, str) or method not in DOWNSTREAM_NOTIFICATION_METHODS:
+        return
+    params = notification.get("params")
+    safe_params = params if isinstance(params, dict) else {}
+    metadata: dict[str, Any] = {"source": source}
+    if service_id:
+        metadata["service_id"] = service_id
+    if category := LIST_CHANGED_METHOD_CATEGORIES.get(method):
+        _invalidate_catalog_caches(app)
+        metadata["category"] = category
+        metadata["reason"] = f"{source}.{category}.list_changed"
+        await app.state.list_changed_bus.publish_notification(
+            method=method,
+            params=safe_params,
+            metadata=metadata,
+            event_name="listChanged",
+        )
+        return
+    await app.state.list_changed_bus.publish_notification(
+        method=method,
+        params=safe_params,
+        metadata=metadata,
+    )
+
+
+def _downstream_notification_callback(
+    app: FastAPI,
+    *,
+    service_id: str | None = None,
+    source: str = "downstream",
+):
+    async def callback(notification: dict[str, Any]) -> None:
+        await _publish_downstream_notification(
+            app,
+            notification,
+            service_id=service_id,
+            source=source,
+        )
+
+    return callback
 
 
 def _utc_sql_timestamp(epoch_seconds: float) -> str:
@@ -940,6 +1156,8 @@ async def _refresh_tools(
                 "stdio_env": row.get("stdio_env") or {},
                 "stdio_cwd": row.get("stdio_cwd"),
                 "stdio_idle_timeout_seconds": row.get("stdio_idle_timeout_seconds"),
+                "input_schema_json": row.get("input_schema_json") or {"type": "object"},
+                "schema_hash": row.get("schema_hash"),
                 "service_id": row["service_id"],
                 "service_tool_id": row["service_tool_id"],
                 "override_enabled": row.get("override_enabled", 1),
@@ -948,7 +1166,11 @@ async def _refresh_tools(
             if bool(row.get("override_enabled", 1)) and row.get("permission_level", "callable") != "hidden":
                 tools.append(tool)
         app.state.tool_registry = registry
-        return {"tools": tools, "nextCursor": None}
+        result_payload: dict[str, Any] = {"tools": tools, "nextCursor": None}
+        unavailable = await _toolbox_unavailable_services(app, DEFAULT_TOOLBOX_ID)
+        if unavailable:
+            result_payload["_meta"] = {"coremcp": {"unavailable_services": unavailable}}
+        return result_payload
 
     downstream: DownstreamMcpClient = app.state.downstream
     response = await downstream.request(
@@ -956,8 +1178,10 @@ async def _refresh_tools(
         params=params or {},
         request_id=request_id,
         protocol_version=protocol_version,
-        session_id=session_id,
+        session_id=_downstream_session_id(app, None),
         correlation_id=correlation_id_value,
+        session_id_callback=_downstream_session_callback(app, None),
+        notification_callback=_downstream_notification_callback(app, source="http"),
     )
     result = response.get("result")
     if not isinstance(result, dict):
@@ -976,6 +1200,7 @@ async def _refresh_tools(
             "transport_type": "http",
             "service_id": None,
             "service_tool_id": None,
+            "input_schema_json": tool.get("inputSchema") if isinstance(tool.get("inputSchema"), dict) else {"type": "object"},
         }
 
     app.state.tool_registry = registry
@@ -996,6 +1221,38 @@ async def _active_toolbox_services(app: FastAPI, toolbox_id: str = DEFAULT_TOOLB
     return services
 
 
+async def _toolbox_unavailable_services(app: FastAPI, toolbox_id: str = DEFAULT_TOOLBOX_ID) -> list[dict[str, Any]]:
+    unavailable: list[dict[str, Any]] = []
+    for item in await app.state.repository.list_toolbox_items(toolbox_id):
+        if not bool(item.get("enabled")):
+            continue
+        service_id = str(item.get("service_id") or "")
+        service_status = str(item.get("service_status") or "unknown")
+        if service_status != "active":
+            unavailable.append(
+                {
+                    "service_id": service_id,
+                    "service_slug": item.get("service_slug"),
+                    "status": service_status,
+                    "reason": "service_not_active",
+                }
+            )
+            continue
+        if service_id:
+            snapshot = app.state.circuit_breaker.snapshot(service_id)
+            if snapshot.state == "open":
+                unavailable.append(
+                    {
+                        "service_id": service_id,
+                        "service_slug": item.get("service_slug"),
+                        "status": "circuit_open",
+                        "reason": "circuit_open",
+                        "retry_after_seconds": snapshot.retry_after_seconds,
+                    }
+                )
+    return unavailable
+
+
 async def _request_service_rpc(
     app: FastAPI,
     service: dict[str, Any],
@@ -1007,6 +1264,7 @@ async def _request_service_rpc(
     session_id: str | None = None,
     correlation_id_value: str | None = None,
 ) -> dict[str, Any]:
+    service_id = str(service.get("id") or service.get("service_id") or "")
     if _transport_type(service) == "stdio":
         client = await _stdio_client_for_config(app, service)
         return await client.request(
@@ -1020,17 +1278,20 @@ async def _request_service_rpc(
 
     checker = UrlSafetyChecker(app.state.settings)
     safety_result = checker.assert_safe(service["endpoint_url"])
+    downstream_session_id = _downstream_session_id(app, service_id)
     return await app.state.downstream.request(
         method=method,
         params=params or {},
         request_id=request_id,
         protocol_version=protocol_version,
-        session_id=session_id,
+        session_id=downstream_session_id,
         url=service["endpoint_url"],
-        downstream_headers=await _downstream_headers_for_service(app, service.get("id")),
+        downstream_headers=await _downstream_headers_for_service(app, service_id),
         url_safety_checker=checker,
         safety_result=safety_result,
         correlation_id=correlation_id_value,
+        session_id_callback=_downstream_session_callback(app, service_id),
+        notification_callback=_downstream_notification_callback(app, service_id=service_id, source="http"),
     )
 
 
@@ -1049,8 +1310,10 @@ async def _request_default_downstream_rpc(
         params=params or {},
         request_id=request_id,
         protocol_version=protocol_version,
-        session_id=session_id,
+        session_id=_downstream_session_id(app, None),
         correlation_id=correlation_id_value,
+        session_id_callback=_downstream_session_callback(app, None),
+        notification_callback=_downstream_notification_callback(app, source="http"),
     )
 
 
@@ -1084,6 +1347,15 @@ def _cached_resource_to_mcp(row: dict[str, Any]) -> dict[str, Any]:
     if isinstance(row.get("annotations"), dict) and row["annotations"]:
         item["annotations"] = row["annotations"]
     return item
+
+
+def _unambiguous_resource_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        uri = str(row.get("uri") or "")
+        if uri:
+            counts[uri] = counts.get(uri, 0) + 1
+    return [row for row in rows if counts.get(str(row.get("uri") or ""), 0) == 1]
 
 
 def _cached_resource_template_to_mcp(row: dict[str, Any]) -> dict[str, Any]:
@@ -1235,6 +1507,57 @@ async def _run_ops_reapers_once(app: FastAPI) -> None:
     )
 
 
+async def _detect_service_tool_schema_drift(
+    app: FastAPI,
+    service: dict[str, Any],
+    *,
+    protocol_version: str,
+    timeout: httpx.Timeout,
+) -> bool:
+    service_id = str(service.get("id") or "")
+    if not service_id:
+        return False
+    if _transport_type(service) == "stdio":
+        stdio_client = await _stdio_client_for_config(app, service)
+        response = await stdio_client.request(
+            method="tools/list",
+            params={},
+            request_id=f"health-{service_id}-tools",
+            protocol_version=protocol_version,
+            correlation_id=f"health-probe-{service_id}",
+        )
+    else:
+        checker = UrlSafetyChecker(app.state.settings)
+        safety_result = checker.assert_safe(str(service.get("endpoint_url") or ""))
+        downstream_headers = await _downstream_headers_for_service(app, service_id)
+        response = await app.state.downstream.request(
+            method="tools/list",
+            params={},
+            request_id=f"health-{service_id}-tools",
+            protocol_version=protocol_version,
+            session_id=_downstream_session_id(app, service_id),
+            url=str(service.get("endpoint_url") or ""),
+            downstream_headers=downstream_headers,
+            url_safety_checker=checker,
+            safety_result=safety_result,
+            correlation_id=f"health-probe-{service_id}",
+            timeout=timeout,
+            session_id_callback=_downstream_session_callback(app, service_id),
+            notification_callback=_downstream_notification_callback(app, service_id=service_id, source="http"),
+        )
+    result = response.get("result")
+    tools = result.get("tools") if isinstance(result, dict) else None
+    if not isinstance(tools, list):
+        return False
+    existing_tools = await app.state.repository.list_service_tools(service_id)
+    normalized, _warnings = normalize_downstream_tools(
+        tools,
+        service_slug=str(service.get("slug") or service_id),
+        settings=app.state.settings,
+    )
+    return _tool_schema_change_summary(existing_tools, normalized).get("changed_tool_count", 0) > 0
+
+
 async def _probe_service_health(app: FastAPI, service: dict[str, Any]) -> tuple[bool, str | None]:
     service_id = str(service.get("id") or "")
     if not service_id:
@@ -1274,7 +1597,16 @@ async def _probe_service_health(app: FastAPI, service: dict[str, Any]) -> tuple[
                 safety_result=safety_result,
                 correlation_id=f"health-probe-{service_id}",
                 timeout=timeout,
+                session_id_callback=_downstream_session_callback(app, service_id),
+                notification_callback=_downstream_notification_callback(app, service_id=service_id, source="http"),
             )
+        if await _detect_service_tool_schema_drift(
+            app,
+            service,
+            protocol_version=protocol_version,
+            timeout=timeout,
+        ):
+            await validate_service(app, service_id, correlation_id_value=f"health-drift-{service_id}")
         app.state.circuit_breaker.record_success(service_id)
         await app.state.repository.mark_service_health_probe(service_id=service_id, ok=True)
         return True, None
@@ -1326,7 +1658,8 @@ async def _handle_initialize(
     request: Request,
 ) -> tuple[dict[str, Any], str]:
     params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
-    requested = params.get("protocolVersion") or request.headers.get("MCP-Protocol-Version")
+    requested_raw = params.get("protocolVersion") or request.headers.get("MCP-Protocol-Version")
+    requested = str(requested_raw) if requested_raw is not None else None
     protocol_version = negotiate_protocol_version(requested)
     session = app.state.sessions.create(protocol_version)
 
@@ -1346,9 +1679,11 @@ async def _handle_initialize(
             params=downstream_params,
             request_id=_get_request_id(payload),
             protocol_version=protocol_version,
-            session_id=session.id,
+            session_id=_downstream_session_id(app, None),
             correlation_id=correlation_id(request),
             timeout=init_timeout,
+            session_id_callback=_downstream_session_callback(app, None),
+            notification_callback=_downstream_notification_callback(app, source="http"),
         )
     except DownstreamMcpError:
         # Best-effort compatibility probe only: registered services validate
@@ -1358,11 +1693,11 @@ async def _handle_initialize(
 
     result = {
         "protocolVersion": protocol_version,
-        "capabilities": SERVER_CAPABILITIES,
+        "capabilities": await _server_capabilities_for_default_toolbox(app),
         "serverInfo": {"name": "CoreMCP", "version": app.state.settings.app_version},
     }
-    if _is_future_protocol(requested):
-        result["_coremcp"] = {"warning": "future protocol downgraded to latest supported version"}
+    if warning := protocol_negotiation_warning(requested, protocol_version):
+        result["_coremcp"] = warning
     return jsonrpc_result(_get_request_id(payload), result), session.id
 
 
@@ -1430,7 +1765,16 @@ async def _handle_resources_list(
     if method == "resources/list":
         cached = await app.state.repository.list_catalog_resources(DEFAULT_TOOLBOX_ID)
         if cached:
-            return jsonrpc_result(request_id, {"resources": [_cached_resource_to_mcp(row) for row in cached], "nextCursor": None})
+            return jsonrpc_result(
+                request_id,
+                {
+                    "resources": [
+                        _cached_resource_to_mcp(row)
+                        for row in _unambiguous_resource_rows(cached)
+                    ],
+                    "nextCursor": None,
+                },
+            )
     elif method == "resources/templates/list":
         cached_templates = await app.state.repository.list_catalog_resource_templates(DEFAULT_TOOLBOX_ID)
         if cached_templates:
@@ -1520,28 +1864,6 @@ async def _handle_resources_read(app: FastAPI, payload: dict[str, Any], request:
             return jsonrpc_result(request_id, _truncate_resource_read_result(result) if isinstance(result, dict) else {})
         except DownstreamMcpError as exc:
             return jsonrpc_error(request_id, exc.code, str(exc))
-
-    last_error: DownstreamMcpError | None = None
-    for service in services:
-        try:
-            response = await _request_service_rpc(
-                app,
-                service,
-                method="resources/read",
-                params=params,
-                request_id=f"{request_id}-{service['id']}-resource-read",
-                protocol_version=protocol_version,
-                session_id=session_id,
-                correlation_id_value=correlation_id(request),
-            )
-            result = response.get("result")
-            if isinstance(result, dict):
-                return jsonrpc_result(request_id, _truncate_resource_read_result(result))
-        except DownstreamMcpError as exc:
-            last_error = exc
-            continue
-    if last_error is not None and last_error.code not in {-32601, -32602}:
-        return jsonrpc_error(request_id, last_error.code, str(last_error))
     return jsonrpc_error(request_id, -32602, "Unknown resource")
 
 
@@ -1852,10 +2174,77 @@ async def _handle_tools_call(
             ),
         )
 
+    arguments = params.get("arguments", {})
+    schema_error = _validate_tool_arguments(route.get("input_schema_json"), arguments)
+    if schema_error is not None:
+        await app.state.repository.log_audit(
+            action="policy.invalid_args",
+            resource_type="service_tool",
+            resource_id=route.get("service_tool_id"),
+            metadata={"tool": exposed_name, "error": schema_error, "schema_hash": route.get("schema_hash")},
+            request_id=request_log_id,
+            ip=request_ip(request),
+            user_agent=request.headers.get("user-agent"),
+        )
+        await app.state.repository.log_invocation(
+            session_id=session_id,
+            method="tools/call",
+            tool_name=exposed_name,
+            status="policy_denied",
+            error_code="invalid_args",
+            latency_ms=int((time.perf_counter() - started) * 1000),
+            request_id=request_log_id,
+            service_id=route.get("service_id"),
+            service_tool_id=route.get("service_tool_id"),
+            downstream_tool_name=route.get("original_name"),
+            error_message=schema_error,
+            protocol_version=protocol_version,
+            client_ip=request_ip(request),
+            user_agent=request.headers.get("user-agent"),
+        )
+        return jsonrpc_error(
+            request_id,
+            -32602,
+            "Invalid tool arguments",
+            {"details": schema_error},
+        )
+
     downstream_params = dict(params)
     downstream_params["name"] = route["original_name"]
     service_id = str(route.get("service_id") or "")
     if service_id:
+        if decision := _check_service_rate_limit(
+            app,
+            service_id=service_id,
+            method="tools/call",
+            tool_name=exposed_name,
+        ):
+            await app.state.repository.log_audit(
+                action="rate_limit.exceeded",
+                resource_type="mcp_service",
+                resource_id=service_id,
+                metadata={"tool": exposed_name, "route": "tools/call", "retry_after_seconds": decision.retry_after_seconds},
+                request_id=request_log_id,
+                ip=request_ip(request),
+                user_agent=request.headers.get("user-agent"),
+            )
+            await app.state.repository.log_invocation(
+                session_id=session_id,
+                method="tools/call",
+                tool_name=exposed_name,
+                status="rate_limited",
+                error_code="service_rate_limited",
+                latency_ms=int((time.perf_counter() - started) * 1000),
+                request_id=request_log_id,
+                service_id=route.get("service_id"),
+                service_tool_id=route.get("service_tool_id"),
+                downstream_tool_name=route.get("original_name"),
+                error_message="service_rate_limit_exceeded",
+                protocol_version=protocol_version,
+                client_ip=request_ip(request),
+                user_agent=request.headers.get("user-agent"),
+            )
+            return jsonrpc_result(request_id, _rate_limit_tool_error(decision.retry_after_seconds))
         try:
             app.state.circuit_breaker.before_request(service_id)
         except CircuitOpenError as exc:
@@ -1914,6 +2303,11 @@ async def _handle_tools_call(
             checker = UrlSafetyChecker(app.state.settings)
             safety_result = checker.assert_safe(route["endpoint_url"])
             downstream_headers = await _downstream_headers_for_service(app, route.get("service_id"))
+            downstream_headers.update(_idempotency_downstream_header(request))
+            downstream_session_id = _downstream_session_id(
+                app,
+                route.get("service_id") if isinstance(route.get("service_id"), str) else None,
+            )
             app.state.inflight_downstream_calls[inflight_key] = {
                 "url": route["endpoint_url"],
                 "transport_type": "http",
@@ -1921,7 +2315,7 @@ async def _handle_tools_call(
                 "started_at": inflight_started_at,
                 "timeout_at": inflight_timeout_at,
                 "service_id": route.get("service_id"),
-                "session_id": session_id,
+                "session_id": downstream_session_id,
                 "protocol_version": protocol_version,
                 "downstream_headers": downstream_headers,
             }
@@ -1930,12 +2324,21 @@ async def _handle_tools_call(
                 params=downstream_params,
                 request_id=request_id,
                 protocol_version=protocol_version,
-                session_id=session_id,
+                session_id=downstream_session_id,
                 url=route["endpoint_url"],
                 downstream_headers=downstream_headers,
                 url_safety_checker=checker,
                 safety_result=safety_result,
                 correlation_id=correlation_id(request),
+                session_id_callback=_downstream_session_callback(
+                    app,
+                    route.get("service_id") if isinstance(route.get("service_id"), str) else None,
+                ),
+                notification_callback=_downstream_notification_callback(
+                    app,
+                    service_id=route.get("service_id") if isinstance(route.get("service_id"), str) else None,
+                    source="http",
+                ),
             )
         app.state.inflight_downstream_calls.pop(inflight_key, None)
         result = downstream_response.get("result")
@@ -2130,6 +2533,31 @@ async def dispatch_mcp(app: FastAPI, payload: dict[str, Any], request: Request) 
     return jsonrpc_error(request_id, -32601, "Method not found"), None
 
 
+async def dispatch_mcp_batch(
+    app: FastAPI,
+    payloads: list[Any],
+    request: Request,
+) -> tuple[list[dict[str, Any]] | None, str | None]:
+    """Dispatch a JSON-RPC 2.0 batch request sequentially.
+
+    JSON-RPC notifications do not produce response items. Sequential dispatch
+    keeps side-effect ordering deterministic for initialize/cancel/tools calls.
+    """
+
+    responses: list[dict[str, Any]] = []
+    new_session_id: str | None = None
+    for item in payloads:
+        if not isinstance(item, dict):
+            responses.append(jsonrpc_error(None, -32600, "Invalid Request"))
+            continue
+        response_payload, item_session_id = await dispatch_mcp(app, item, request)
+        if item_session_id and new_session_id is None:
+            new_session_id = item_session_id
+        if response_payload is not None:
+            responses.append(response_payload)
+    return (responses or None), new_session_id
+
+
 async def validate_service(
     app: FastAPI,
     service_id: str,
@@ -2184,8 +2612,15 @@ async def validate_service(
                 url_safety_checker=checker,
                 safety_result=safety_result,
                 correlation_id=correlation_id_value,
+                session_id_callback=_downstream_session_callback(app, service_id),
+                notification_callback=_downstream_notification_callback(app, service_id=service_id, source="http"),
             )
         init_result = init_response.get("result") if isinstance(init_response, dict) else {}
+        downstream_capabilities = (
+            init_result.get("capabilities")
+            if isinstance(init_result, dict) and isinstance(init_result.get("capabilities"), dict)
+            else {}
+        )
         if isinstance(init_result, dict) and init_result.get("protocolVersion"):
             protocol_version = str(init_result["protocolVersion"])
         stages.append({"name": "mcp_initialize", "status": "success"})
@@ -2206,11 +2641,14 @@ async def validate_service(
                 params={},
                 request_id=f"validate-{service_id}-tools",
                 protocol_version=protocol_version,
+                session_id=_downstream_session_id(app, service_id),
                 url=service["endpoint_url"],
                 downstream_headers=downstream_headers,
                 url_safety_checker=checker,
                 safety_result=safety_result,
                 correlation_id=correlation_id_value,
+                session_id_callback=_downstream_session_callback(app, service_id),
+                notification_callback=_downstream_notification_callback(app, service_id=service_id, source="http"),
             )
         result = tools_response.get("result")
         tools = result.get("tools") if isinstance(result, dict) else None
@@ -2242,12 +2680,14 @@ async def validate_service(
             "schema_drift": change_summary,
             "schema_diff": schema_diff["details"],
             "resource_prompt_catalog": catalog_summary,
+            "downstream_capabilities": downstream_capabilities,
         }
         await repository.mark_service_validated(
             service_id=service_id,
             status="active",
             protocol_version=protocol_version,
             summary=summary,
+            capabilities=downstream_capabilities,
         )
         await repository.log_audit(
             action="service.validate.success",
@@ -2326,11 +2766,13 @@ def create_app(settings: Settings | None = None, http_client: httpx.AsyncClient 
         app.state.list_changed_bus = ListChangedEventBus()
         app.state.idempotency_cache = IdempotencyCache()
         app.state.inflight_downstream_calls = {}
+        app.state.downstream_sessions = {}
         app.state.stdio_clients = {}
         app.state.stdio_clients_lock = asyncio.Lock()
         app.state.circuit_breaker = CircuitBreaker()
         app.state.auth_rate_limiter = FixedWindowRateLimiter()
         app.state.mcp_rate_limiter = FixedWindowRateLimiter()
+        app.state.service_rate_limiter = FixedWindowRateLimiter()
         app.state.oauth_dcr_rate_limiter = FixedWindowRateLimiter()
         app.state.oauth_cimd_rate_limiter = FixedWindowRateLimiter()
         app.state.reaper_task = None
@@ -2634,12 +3076,17 @@ def create_app(settings: Settings | None = None, http_client: httpx.AsyncClient 
             payload = await request.json()
         except ValueError:
             return JSONResponse(jsonrpc_error(None, -32700, "Parse error"), status_code=400)
-        if not isinstance(payload, dict):
+        if isinstance(payload, list) and not payload:
+            return JSONResponse(jsonrpc_error(None, -32600, "Invalid Request"), status_code=400)
+        if not isinstance(payload, (dict, list)):
             return JSONResponse(jsonrpc_error(None, -32600, "Invalid Request"), status_code=400)
 
         request.app.state.sessions.touch(request.headers.get("Mcp-Session-Id"))
         request.app.state.sessions.reap_idle(SESSION_IDLE_REAP_SECONDS)
-        response_payload, new_session_id = await dispatch_mcp(request.app, payload, request)
+        if isinstance(payload, list):
+            response_payload, new_session_id = await dispatch_mcp_batch(request.app, payload, request)
+        else:
+            response_payload, new_session_id = await dispatch_mcp(request.app, payload, request)
         if response_payload is None:
             return Response(status_code=202)
 
@@ -2654,9 +3101,10 @@ def create_app(settings: Settings | None = None, http_client: httpx.AsyncClient 
     async def mcp_sse(request: Request, max_events: int | None = None, heartbeat_seconds: float = 15.0) -> Response:
         if not await verify_mcp_request(request):
             return unauthorized_response(request)
+        last_event_id = _parse_last_event_id(request.headers.get("Last-Event-Id"))
 
         async def events():
-            subscription = await request.app.state.list_changed_bus.subscribe()
+            subscription = await request.app.state.list_changed_bus.subscribe(last_event_id=last_event_id)
             try:
                 yield ": CoreMCP SSE keepalive\n\n"
                 if max_events == 0:
@@ -3060,6 +3508,12 @@ def create_app(settings: Settings | None = None, http_client: httpx.AsyncClient 
             or ("transport_type" in updates and updates.get("transport_type") != "stdio")
         ):
             await _close_stdio_client_for_service(request.app, service_id)
+        if (
+            "endpoint_url" in updates
+            or "transport_type" in updates
+            or ("status" in updates and str(updates.get("status") or "") != "active")
+        ):
+            _forget_downstream_session(request.app, service_id)
         await _publish_list_changed(request.app, reason="service.update", resource_id=service_id)
         return JSONResponse(service)
 
@@ -3069,6 +3523,7 @@ def create_app(settings: Settings | None = None, http_client: httpx.AsyncClient 
             return unauthorized_response()
         await request.app.state.repository.soft_delete_mcp_service(service_id)
         await _close_stdio_client_for_service(request.app, service_id)
+        _forget_downstream_session(request.app, service_id)
         await _publish_list_changed(request.app, reason="service.delete", resource_id=service_id)
         return accepted({"id": service_id, "status": "deleted"})
 
@@ -3123,7 +3578,12 @@ def create_app(settings: Settings | None = None, http_client: httpx.AsyncClient 
         )
         if item is None:
             return not_found("service_tool")
-        await _publish_list_changed(request.app, reason="tool_permission.update", resource_id=service_tool_id)
+        await _publish_list_changed(
+            request.app,
+            reason="tool_permission.update",
+            resource_id=service_tool_id,
+            categories=("tools",),
+        )
         return JSONResponse(item)
 
     @app.post("/v1/mcp-services/{service_id}/tool-overrides/preset")
@@ -3158,7 +3618,12 @@ def create_app(settings: Settings | None = None, http_client: httpx.AsyncClient 
             metadata={"preset": preset, "counts": _tool_override_counts(items)},
             request_id=correlation_id(request),
         )
-        await _publish_list_changed(request.app, reason=f"tool_permission.preset.{preset}", resource_id=service_id)
+        await _publish_list_changed(
+            request.app,
+            reason=f"tool_permission.preset.{preset}",
+            resource_id=service_id,
+            categories=("tools",),
+        )
         return JSONResponse({"preset": preset, "items": items, "counts": _tool_override_counts(items), "next_cursor": None})
 
     @app.put("/v1/mcp-services/{service_id}/credential")
@@ -3241,6 +3706,7 @@ def create_app(settings: Settings | None = None, http_client: httpx.AsyncClient 
         await request.app.state.repository.revoke_service_credential(service_id)
         await request.app.state.repository.update_mcp_service(service_id, {"status": "auth_required"})
         await _close_stdio_client_for_service(request.app, service_id)
+        await _publish_list_changed(request.app, reason="credential.delete", resource_id=service_id)
         return accepted({"service_id": service_id, "status": "not_connected"})
 
     @app.get("/v1/toolboxes")
@@ -3276,7 +3742,12 @@ def create_app(settings: Settings | None = None, http_client: httpx.AsyncClient 
         item = await request.app.state.repository.add_toolbox_item(
             toolbox_id, service_id, enabled=bool(body.get("enabled", True))
         )
-        await _publish_list_changed(request.app, reason="toolbox_item.upsert", resource_id=item.get("id"))
+        await _publish_list_changed(
+            request.app,
+            reason="toolbox_item.upsert",
+            resource_id=item.get("id"),
+            categories=("tools",),
+        )
         return JSONResponse(item, status_code=201)
 
     @app.patch("/v1/toolboxes/{toolbox_id}/items/{item_id}")
@@ -3289,7 +3760,12 @@ def create_app(settings: Settings | None = None, http_client: httpx.AsyncClient 
         item = await request.app.state.repository.update_toolbox_item(item_id, enabled=bool(body.get("enabled", True)))
         if item is None or item["toolbox_id"] != toolbox_id:
             return not_found("toolbox_item")
-        await _publish_list_changed(request.app, reason="toolbox_item.update", resource_id=item_id)
+        await _publish_list_changed(
+            request.app,
+            reason="toolbox_item.update",
+            resource_id=item_id,
+            categories=("tools",),
+        )
         return JSONResponse(item)
 
     @app.delete("/v1/toolboxes/{toolbox_id}/items/{item_id}")
@@ -3297,7 +3773,12 @@ def create_app(settings: Settings | None = None, http_client: httpx.AsyncClient 
         if not verify_admin_request(request):
             return unauthorized_response()
         await request.app.state.repository.delete_toolbox_item(item_id)
-        await _publish_list_changed(request.app, reason="toolbox_item.delete", resource_id=item_id)
+        await _publish_list_changed(
+            request.app,
+            reason="toolbox_item.delete",
+            resource_id=item_id,
+            categories=("tools",),
+        )
         return accepted({"id": item_id, "status": "deleted"})
 
     @app.get("/v1/playground/tools/list")

@@ -163,7 +163,9 @@ Response:
 
 Response header: `Mcp-Session-Id: <uuid>`
 
-미선언 capabilities: `resources`, `prompts`, `logging`, `completions`, `sampling`, `elicitation`. downstream에서 이들 요청 시 -32601 반환.
+CoreMCP는 default toolbox의 active service capability union을 기준으로 `capabilities`를 동적으로 반환한다. `tools`는 항상 포함하고, `resources`/`prompts`는 해당 capability 또는 catalog support가 있는 service가 default toolbox에 있을 때만 포함한다.
+
+미선언 capabilities: `logging`, `completions`, `sampling`, `elicitation`. downstream에서 이들 요청 시 -32601 반환.
 
 Protocol version 협상 (ADR-029):
 - request `protocolVersion`이 `2025-11-25` → response 동일
@@ -304,9 +306,12 @@ Protocol Error:
 
 ### 2.8 notifications (server → client)
 SSE stream(GET /mcp)으로 전달:
-- `notifications/tools/list_changed`: toolbox 변경 / schema 변경 시 emit
-- `notifications/progress`: downstream → CoreMCP → client forward
-- `notifications/cancelled`: downstream cancel forward
+- `notifications/tools/list_changed`: toolbox/tool permission/service catalog 변경 또는 downstream tools listChanged fan-in 시 emit
+- `notifications/resources/list_changed`: service resource catalog 변경 또는 downstream resources listChanged fan-in 시 emit
+- `notifications/prompts/list_changed`: service prompt catalog 변경 또는 downstream prompts listChanged fan-in 시 emit
+- `notifications/progress`: downstream HTTP SSE/STDIO notification을 CoreMCP SSE channel로 fan-out
+- `notifications/resources/updated`: downstream resource update notification을 CoreMCP SSE channel로 fan-out
+- `notifications/cancelled`: client cancellation을 downstream으로 forward
 
 ### 2.9 ping
 Request:

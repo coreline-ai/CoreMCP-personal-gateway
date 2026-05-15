@@ -66,7 +66,7 @@ CoreMCP는 본인 1명이 Mac mini에서 운영하는 protected MCP gateway다. 
 
 **한 줄 가치**: AI 클라이언트마다 MCP를 따로 등록하지 않고, 한 곳에 모아 어디서나 동일한 도구함을 쓴다.
 
-### Implementation Status — 2026-05-14
+### Implementation Status — 2026-05-15
 
 - Root monorepo scaffold, `apps/api`, `apps/fake-mcp`, `apps/web`, `packages/*`, `infra/*`가 생성되었습니다.
 - P1 backend core는 Alembic 단일 schema source, client token DB hash, service registry, toolbox catalog, 실제 Fernet/Keychain credential vault, SSRF guard, validation, DB 기반 `/mcp tools/list/call`까지 구현되었습니다.
@@ -74,7 +74,9 @@ CoreMCP는 본인 1명이 Mac mini에서 운영하는 protected MCP gateway다. 
 - OAuth 미지원 client용 one-time connection token issue/exchange와 기본 off Prometheus `/metrics` endpoint를 구현하고 API 회귀 테스트로 고정했습니다.
 - 개인 도구함 tool-level override(`hidden`, `visible_only`, `callable`)와 preset(`readonly`, `dangerous_off`, `full_access`), client/OAuth scope enforcement, schema drift detail, `X-Request-ID` 전파, policy deny/audit/invocation 관측성을 구현하고 API 회귀 테스트로 고정했습니다.
 - HTTP/STDIO service transport foundation을 추가했습니다. `transport_type=stdio` service는 command/args/env/cwd metadata로 등록·검증·호출 가능하며, CoreMCP admin/client/Authorization 계열 env는 저장/전달하지 않습니다. STDIO runtime/crash snapshot은 `mcp_services` 컬럼에 영속화합니다.
-- MCP `resources/list`, `resources/read`, `resources/templates/list`, `prompts/list`, `prompts/get` live proxy를 추가해 tools-only gateway 한계를 줄였습니다. `resources/read` 대형 text/blob는 client context 보호를 위해 CoreMCP metadata와 함께 truncate합니다.
+- MCP `resources/list`, `resources/read`, `resources/templates/list`, `prompts/list`, `prompts/get` live proxy를 추가해 tools-only gateway 한계를 줄였습니다. `resources/read` 대형 text/blob는 client context 보호를 위해 CoreMCP metadata와 함께 truncate하며, active service가 있을 때는 catalog에 등록된 URI만 라우팅해 cross-service first-hit 충돌을 막습니다.
+- Multi-MCP 안정화를 위해 downstream tool 이름은 항상 `<service_slug>.<tool>` namespace로 노출하고, HTTP downstream이 발급한 `Mcp-Session-Id`는 service별로 매핑해 client session id를 downstream에 그대로 전달하지 않습니다. Downstream `notifications/{tools,resources,prompts}/list_changed`는 CoreMCP SSE로 fan-in/fan-out됩니다.
+- Multi-MCP P1 고도화로 service capability union 기반 initialize response, tool arguments JSON Schema 사전 검증, per-service fixed-window quota, `tools/list` unavailable service metadata, health probe schema drift refresh, downstream `Idempotency-Key` forwarding을 추가했습니다.
 - 운영 안정성 module로 in-memory circuit breaker, idle session reaper, stdio process client cache를 추가했고, `coremcp` CLI foundation(`doctor`, `service add/validate`, `tool call`, `token issue/revoke`, `export/import dry-run`)과 Makefile CLI thin wrappers를 제공합니다.
 - Fake downstream MCP fixture는 `initialize`, `tools/list`, `tools/call`, `ping`과 production test fixture(`cancellation`, `schema-change`, `cimd-test`, `dcr-test`, `icons-rich`)를 지원하며 12개 테스트로 고정했습니다.
 - Web Admin UI는 nonce 기반 CSP/security headers, `/services`, `/services/[id]`, `/toolbox`, `/clients`, `/settings`, `/playground`, `/logs` route split, Service Detail Tool Control, Services 검색/필터/sort, Playground schema form/replay/diff/pin, Logs filter, client 연결 카드와 Playwright CLI route smoke script를 통과했습니다.
@@ -92,14 +94,14 @@ CoreMCP는 본인 1명이 Mac mini에서 운영하는 protected MCP gateway다. 
 | 구분 | 남은 항목 |
 |---|---|
 | 목적 부합 core 미구현 | 현재 known blocker 없음. personal gateway 목적 범위의 core blocker는 로컬 검증 기준 해소됨 |
-| 이번 안정화 batch 완료 | STDIO process cap/default idle timeout/delete cleanup, admin `/v1` + `/mcp` fixed-window rate limit, CLI import 실제 restore/path traversal/overwrite/0600 hardening 구현 및 테스트 통과 |
+| 이번 안정화 batch 완료 | STDIO process cap/default idle timeout/delete cleanup, admin `/v1` + `/mcp` fixed-window rate limit, CLI import hardening, Multi-MCP namespace/session/resource routing/P1 운영성 hardening 구현 및 테스트 통과 |
 | 외부환경 검증 필요 | actual macOS reboot recovery, Tailscale CLI install/login/Serve/ACL smoke, real external OAuth client compatibility, 실제 모바일 visual QA, long soak — `make external-env-validate`, `make mobile-qa-checklist`, `make soak-check`로 운영 host에서 결과 기록 |
 | 선택 Polish | Web Admin UX polish, 관측 dashboard/metric tuning, proactive health probe tuning은 지속 개선 대상 |
 
 ### Stabilization Batch Notes — 2026-05-14
 
 - 권장 commit split은 `dev-plan/implement_20260514_224500.md`에 기록되어 있습니다. 이 문서/code patch는 commit split을 **계획만** 하며, 사용자가 `commit/push`를 명시 요청하기 전에는 commit을 만들지 않습니다.
-- STDIO resource limits, admin/MCP rate limit, CLI import hardening은 통합 완료했습니다. 검증: `make test` **PASS** (API 122 + fake-mcp 12 + demo-mcp-suite 21), `pnpm lint && pnpm build && pnpm test` **PASS**, `make ui-smoke` **PASS**, `git diff --check` **PASS**.
+- STDIO resource limits, admin/MCP rate limit, CLI import hardening, Multi-MCP namespace/session/resource routing/P1 운영성 hardening은 통합 완료했습니다. 최신 검증: `make test` **PASS** (API 140 + fake-mcp 12 + demo-mcp-suite 21). 이전 Web/ops smoke 기준: `pnpm lint && pnpm build && pnpm test`, `make ui-smoke`, `git diff --check` **PASS**.
 - 외부환경 검증 대표 명령:
   - `make external-env-validate`
   - `COREMCP_EXTERNAL_API_URL=https://<host>/health COREMCP_EXTERNAL_WEB_URL=https://<host>/ make external-env-validate`

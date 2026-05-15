@@ -84,16 +84,19 @@
 | `POST /mcp` Streamable HTTP | 포함 | 핵심 |
 | `GET /mcp` SSE (keepalive + notifications) | 포함 | listChanged emit 채널 |
 | `DELETE /mcp` session termination | 포함 | 핵심 |
-| `Mcp-Session-Id` 처리 | 포함 | in-memory session map |
+| `Mcp-Session-Id` 처리 | 포함 | CoreMCP client session map + HTTP downstream service별 session id mapping |
 | `MCP-Protocol-Version` 협상 | 포함 | 2025-11-25 / 2025-06-18 병행 지원 (ADR-029) |
 | initialize | 포함 | 핵심 |
 | tools/list | 포함 | 핵심 |
 | tools/call | 포함 | 핵심 |
 | tools/list pagination cursor | 부분포함 | 50개 미만이면 cursor 불필요, 그래도 spec 호환 |
-| notifications/tools/list_changed emission | 포함 | toolbox 변경 / schema 변경 시 |
+| notifications/{tools,resources,prompts}/list_changed emission | 포함 | toolbox/tool permission/service catalog 변경 및 downstream list_changed fan-in 시, Last-Event-Id reconnect backfill 지원 |
 | notifications/cancelled forward | 포함 | client→downstream |
 | notifications/progress forward | 포함 | downstream→client |
-| resources / prompts / sampling / elicitation | 제외 | capability omit, -32601 reject |
+| resources / prompts | 포함 | list/read/templates/list/get proxy + catalog cache |
+| sampling / elicitation | 제외 | capability omit, -32601 reject |
+| Dynamic capability merge | 포함 | default toolbox active service union 기반 initialize capabilities |
+| Tool args JSON Schema validation | 포함 | downstream 호출 전 catalog input_schema_json 검증 |
 | Tool annotations (destructive/readOnly/idempotent) | 포함 | schema 캐시에 포함, UI 표시 |
 | Structured content output | 부분포함 | spec 따라 schema 저장, 렌더링은 Phase P3+ |
 
@@ -103,6 +106,10 @@
 
 | 기능 | 상태 | 개인용 적용 |
 |---|---|---|
+| Multi-MCP namespace | 포함 | downstream tool name은 항상 `<service_slug>.<tool>`로 노출, dotted name prefix 우회 차단 |
+| Resource strict routing | 포함 | active service가 있을 때 `resources/read`는 catalog에 등록된 unambiguous URI만 라우팅 |
+| Per-service quota | 포함 | service_id/method/tool 단위 in-memory fixed-window |
+| Partial failure metadata | 포함 | circuit-open/unavailable service를 tools/list `_meta.coremcp.unavailable_services`에 표시 |
 | Tool alias (exposed↔downstream 매핑) | 포함 | 별도 테이블 |
 | Slug rename 시 alias 유지 | 포함 | 핵심 |
 | Tool name normalization (NFKC, lowercase, etc.) | 포함 | 핵심 |

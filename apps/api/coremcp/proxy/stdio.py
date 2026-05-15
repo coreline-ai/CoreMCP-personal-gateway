@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +28,7 @@ class StdioMcpTransport:
         timeout: float = 30.0,
         max_response_bytes: int = 1024 * 1024,
         idle_timeout_seconds: float | None = None,
+        notification_callback: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
     ) -> None:
         if not command:
             raise ValueError("stdio command must not be empty")
@@ -39,6 +40,7 @@ class StdioMcpTransport:
         self.timeout = timeout
         self.max_response_bytes = max(1, max_response_bytes)
         self.idle_timeout_seconds = idle_timeout_seconds
+        self.notification_callback = notification_callback
 
         self.started_at: float | None = None
         self.last_used_at: float | None = None
@@ -258,6 +260,9 @@ class StdioMcpTransport:
                     self._fail_pending(DownstreamMcpError("downstream stdio returned invalid JSON-RPC response"))
                     continue
                 response_id = data.get("id")
+                if response_id is None and isinstance(data.get("method"), str):
+                    await self._emit_notification(data)
+                    continue
                 future = self._pending.pop(self._id_key(response_id), None)
                 if future is not None and not future.done():
                     future.set_result(data)
@@ -429,6 +434,14 @@ class StdioMcpTransport:
             return json.dumps(request_id, sort_keys=True, separators=(",", ":"))
         except TypeError:
             return repr(request_id)
+
+    async def _emit_notification(self, data: dict[str, Any]) -> None:
+        callback = self.notification_callback
+        if callback is None:
+            return
+        result = callback(data)
+        if result is not None:
+            await result
 
     @classmethod
     def _sanitize_env(cls, env: Mapping[str, str]) -> dict[str, str]:

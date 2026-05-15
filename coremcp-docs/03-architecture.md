@@ -223,6 +223,11 @@ MCP client → CoreMCP /mcp: tools/list (재요청)
 CoreMCP → MCP client: 새 catalog
 ```
 
+Service catalog validation/update/delete는 tools/resources/prompts catalog 모두에 영향을 줄 수 있으므로 `notifications/{tools,resources,prompts}/list_changed`를 broadcast한다. Downstream HTTP SSE/STDIO에서 들어온 listChanged notification도 CoreMCP SSE로 fan-in/fan-out한다. SSE reconnect는 최근 event ring buffer와 `Last-Event-Id`로 backfill한다.
+
+HTTP downstream session은 CoreMCP client session과 분리한다. CoreMCP가 downstream initialize 응답의 `Mcp-Session-Id`를 service별로 저장하고, 이후 service RPC/cancellation에는 해당 downstream session id만 전달한다.
+
+
 발생 트리거 (07-mcp-proxy-spec.md §12 참조):
 1. toolbox_items add/remove/enable/disable
 2. service status active ↔ disabled
