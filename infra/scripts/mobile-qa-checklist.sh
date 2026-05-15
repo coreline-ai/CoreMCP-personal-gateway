@@ -15,4 +15,6 @@ CoreMCP mobile browser QA checklist
    $API_URL/ready
 
 If using Tailscale, set COREMCP_WEB_URL and COREMCP_API_URL to the Tailscale Serve/Caddy URLs and rerun this checklist.
+
+Exit code 0 only means this checklist was printed. Record actual mobile pass/skip/fail evidence in TESTING.md after using a physical device/browser.
 CHECKLIST

@@ -88,7 +88,7 @@ make test && pnpm lint && pnpm build && pnpm test && make smoke && make codex-sm
 
 ## Current verification snapshot — 2026-05-15
 
-- `cd apps/api && uv run pytest -q`: **140 passed**.
+- `cd apps/api && uv run pytest -q`: **144 passed**.
 - `cd apps/fake-mcp && uv run pytest -q`: **12 passed**.
 - `cd apps/demo-mcp-suite && uv run pytest -q`: **21 passed**.
 - `make test`: **PASS** (API + fake-mcp + demo-mcp-suite).
@@ -107,7 +107,7 @@ make test && pnpm lint && pnpm build && pnpm test && make smoke && make codex-sm
 - MCP resources/prompts proxy smoke: **PASS** (`resources/list`, `resources/read` large-content truncate, `resources/templates/list`, `prompts/list`, `prompts/get` API regression).
 - MCP catalog notification smoke: **PASS** (`notifications/{tools,resources,prompts}/list_changed` category emission, `Last-Event-Id` SSE replay, unsupported protocol downgrade warning).
 - MCP batch/progress notification smoke: **PASS** (JSON-RPC batch mixed/notification-only/empty-array behavior, downstream `notifications/progress` + `notifications/resources/updated` SSE fan-out, STDIO notification callback, app/repository facade imports).
-- Multi-MCP hardening smoke: **PASS** (dotted downstream tool name namespace 강제, active-service `resources/read` catalog miss no-broadcast, duplicate resource URI ambiguous reject, HTTP downstream session id mapping, downstream `notifications/tools/list_changed` fan-in).
+- Multi-MCP hardening smoke: **PASS** (dotted downstream tool name namespace 강제, active-service `resources/read` catalog miss no-broadcast, duplicate resource URI shadow policy, HTTP downstream session id mapping/TTL/circuit-open invalidation, downstream `notifications/tools/list_changed` fan-in).
 - Multi-MCP P1 운영성 smoke: **PASS** (dynamic capability merge, tool args JSON Schema validation, per-service rate limit, `tools/list` unavailable metadata, health-probe schema drift refresh, downstream `Idempotency-Key` forwarding).
 - Phase 7~10 hardening smoke: **PASS** (`tests/test_stdio_transport.py` 9 cases, `tests/test_reaper.py`, CLI token/export/import, resources/prompts cache validation/routing).
 - Follow-up backlog smoke: **PASS** (STDIO crash-state DB persistence regression, Makefile CLI wrapper dry-run without token echo, Web UX Phase 6 lint/build/route smoke).
@@ -121,6 +121,7 @@ make test && pnpm lint && pnpm build && pnpm test && make smoke && make codex-sm
 - MCP runtime curl smoke: **PASS** (`initialize` → `tools/list` → `fake.echo tools/call`).
 - CSP smoke: **PASS** (`script-src` nonce, no `unsafe-inline` in `script-src`/`style-src`).
 - `/metrics` default-off smoke: **PASS** (`404`).
+- Structural refactor smoke: **PASS** (`coremcp.mcp` helper extraction, domain repository facades, ADR-038 external validation runbook; `tests/test_structure_facades.py` 4 passed).
 - `git diff --check`: **PASS**.
 
 Remaining Work Classification — 2026-05-14:
@@ -144,8 +145,8 @@ Run these on the actual operations host when local smoke is already green:
 ```bash
 # Local ops plus optional external URL checks
 make external-env-validate
-COREMCP_EXTERNAL_API_URL=https://<tailscale-or-public-host>/health \
-COREMCP_EXTERNAL_WEB_URL=https://<tailscale-or-public-host>/ \
+COREMCP_EXTERNAL_API_URL=https://<tailscale-or-public-host> \
+COREMCP_EXTERNAL_WEB_URL=https://<tailscale-or-public-host> \
   make external-env-validate
 
 # Actual mobile browser checklist; prints URLs and manual pass/fail prompts
@@ -158,6 +159,20 @@ COREMCP_SOAK_INTERVAL_SECONDS=30 \
 ```
 
 Record actual reboot recovery, Tailscale login/Serve/ACL, real external OAuth client compatibility, mobile visual QA, and long soak results in this section after the batch is verified.
+
+### External environment result record template
+
+실제 reboot, Tailscale Serve/ACL, real OAuth client, physical mobile QA, long soak은 코드 미구현 backlog가 아니라 운영 host에서 실행해 기록할 validation 항목입니다. 각 실행은 아래 형식으로 남깁니다.
+
+| Date (KST) | Host | Scenario | Command | Exit code | Result | Evidence path | Notes |
+|---|---|---|---|---:|---|---|---|
+| 2026-05-15 | `macmini.local` | post-reboot launchd recovery | `infra/scripts/external-env-validate.sh --post-reboot` | 0 | pass/skip/fail | `dev-plan/.artifacts/external-env/<date>/ops-smoke.log` | 재부팅 후 5분 이내 `/ready` 확인 |
+| 2026-05-15 | `macmini.local` | Tailscale Serve/ACL | `COREMCP_EXTERNAL_API_URL=https://<tailnet-host> COREMCP_EXTERNAL_WEB_URL=https://<tailnet-host> make external-env-validate` | 0 | pass/skip/fail | `dev-plan/.artifacts/external-env/<date>/tailscale.log` | 본인 디바이스만 접근 가능해야 함 |
+| 2026-05-15 | `macmini.local` | real OAuth client compatibility | `AUTH_MODE=oauth` client 등록/authorize/token 수동 시나리오 | 0 | pass/skip/fail | `dev-plan/.artifacts/external-env/<date>/oauth-client.md` | client 이름/버전, redirect URI, scope 기록 |
+| 2026-05-15 | `iPhone/Android` | mobile visual QA | `make mobile-qa-checklist` | 0 | pass/skip/fail | `dev-plan/.artifacts/external-env/<date>/mobile/*.png` | 실제 기기/브라우저명 기록 |
+| 2026-05-15 | `macmini.local` | long soak | `COREMCP_SOAK_DURATION_SECONDS=3600 COREMCP_SOAK_INTERVAL_SECONDS=30 make soak-check` | 0 | pass/skip/fail | `dev-plan/.artifacts/external-env/<date>/soak.jsonl` | 실패 횟수와 latency 추세 기록 |
+
+Result 값은 `pass`, `skip`, `fail` 중 하나만 사용합니다. `skip`은 환경 미준비(Tailscale CLI 미설치, 실제 모바일 기기 없음 등)처럼 코드 변경으로 해결할 수 없는 사유를 Notes에 명시합니다.
 
 ## Current test layers
 

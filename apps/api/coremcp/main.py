@@ -12,8 +12,6 @@ from typing import Any
 from urllib.parse import parse_qs
 
 import httpx
-from jsonschema import SchemaError, ValidationError
-from jsonschema.validators import validator_for
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
@@ -48,6 +46,22 @@ from coremcp.mcp_gateway import (
     protocol_negotiation_warning,
     run_reaper_loop,
 )
+from coremcp.mcp.args_validator import validate_tool_arguments as _validate_tool_arguments
+from coremcp.mcp.capabilities import (
+    DEFAULT_SERVER_CAPABILITIES,
+    server_capabilities_for_default_toolbox as _server_capabilities_for_default_toolbox,
+)
+from coremcp.mcp.notifications import (
+    is_downstream_notification_method,
+    list_changed_category_for_method,
+    notification_params,
+)
+from coremcp.mcp.session_proxy import (
+    downstream_session_callback as _downstream_session_callback,
+    downstream_session_id as _downstream_session_id,
+    forget_downstream_session as _forget_downstream_session,
+    reap_expired_downstream_sessions as _reap_expired_downstream_sessions,
+)
 from coremcp.proxy import (
     CircuitBreaker,
     CircuitOpenError,
@@ -62,11 +76,7 @@ from coremcp.proxy import (
 from coremcp.registry.catalog import catalog_row_to_mcp_tool, normalize_downstream_tools, slugify_tool_name
 from coremcp.settings import Settings, get_settings
 
-SERVER_CAPABILITIES = {
-    "tools": {"listChanged": True},
-    "resources": {"listChanged": True, "subscribe": False},
-    "prompts": {"listChanged": True},
-}
+SERVER_CAPABILITIES = DEFAULT_SERVER_CAPABILITIES
 JSONRPC_VERSION = "2.0"
 ONE_TIME_TOKEN_PREFIX = "cmcp_otk_"
 ONE_TIME_TOKEN_TTL_SECONDS = 600
@@ -84,17 +94,6 @@ SERVICE_HEALTH_FAILURE_THRESHOLD = 3
 SERVICE_HEALTH_CIRCUIT_OPEN_SECONDS = 30
 RESOURCE_READ_MAX_TEXT_CHARS = 20_000
 RESOURCE_READ_MAX_BLOB_CHARS = 1_000_000
-DEFAULT_DOWNSTREAM_SESSION_KEY = "__default__"
-LIST_CHANGED_METHOD_CATEGORIES: dict[str, ListChangedCategory] = {
-    "notifications/tools/list_changed": "tools",
-    "notifications/resources/list_changed": "resources",
-    "notifications/prompts/list_changed": "prompts",
-}
-DOWNSTREAM_NOTIFICATION_METHODS = {
-    "notifications/progress",
-    "notifications/resources/updated",
-    *LIST_CHANGED_METHOD_CATEGORIES.keys(),
-}
 DANGEROUS_TOOL_KEYWORDS = (
     "delete",
     "remove",
@@ -668,99 +667,12 @@ def _invalidate_catalog_caches(app: FastAPI) -> None:
         app.state.idempotency_cache.clear()
 
 
-def _downstream_session_key(service_id: str | None) -> str:
-    return str(service_id or DEFAULT_DOWNSTREAM_SESSION_KEY)
-
-
-def _downstream_session_id(app: FastAPI, service_id: str | None) -> str | None:
-    sessions = getattr(app.state, "downstream_sessions", {})
-    session_id = sessions.get(_downstream_session_key(service_id))
-    return session_id if isinstance(session_id, str) and session_id else None
-
-
-def _downstream_session_callback(app: FastAPI, service_id: str | None):
-    async def callback(session_id: str) -> None:
-        cleaned = session_id.strip()
-        if not cleaned:
-            return
-        app.state.downstream_sessions[_downstream_session_key(service_id)] = cleaned
-
-    return callback
-
-
-def _forget_downstream_session(app: FastAPI, service_id: str | None) -> None:
-    sessions = getattr(app.state, "downstream_sessions", None)
-    if isinstance(sessions, dict):
-        sessions.pop(_downstream_session_key(service_id), None)
-
-
-def _capability_present(capabilities: dict[str, Any], key: str) -> bool:
-    value = capabilities.get(key)
-    return isinstance(value, dict)
-
-
-def _summary_supports(summary: dict[str, Any], *keys: str) -> bool:
-    catalog = summary.get("resource_prompt_catalog") if isinstance(summary.get("resource_prompt_catalog"), dict) else {}
-    return any(bool(catalog.get(key)) for key in keys)
-
-
-async def _server_capabilities_for_default_toolbox(app: FastAPI) -> dict[str, Any]:
-    items = [
-        item
-        for item in await app.state.repository.list_toolbox_items(DEFAULT_TOOLBOX_ID)
-        if bool(item.get("enabled")) and item.get("service_status") == "active"
-    ]
-    if not items:
-        return dict(SERVER_CAPABILITIES)
-
-    capabilities: dict[str, Any] = {"tools": {"listChanged": True}}
-    resources_supported = False
-    prompts_supported = False
-    for item in items:
-        service = await app.state.repository.get_mcp_service(str(item.get("service_id") or ""))
-        if not service:
-            continue
-        downstream_capabilities = service.get("capabilities_json") if isinstance(service.get("capabilities_json"), dict) else {}
-        summary = service.get("validation_summary") if isinstance(service.get("validation_summary"), dict) else {}
-        resources_supported = resources_supported or _capability_present(downstream_capabilities, "resources") or _summary_supports(
-            summary,
-            "resources_supported",
-            "resource_templates_supported",
-            "resources_found",
-            "resource_templates_found",
-        )
-        prompts_supported = prompts_supported or _capability_present(downstream_capabilities, "prompts") or _summary_supports(
-            summary,
-            "prompts_supported",
-            "prompts_found",
-        )
-
-    if resources_supported:
-        capabilities["resources"] = {"listChanged": True, "subscribe": False}
-    if prompts_supported:
-        capabilities["prompts"] = {"listChanged": True}
-    return capabilities
-
-
-def _validate_tool_arguments(schema: Any, arguments: Any) -> str | None:
-    if not isinstance(schema, dict):
-        return None
-    try:
-        validator_cls = validator_for(schema)
-        validator_cls.check_schema(schema)
-        validator = validator_cls(schema)
-        error = next(validator.iter_errors(arguments), None)
-    except SchemaError:
-        # Downstream supplied an invalid schema. Do not block the call on a
-        # malformed catalog entry; validation/service refresh will surface it.
-        return None
-    except ValidationError as exc:
-        error = exc
-    if error is None:
-        return None
-    path = ".".join(str(part) for part in error.absolute_path)
-    prefix = f"{path}: " if path else ""
-    return f"{prefix}{error.message}"
+def _record_downstream_failure(app: FastAPI, service_id: str) -> None:
+    if not service_id:
+        return
+    snapshot = app.state.circuit_breaker.record_failure(service_id)
+    if snapshot.state == "open":
+        _forget_downstream_session(app, service_id)
 
 
 async def _publish_list_changed(
@@ -787,14 +699,13 @@ async def _publish_downstream_notification(
     source: str = "downstream",
 ) -> None:
     method = notification.get("method")
-    if not isinstance(method, str) or method not in DOWNSTREAM_NOTIFICATION_METHODS:
+    if not is_downstream_notification_method(method):
         return
-    params = notification.get("params")
-    safe_params = params if isinstance(params, dict) else {}
+    safe_params = notification_params(notification)
     metadata: dict[str, Any] = {"source": source}
     if service_id:
         metadata["service_id"] = service_id
-    if category := LIST_CHANGED_METHOD_CATEGORIES.get(method):
+    if category := list_changed_category_for_method(method):
         _invalidate_catalog_caches(app)
         metadata["category"] = category
         metadata["reason"] = f"{source}.{category}.list_changed"
@@ -1495,7 +1406,8 @@ async def _run_ops_reapers_once(app: FastAPI) -> None:
         )
 
     async def stuck_job_cleanup() -> int:
-        return await app.state.repository.mark_stuck_jobs_failed(max_age_seconds=JOB_REAP_MAX_AGE_SECONDS)
+        marked = await app.state.repository.mark_stuck_jobs_failed(max_age_seconds=JOB_REAP_MAX_AGE_SECONDS)
+        return marked + _reap_expired_downstream_sessions(app)
 
     await run_reaper_loop(
         interval_seconds=INFLIGHT_REAP_INTERVAL_SECONDS,
@@ -1611,7 +1523,7 @@ async def _probe_service_health(app: FastAPI, service: dict[str, Any]) -> tuple[
         await app.state.repository.mark_service_health_probe(service_id=service_id, ok=True)
         return True, None
     except Exception as exc:  # noqa: BLE001 - health probes must isolate failing services.
-        app.state.circuit_breaker.record_failure(service_id)
+        _record_downstream_failure(app, service_id)
         await app.state.repository.mark_service_health_probe(
             service_id=service_id,
             ok=False,
@@ -2367,7 +2279,7 @@ async def _handle_tools_call(
     except DownstreamTimeoutError as exc:
         app.state.inflight_downstream_calls.pop(str(request_id), None)
         if service_id:
-            app.state.circuit_breaker.record_failure(service_id)
+            _record_downstream_failure(app, service_id)
         await app.state.repository.log_invocation(
             session_id=session_id,
             method="tools/call",
@@ -2414,7 +2326,7 @@ async def _handle_tools_call(
     except DownstreamMcpError as exc:
         app.state.inflight_downstream_calls.pop(str(request_id), None)
         if service_id and exc.code != -32003:
-            app.state.circuit_breaker.record_failure(service_id)
+            _record_downstream_failure(app, service_id)
         if exc.code == -32003:
             await app.state.repository.log_audit(
                 action="ssrf.block",
@@ -2689,6 +2601,7 @@ async def validate_service(
             summary=summary,
             capabilities=downstream_capabilities,
         )
+        await repository.apply_resource_shadow_policy(service_id)
         await repository.log_audit(
             action="service.validate.success",
             resource_type="mcp_service",

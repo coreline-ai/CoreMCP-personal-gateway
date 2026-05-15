@@ -667,6 +667,46 @@ Consequences:
 
 ---
 
+
+## ADR-038: Bidirectional RPC Policy = Explicit Reject by Default
+
+Status: Accepted
+
+Decision:
+Personal CoreMCP gateway는 bidirectional RPC를 기본 미지원으로 유지하고, 다음 server-to-client 또는 upstream-to-client 성격의 method를 명시적으로 reject한다.
+
+- `sampling/createMessage`
+- `elicitation/*`
+- `roots/list`
+
+현재 policy는 capability에 노출하지 않고, 수신 시 JSON-RPC `-32601 Method not found` 또는 동등한 unsupported-method 응답으로 종료하는 것이다. `Mcp-Session-Id`는 routing hint일 수는 있어도 인증 수단이 아니며, `/mcp` request마다 bearer auth를 다시 확인한다. CoreMCP admin/client token은 downstream 또는 다른 client 방향으로 전달하지 않는다.
+
+Rationale:
+Bidirectional RPC는 personal gateway에서도 다음 경계를 동시에 건드린다.
+
+- **multi-client routing ambiguity**: 하나의 CoreMCP에 Claude Code, Codex CLI, Web Playground 등 여러 연결된 AI client가 붙을 때 downstream의 `sampling/createMessage` 또는 `roots/list` 요청을 어느 client/session으로 되돌려야 하는지 명확하지 않다.
+- **LLM trust boundary**: downstream MCP가 gateway 뒤의 LLM에게 임의 prompt 생성을 요청하게 되면, 도구 제공자와 사용자의 의도/권한 경계가 흐려진다.
+- **user consent / permission model 미정**: elicitation은 사용자 입력과 승인 UI가 필요한데, 현재 personal gateway에는 method별 동의 UX와 audit policy가 충분히 정의되어 있지 않다.
+- **token boundary 유지**: bidirectional callback을 구현하면서 CoreMCP admin/client token, OAuth token, downstream credential이 잘못 섞이거나 재전송될 위험을 피해야 한다.
+
+Future opt-in 조건:
+Bidirectional RPC를 구현하려면 별도 ADR과 dev-plan phase에서 최소 다음 조건을 모두 만족해야 한다.
+
+1. per-client allowlist: 연결된 AI client별로 허용 method와 downstream service를 제한한다.
+2. explicit session binding: downstream request가 특정 authenticated client session에 명시적으로 묶여야 한다.
+3. audit: 요청자, 대상 client, method, decision, user consent 결과를 원문 body 없이 기록한다.
+4. user consent: elicitation/sampling/roots 노출 전 사용자 승인 UX와 revoke 경로를 제공한다.
+5. admin toggle: global default-off toggle과 service/client 단위 override를 제공한다.
+6. route policy: multi-client 상황에서 deny/fallback/timeout/error mapping을 문서화하고 테스트로 고정한다.
+
+Consequences:
+- ADR-014의 `sampling`/`elicitation` reject 원칙을 확장해 `roots/list`까지 포함한다.
+- downstream MCP가 sampling, elicitation, roots callback에 의존하면 현재 CoreMCP에서는 incompatible 또는 degraded로 표시한다.
+- service registration/capability scan은 관련 capability를 발견하면 경고하되, 자동으로 활성화하지 않는다.
+- 외부 LLM API dependency를 추가하지 않는다. CoreMCP는 gateway이며 LLM service가 아니다.
+- 구현자가 bidirectional RPC를 추가하려면 본 ADR을 Amended/Superseded로 바꾸고 위 opt-in 조건을 먼저 충족해야 한다.
+
+---
 ## Superseded / Future Migration
 
 다음 ADR은 SaaS 전환 시 Superseded:

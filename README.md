@@ -75,7 +75,8 @@ CoreMCP는 본인 1명이 Mac mini에서 운영하는 protected MCP gateway다. 
 - 개인 도구함 tool-level override(`hidden`, `visible_only`, `callable`)와 preset(`readonly`, `dangerous_off`, `full_access`), client/OAuth scope enforcement, schema drift detail, `X-Request-ID` 전파, policy deny/audit/invocation 관측성을 구현하고 API 회귀 테스트로 고정했습니다.
 - HTTP/STDIO service transport foundation을 추가했습니다. `transport_type=stdio` service는 command/args/env/cwd metadata로 등록·검증·호출 가능하며, CoreMCP admin/client/Authorization 계열 env는 저장/전달하지 않습니다. STDIO runtime/crash snapshot은 `mcp_services` 컬럼에 영속화합니다.
 - MCP `resources/list`, `resources/read`, `resources/templates/list`, `prompts/list`, `prompts/get` live proxy를 추가해 tools-only gateway 한계를 줄였습니다. `resources/read` 대형 text/blob는 client context 보호를 위해 CoreMCP metadata와 함께 truncate하며, active service가 있을 때는 catalog에 등록된 URI만 라우팅해 cross-service first-hit 충돌을 막습니다.
-- Multi-MCP 안정화를 위해 downstream tool 이름은 항상 `<service_slug>.<tool>` namespace로 노출하고, HTTP downstream이 발급한 `Mcp-Session-Id`는 service별로 매핑해 client session id를 downstream에 그대로 전달하지 않습니다. Downstream `notifications/{tools,resources,prompts}/list_changed`는 CoreMCP SSE로 fan-in/fan-out됩니다.
+- Multi-MCP 안정화를 위해 downstream tool 이름은 항상 `<service_slug>.<tool>` namespace로 노출하고, HTTP downstream이 발급한 `Mcp-Session-Id`는 service별로 TTL 관리하며 client session id를 downstream에 그대로 전달하지 않습니다. Service update/delete, TTL 만료, circuit-open 전환 시 downstream session cache를 무효화합니다. Downstream `notifications/{tools,resources,prompts}/list_changed`는 CoreMCP SSE로 fan-in/fan-out됩니다.
+- 동일 resource URI를 여러 service가 노출하면 가장 최근 validation service의 resource만 active로 유지하고 이전 active row는 `deprecated` shadow 처리 및 `resource.shadow` audit로 기록합니다.
 - Multi-MCP P1 고도화로 service capability union 기반 initialize response, tool arguments JSON Schema 사전 검증, per-service fixed-window quota, `tools/list` unavailable service metadata, health probe schema drift refresh, downstream `Idempotency-Key` forwarding을 추가했습니다.
 - 운영 안정성 module로 in-memory circuit breaker, idle session reaper, stdio process client cache를 추가했고, `coremcp` CLI foundation(`doctor`, `service add/validate`, `tool call`, `token issue/revoke`, `export/import dry-run`)과 Makefile CLI thin wrappers를 제공합니다.
 - Fake downstream MCP fixture는 `initialize`, `tools/list`, `tools/call`, `ping`과 production test fixture(`cancellation`, `schema-change`, `cimd-test`, `dcr-test`, `icons-rich`)를 지원하며 12개 테스트로 고정했습니다.
@@ -101,10 +102,10 @@ CoreMCP는 본인 1명이 Mac mini에서 운영하는 protected MCP gateway다. 
 ### Stabilization Batch Notes — 2026-05-14
 
 - 권장 commit split은 `dev-plan/implement_20260514_224500.md`에 기록되어 있습니다. 이 문서/code patch는 commit split을 **계획만** 하며, 사용자가 `commit/push`를 명시 요청하기 전에는 commit을 만들지 않습니다.
-- STDIO resource limits, admin/MCP rate limit, CLI import hardening, Multi-MCP namespace/session/resource routing/P1 운영성 hardening은 통합 완료했습니다. 최신 검증: `make test` **PASS** (API 140 + fake-mcp 12 + demo-mcp-suite 21). 이전 Web/ops smoke 기준: `pnpm lint && pnpm build && pnpm test`, `make ui-smoke`, `git diff --check` **PASS**.
+- STDIO resource limits, admin/MCP rate limit, CLI import hardening, Multi-MCP namespace/session/resource routing/P1 운영성 hardening은 통합 완료했습니다. 최신 API 검증: `cd apps/api && uv run pytest -q` **PASS** (144 passed). 이전 전체 smoke 기준: `make test` **PASS** (API 144 + fake-mcp 12 + demo-mcp-suite 21), `pnpm lint && pnpm build && pnpm test`, `make ui-smoke`, `git diff --check` **PASS**.
 - 외부환경 검증 대표 명령:
   - `make external-env-validate`
-  - `COREMCP_EXTERNAL_API_URL=https://<host>/health COREMCP_EXTERNAL_WEB_URL=https://<host>/ make external-env-validate`
+  - `COREMCP_EXTERNAL_API_URL=https://<host> COREMCP_EXTERNAL_WEB_URL=https://<host> make external-env-validate`
   - `make mobile-qa-checklist`
   - `COREMCP_SOAK_DURATION_SECONDS=3600 COREMCP_SOAK_INTERVAL_SECONDS=30 make soak-check`
 
@@ -431,7 +432,7 @@ ICON_SVG_ENABLED=false                   # SVG XSS 방어 default
 
 ## 📝 Architecture Decisions (Highlights)
 
-총 36개 ADR이 [`coremcp-docs/13-adr.md`](./coremcp-docs/13-adr.md)에 있습니다. P0/P1 핵심 결정:
+총 38개 ADR이 [`coremcp-docs/13-adr.md`](./coremcp-docs/13-adr.md)에 있습니다. P0/P1 핵심 결정:
 
 | ADR | 결정 | Status |
 |---|---|---|
@@ -448,6 +449,7 @@ ICON_SVG_ENABLED=false                   # SVG XSS 방어 default
 | ADR-034 | Error Mapping = Protocol vs Tool Result Separation | Accepted |
 | ADR-035 | Soft-delete Partial Unique Index | Accepted |
 | ADR-036 | OAuth Client = CIMD First, DCR Fallback | Accepted |
+| ADR-038 | Bidirectional RPC = default reject + future opt-in gates | Accepted |
 
 ---
 

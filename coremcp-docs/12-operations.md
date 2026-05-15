@@ -474,7 +474,7 @@ production_docs_donotuse/12-operations-observability.md의 다음은 본 프로�
 - PagerDuty / Opsgenie
 - SOC2 audit
 
-## 9. External Validation / Soak / Mobile QA Helpers
+## 11. External Validation / Soak / Mobile QA Helpers
 
 2026-05-14 추가 상태:
 
@@ -487,8 +487,8 @@ production_docs_donotuse/12-operations-observability.md의 다음은 본 프로�
 ```bash
 # 로컬 launchd/ops smoke + 선택적 외부 URL 확인
 make external-env-validate
-COREMCP_EXTERNAL_API_URL=https://<tailscale-or-public-host>/health \
-COREMCP_EXTERNAL_WEB_URL=https://<tailscale-or-public-host>/ \
+COREMCP_EXTERNAL_API_URL=https://<tailscale-or-public-host> \
+COREMCP_EXTERNAL_WEB_URL=https://<tailscale-or-public-host> \
   make external-env-validate
 
 # 실제 모바일 기기에서 열 URL과 수동 점검 항목 출력
@@ -503,3 +503,35 @@ COREMCP_SOAK_INTERVAL_SECONDS=30 \
 실제 reboot, Tailscale 로그인/ACL, real external OAuth client compatibility는 환경 의존 검증이므로 운영 host에서 위 helper를 실행해 결과를 기록한다.
 
 이번 안정화 batch의 code hardening(STDIO resource limits, admin/MCP rate limit, CLI import hardening)은 통합 완료했다. 로컬 검증 결과는 `../TESTING.md`의 2026-05-14 snapshot을 따른다. 실제 reboot, Tailscale Serve/ACL, real external OAuth client, 모바일 기기 QA, long soak은 운영 host에서 별도 기록한다.
+
+### 11.1 운영 host 검증 순서
+
+이 섹션은 미구현 backlog가 아니라 실제 Mac mini/Tailscale/OAuth/mobile 환경에서 수행하는 validation runbook이다. 로컬 개발 머신에서 실제 재부팅, Tailscale login/ACL 변경, 외부 OAuth client 등록, 실제 모바일 기기 QA를 대리 수행하지 않는다.
+
+1. **사전 준비**
+   - API/Web/backup/logrotate/refresh launchd label을 load한다.
+   - admin/client token은 운영 host의 vault/token file만 사용한다.
+   - 결과 저장 경로를 만든다: `mkdir -p dev-plan/.artifacts/external-env/$(date +%Y%m%d-%H%M%S)`.
+2. **post-reboot recovery**
+   - 운영 host를 실제 재부팅한 뒤 5분 이내 실행: `infra/scripts/external-env-validate.sh --post-reboot`.
+   - `launchctl`, `/ready`, Web 200, backup/logrotate/refresh label 상태를 evidence log로 저장한다.
+3. **Tailscale URL validation**
+   - Tailscale login/Serve/ACL은 운영자가 수동 설정한다.
+   - `COREMCP_EXTERNAL_API_URL=https://<tailnet-host> COREMCP_EXTERNAL_WEB_URL=https://<tailnet-host> make external-env-validate`를 실행한다. API env는 host/base URL만 넣고 script가 `/ready`를 붙인다.
+   - ACL은 본인 디바이스만 접근 가능한지 별도 브라우저/기기에서 확인한다.
+4. **real OAuth client compatibility**
+   - `AUTH_MODE=oauth`를 활성화한 운영 host에서 실제 client의 redirect URI, scope, CIMD/DCR 지원 여부를 기록한다.
+   - authorize/code/token/refresh/revoke가 통과하는지 확인하되, client secret/token 원문은 evidence에 저장하지 않는다.
+5. **mobile QA**
+   - `COREMCP_WEB_URL`/`COREMCP_API_URL`을 모바일에서 접근 가능한 URL로 설정하고 `make mobile-qa-checklist`를 실행한다.
+   - 실제 iOS/Android 브라우저에서 Dashboard, Services, Toolbox, Clients, Settings, Playground, Logs를 확인한다.
+6. **long soak**
+   - 운영 시간에 맞게 `COREMCP_SOAK_DURATION_SECONDS=3600 COREMCP_SOAK_INTERVAL_SECONDS=30 make soak-check`를 실행한다.
+   - stdout JSONL을 evidence로 저장하고 exit code, failure count, latency 추세를 `TESTING.md` template에 기록한다.
+
+Exit-code 기준:
+- `external-env-validate`: `0`이면 local/external configured checks 통과, `64`는 인자 오류, `1`은 필수 smoke 실패. 외부 URL 미설정은 warning + skip이며 실패가 아니다.
+- `soak-check`: `0`이면 허용 실패 횟수 이내, `1`이면 `/ready`/dashboard 반복 확인이 실패 한도를 초과.
+- `mobile-qa-checklist`: `0`이면 체크리스트 출력 성공이며, 실제 pass/fail은 운영자가 기기에서 수동 기록한다.
+
+결과 기록 양식은 [`../TESTING.md`](../TESTING.md)의 “External environment result record template”을 사용한다.

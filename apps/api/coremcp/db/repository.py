@@ -1321,8 +1321,60 @@ class Repository:
             saved_item = await self.get_service_resource(resource_id)
             if saved_item:
                 saved.append(saved_item)
+        await self.apply_resource_shadow_policy(service_id)
         await self.db.commit()
         return saved
+
+    async def apply_resource_shadow_policy(self, refreshed_service_id: str) -> None:
+        cursor = await self.db.execute(
+            """
+            SELECT current.id AS active_resource_id, current.uri
+            FROM service_resources current
+            JOIN mcp_services s ON s.id = current.service_id AND s.deleted_at IS NULL AND s.status = 'active'
+            WHERE current.service_id = ? AND current.status = 'active'
+              AND EXISTS (
+                SELECT 1
+                FROM service_resources other
+                JOIN mcp_services os ON os.id = other.service_id AND os.deleted_at IS NULL AND os.status = 'active'
+                WHERE other.uri = current.uri
+                  AND other.status = 'active'
+                  AND other.service_id != current.service_id
+              )
+            """,
+            (refreshed_service_id,),
+        )
+        for row in await cursor.fetchall():
+            shadow_cursor = await self.db.execute(
+                """
+                SELECT id, service_id
+                FROM service_resources
+                WHERE uri = ? AND service_id != ? AND status = 'active'
+                """,
+                (row["uri"], refreshed_service_id),
+            )
+            shadowed_rows = await shadow_cursor.fetchall()
+            if not shadowed_rows:
+                continue
+            await self.db.execute(
+                """
+                UPDATE service_resources
+                SET status = 'deprecated', disabled_at = CURRENT_TIMESTAMP, cached_at = CURRENT_TIMESTAMP
+                WHERE uri = ? AND service_id != ? AND status = 'active'
+                """,
+                (row["uri"], refreshed_service_id),
+            )
+            for shadowed in shadowed_rows:
+                await self.log_audit(
+                    action="resource.shadow",
+                    resource_type="service_resource",
+                    resource_id=shadowed["id"],
+                    metadata={
+                        "uri": row["uri"],
+                        "shadowed_service_id": shadowed["service_id"],
+                        "active_service_id": refreshed_service_id,
+                        "active_resource_id": row["active_resource_id"],
+                    },
+                )
 
     async def replace_service_resource_templates(self, service_id: str, templates: list[dict[str, Any]]) -> list[dict[str, Any]]:
         await self.db.execute("UPDATE service_resource_templates SET status = 'disabled', disabled_at = CURRENT_TIMESTAMP WHERE service_id = ?", (service_id,))

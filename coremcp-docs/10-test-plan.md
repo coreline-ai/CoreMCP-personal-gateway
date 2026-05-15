@@ -621,7 +621,7 @@ GitHub Actions 또는 로컬:
 
 | 영역 | 결과 | 비고 |
 |---|---:|---|
-| API pytest | 140 passed | `cd apps/api && uv run pytest -q` |
+| API pytest | 144 passed | `cd apps/api && uv run pytest -q` |
 | fake-mcp pytest | 12 passed | cancellation/schema-change/cimd-test/dcr-test/icons-rich fixture 명시 테스트 포함 |
 | demo-mcp-suite pytest | pass | 8개 local demo MCP endpoint regression |
 | launchd plist lint | 6 OK | fake-mcp/api/web/backup/logrotate/refresh |
@@ -629,7 +629,7 @@ GitHub Actions 또는 로컬:
 | ops-smoke label logic | pass | actual load smoke 기준 fake-mcp/api/web/backup/logrotate/refresh label 확인 |
 | Web/Codex/UI smoke | pass | route smoke, `make ui-smoke`, `make codex-install && make codex-smoke`는 TESTING.md snapshot 참조 |
 | MCP batch/progress | pass | JSON-RPC batch + downstream progress/resources updated/listChanged SSE fan-out + STDIO callback |
-| Multi-MCP hardening | pass | tool namespace prefix, resource catalog miss/duplicate URI strict routing, HTTP downstream session mapping |
+| Multi-MCP hardening | pass | tool namespace prefix, resource catalog miss no-broadcast, duplicate URI shadow policy, HTTP downstream session mapping/TTL/invalidation |
 | Multi-MCP P1 운영성 | pass | dynamic capabilities, JSON Schema args validation, per-service quota, unavailable metadata, health drift refresh, Idempotency-Key forwarding |
 
 Remaining Work Classification:
@@ -644,7 +644,7 @@ Remaining Work Classification:
 이번 안정화 batch 검증 결과:
 
 - STDIO resource limits, admin/MCP rate limit, CLI import hardening, Multi-MCP namespace/session/resource routing/P1 운영성 hardening은 통합 완료했고 관련 단독 테스트와 API full pytest가 통과했다.
-- 최신 검증: `make test` **PASS** (API 140 + fake-mcp 12 + demo-mcp-suite 21), `git diff --check` **PASS**. 이전 Web/ops smoke 기준: `pnpm lint && pnpm build && pnpm test`, `make ui-smoke`, `make external-env-validate` **PASS with Tailscale/external URL skips**.
+- 최신 API 검증: `cd apps/api && uv run pytest -q` **PASS** (144 passed), `git diff --check` **PASS**. 이전 전체 smoke 기준: `make test` **PASS** (API 144 + fake-mcp 12 + demo-mcp-suite 21), `pnpm lint && pnpm build && pnpm test`, `make ui-smoke`, `make external-env-validate` **PASS with Tailscale/external URL skips**.
 - Commit split은 권장 계획이며 이 문서 patch에서는 수행하지 않는다.
 - 외부환경 검증은 `make external-env-validate`, `make mobile-qa-checklist`, `COREMCP_SOAK_DURATION_SECONDS=3600 COREMCP_SOAK_INTERVAL_SECONDS=30 make soak-check` 결과를 운영 host 기준으로 기록한다.
 

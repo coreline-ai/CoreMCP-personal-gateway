@@ -107,7 +107,7 @@
 | 기능 | 상태 | 개인용 적용 |
 |---|---|---|
 | Multi-MCP namespace | 포함 | downstream tool name은 항상 `<service_slug>.<tool>`로 노출, dotted name prefix 우회 차단 |
-| Resource strict routing | 포함 | active service가 있을 때 `resources/read`는 catalog에 등록된 unambiguous URI만 라우팅 |
+| Resource strict routing | 포함 | active service가 있을 때 `resources/read`는 catalog에 등록된 URI만 라우팅, duplicate URI는 shadow policy 적용 |
 | Per-service quota | 포함 | service_id/method/tool 단위 in-memory fixed-window |
 | Partial failure metadata | 포함 | circuit-open/unavailable service를 tools/list `_meta.coremcp.unavailable_services`에 표시 |
 | Tool alias (exposed↔downstream 매핑) | 포함 | 별도 테이블 |

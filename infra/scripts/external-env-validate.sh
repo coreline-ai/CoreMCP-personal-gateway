@@ -15,11 +15,17 @@ Usage: infra/scripts/external-env-validate.sh [--post-reboot] [--require-tailsca
 Environment:
   COREMCP_API_URL          Local API URL. Default: http://127.0.0.1:8787
   COREMCP_WEB_URL          Local Web URL. Default: http://127.0.0.1:3003
-  COREMCP_EXTERNAL_API_URL Optional Tailscale/Caddy API URL for remote smoke.
-  COREMCP_EXTERNAL_WEB_URL Optional Tailscale/Caddy Web URL for remote smoke.
+  COREMCP_EXTERNAL_API_URL Optional Tailscale/Caddy API base URL for /ready smoke.
+  COREMCP_EXTERNAL_WEB_URL Optional Tailscale/Caddy Web base URL for / smoke.
 
-This script does not configure Tailscale/OAuth clients. It verifies that the
-host is ready for those manual checks and fails when --require-tailscale is set.
+Exit codes:
+  0  Configured checks passed; unset external URLs are reported as skipped.
+  1  Required local/external smoke failed.
+  64 Invalid CLI argument.
+
+This script does not configure or login to Tailscale and does not register real
+OAuth clients. It verifies that the host is ready for those manual checks and
+fails when --require-tailscale is set.
 USAGE
 }
 
@@ -47,16 +53,19 @@ fi
 pass "local ops smoke completed"
 
 if [[ -n "$EXTERNAL_API_URL" ]]; then
-  curl -fsS "$EXTERNAL_API_URL/ready" | grep -Eq '"status"[[:space:]]*:[[:space:]]*"ready"' \
-    || fail "external API ready check failed: $EXTERNAL_API_URL/ready"
-  pass "external API ready: $EXTERNAL_API_URL/ready"
+  external_api_base="${EXTERNAL_API_URL%/}"
+  external_api_ready="$external_api_base/ready"
+  curl -fsS "$external_api_ready" | grep -Eq '"status"[[:space:]]*:[[:space:]]*"ready"' \
+    || fail "external API ready check failed: $external_api_ready"
+  pass "external API ready: $external_api_ready"
 else
   warn "COREMCP_EXTERNAL_API_URL not set; skipped external API smoke"
 fi
 
 if [[ -n "$EXTERNAL_WEB_URL" ]]; then
-  curl -fsSI "$EXTERNAL_WEB_URL/" >/dev/null || fail "external Web check failed: $EXTERNAL_WEB_URL/"
-  pass "external Web ready: $EXTERNAL_WEB_URL/"
+  external_web_base="${EXTERNAL_WEB_URL%/}"
+  curl -fsSI "$external_web_base/" >/dev/null || fail "external Web check failed: $external_web_base/"
+  pass "external Web ready: $external_web_base/"
 else
   warn "COREMCP_EXTERNAL_WEB_URL not set; skipped external Web smoke"
 fi

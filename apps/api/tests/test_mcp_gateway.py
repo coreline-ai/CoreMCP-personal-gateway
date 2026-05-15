@@ -1148,8 +1148,8 @@ async def test_resources_read_catalog_miss_with_active_service_does_not_broadcas
 
 
 @pytest.mark.asyncio
-async def test_duplicate_resource_uri_is_not_first_hit_routed(app_client):
-    client, recorder, _ = app_client
+async def test_duplicate_resource_uri_uses_shadow_policy(app_client):
+    client, recorder, app = app_client
     service_ids: list[str] = []
     for suffix in ("a", "b"):
         created = await client.post(
@@ -1174,9 +1174,12 @@ async def test_duplicate_resource_uri_is_not_first_hit_routed(app_client):
 
     assert len(service_ids) == 2
     assert collided.status_code == 200
-    assert collided.json()["error"]["code"] == -32602
-    assert collided.json()["error"]["message"] == "Unknown resource"
-    assert after == before
+    assert collided.json()["result"]["contents"][0]["text"] == "hello resource"
+    assert after == before + 1
+    resources = await app.state.repository.list_catalog_resources()
+    assert [row["uri"] for row in resources].count("memory://note/1") == 1
+    audit = await app.state.repository.recent_audit_logs(limit=5, action="resource.shadow")
+    assert audit and audit[0]["metadata"]["active_service_id"] == service_ids[-1]
 
 
 @pytest.mark.asyncio
@@ -1241,6 +1244,91 @@ async def test_http_downstream_session_id_is_mapped_after_initialize(tmp_path: P
     assert records[0]["headers"].get("mcp-session-id") is None
     assert tools_list_request["headers"].get("mcp-session-id") == "downstream-session-1"
     await downstream_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_downstream_session_ttl_expires_before_forwarding(tmp_path: Path):
+    records: list[dict[str, Any]] = []
+
+    async def transport(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        records.append({"headers": dict(request.headers), "body": body})
+        method = body.get("method")
+        request_id = body.get("id")
+        if method == "initialize":
+            return httpx.Response(
+                200,
+                headers={"Mcp-Session-Id": "downstream-session-ttl"},
+                json={"jsonrpc": "2.0", "id": request_id, "result": {"protocolVersion": body.get("params", {}).get("protocolVersion")}},
+            )
+        if method == "tools/list":
+            return httpx.Response(
+                200,
+                json={"jsonrpc": "2.0", "id": request_id, "result": {"tools": [{"name": "echo", "inputSchema": {"type": "object"}}], "nextCursor": None}},
+            )
+        if method == "tools/call":
+            return httpx.Response(
+                200,
+                json={"jsonrpc": "2.0", "id": request_id, "result": {"content": [{"type": "text", "text": "ttl-ok"}]}},
+            )
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": request_id, "error": {"code": -32601, "message": "Method not found"}})
+
+    downstream_client = httpx.AsyncClient(transport=httpx.MockTransport(transport))
+    app = create_app(
+        settings=Settings(
+            COREMCP_ADMIN_TOKEN_VALUE=TOKEN,
+            COREMCP_ADMIN_TOKEN_FILE=tmp_path / "missing-admin-token",
+            COREMCP_DB_PATH=tmp_path / "downstream-session-ttl.sqlite3",
+            FAKE_MCP_URL="http://fake.local/mcp",
+            COREMCP_SSRF_ALLOW_HOSTS="fake.local",
+            COREMCP_SECRET_BACKEND="fernet",
+            COREMCP_SECRETS_FILE=tmp_path / "downstream-session-ttl-secrets.json",
+            COREMCP_DOWNSTREAM_SESSION_TTL_SECONDS=1,
+        ),
+        http_client=downstream_client,
+    )
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+            created = await client.post(
+                "/v1/mcp-services",
+                headers=auth_headers(),
+                json={"name": "TTL MCP", "slug": "ttl-mcp", "endpoint_url": "http://fake.local/mcp"},
+            )
+            service_id = created.json()["id"]
+            assert (await client.post(f"/v1/mcp-services/{service_id}/validate", headers=auth_headers())).status_code == 200
+            app.state.downstream_sessions[service_id]["expires_at"] = time.time() - 1
+            assert (await client.post("/v1/toolboxes/tbx_default/items", headers=auth_headers(), json={"service_id": service_id})).status_code == 201
+            init = await initialize(client)
+            called = await client.post(
+                "/mcp",
+                headers={**auth_headers(), "Mcp-Session-Id": init.headers["Mcp-Session-Id"]},
+                json={"jsonrpc": "2.0", "id": "ttl-call", "method": "tools/call", "params": {"name": "ttl-mcp.echo", "arguments": {}}},
+            )
+            assert called.status_code == 200
+
+    tool_call = next(record for record in records if record["body"]["method"] == "tools/call")
+    assert tool_call["headers"].get("mcp-session-id") is None
+    await downstream_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_circuit_open_invalidates_downstream_session(app_client):
+    client, _, app = app_client
+    created = await client.post(
+        "/v1/mcp-services",
+        headers=auth_headers(),
+        json={"name": "Circuit Session Fake", "slug": "circuit-session", "endpoint_url": "http://fake.local/mcp"},
+    )
+    service_id = created.json()["id"]
+    app.state.downstream_sessions[service_id] = {
+        "session_id": "stale-session",
+        "updated_at": time.time(),
+        "expires_at": time.time() + 3600,
+    }
+    for _ in range(app.state.circuit_breaker.failure_threshold):
+        main_module._record_downstream_failure(app, service_id)
+
+    assert service_id not in app.state.downstream_sessions
 
 
 @pytest.mark.asyncio

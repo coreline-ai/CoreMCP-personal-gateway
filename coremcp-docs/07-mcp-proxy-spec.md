@@ -482,11 +482,19 @@ idempotency_key
 
 Resource routing:
 - active service가 하나 이상 있으면 `resources/read`는 toolbox catalog에 존재하는 URI만 해당 service로 라우팅한다.
-- catalog miss 또는 동일 URI가 여러 active service에 존재하는 ambiguous 상태는 downstream broadcast/first-hit 대신 `-32602 Unknown resource`로 실패한다.
+- catalog miss는 downstream broadcast/first-hit 대신 `-32602 Unknown resource`로 실패한다.
+- 동일 URI가 여러 active service에 존재하면 가장 최근 validation service의 resource만 `active`로 유지하고 이전 active row는 `deprecated` shadow 처리한다. shadow 처리 시 `resource.shadow` audit를 기록한다.
+
+Downstream HTTP session:
+- CoreMCP client `Mcp-Session-Id`와 downstream `Mcp-Session-Id`는 분리한다.
+- Downstream initialize/response header의 `Mcp-Session-Id`는 service별 TTL cache에 저장한다.
+- service update/delete, TTL 만료, circuit-open 전환 시 해당 downstream session cache를 무효화한다.
 
 icons 변경(service refresh 후 icons_json 갱신)은 schema_hash 계산에 포함되지 않으면 listChanged emit 안 함. 단 schema_hash 계산에 icons 포함하면 emit 트리거. 권장: icons는 schema_hash 계산에 포함하지 않음 (LLM context에 영향 미미).
 
 ## 13. Compatibility Tests
+
+JSON-RPC batch는 sequential dispatch로 처리한다. notification-only batch는 HTTP 202를 반환하고, mixed batch는 response가 있는 item만 순서대로 반환한다. Sequential 정책은 initialize/cancel/tools side effect 순서를 보존하기 위한 의도된 선택이다.
 
 - Claude Code initialize / tools/list / tools/call
 - bearer auth 검증

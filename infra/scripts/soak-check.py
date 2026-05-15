@@ -19,7 +19,12 @@ def read_json(url: str, token: str | None = None, timeout: float = 5.0) -> dict:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run a lightweight CoreMCP long-soak readiness loop.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Run a lightweight CoreMCP long-soak readiness loop. "
+            "Exit 0 when failures stay within --max-failures; exit 1 when the threshold is exceeded."
+        )
+    )
     parser.add_argument("--api-url", default=os.getenv("COREMCP_API_URL", "http://127.0.0.1:8787"))
     parser.add_argument("--admin-token-file", default=os.getenv("COREMCP_ADMIN_TOKEN_FILE", os.path.expanduser("~/.coremcp/admin-token")))
     parser.add_argument("--duration-seconds", type=int, default=int(os.getenv("COREMCP_SOAK_DURATION_SECONDS", "300")))
