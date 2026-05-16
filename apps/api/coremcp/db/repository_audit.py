@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from coremcp.logging import redact_value
 from coremcp.db.repository_constants import DEFAULT_TOOLBOX_ID, LOCAL_USER_ID
 from coremcp.db.repository_ids import new_id
 
@@ -65,7 +66,7 @@ class AuditRepositoryMixin:
                 resource_id,
                 ip,
                 user_agent,
-                self.dumps_json(metadata or {}),
+                self.dumps_json(redact_value(metadata or {})),
             ),
         )
         await self.db.commit()
