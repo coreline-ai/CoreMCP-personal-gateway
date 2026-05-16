@@ -116,6 +116,60 @@ CoreMCP는 본인 1명이 Mac mini에서 운영하는 protected MCP gateway다. 
   - `make mobile-qa-checklist`
   - `COREMCP_SOAK_DURATION_SECONDS=3600 COREMCP_SOAK_INTERVAL_SECONDS=30 make soak-check`
 
+## 📸 Web Admin Screens
+
+CoreMCP Web Admin (`http://localhost:3003`) 의 8개 주요 화면입니다. admin token 입력 후 fetch 결과 기준 캡쳐.
+
+### 1. Dashboard `/`
+
+![Dashboard](coremcp-docs/screenshots/web-admin/01-dashboard.png)
+
+운영 한눈 보기 — KPI 4 카드(Default Toolbox 항목 수, MCP Services active/total, Client Tokens 활성 수, 최근 24h Tool Calls + 평균 latency)와 운영 상태(error rate, max latency, health failing, circuit open) + `Top tools 24h` 로 가장 많이 호출된 도구를 표시합니다. 사이드바 하단 `Health` 버튼으로 `GET /health` 즉시 점검 가능합니다.
+
+### 2. Services `/services`
+
+![Services](coremcp-docs/screenshots/web-admin/02-services.png)
+
+등록된 MCP 서비스 목록 + 신규 등록 폼(name / slug / endpoint_url). 각 row 에서 `Validate`(다운스트림 initialize + tools/list + metadata scan + schema diff) / `도구함 추가` / `Detail` 진입을 한 곳에서 수행합니다. 잘못된 URL(예: `169.254.169.254`) 등록은 SSRF 가드와 slug 중복 가드(`409 conflict`)로 거부됩니다.
+
+### 3. Service Detail `/services/[id]`
+
+![Service Detail](coremcp-docs/screenshots/web-admin/03-service-detail.png)
+
+서비스 1건의 모든 측면 — 메타데이터(endpoint, transport_type, auth_type, last_validated), Tools 탭의 per-tool override(`callable`/`visible_only`/`hidden`) 및 preset(`readonly`/`dangerous_off`/`full_access`), Resources/Prompts catalog, Credentials 등록·회전·삭제, 5-stage validation 이력(url_safety/mcp_initialize/tools_list/metadata_scan/resource_prompt_catalog) 을 확인·조작합니다.
+
+### 4. Toolbox `/toolbox`
+
+![Toolbox](coremcp-docs/screenshots/web-admin/04-toolbox.png)
+
+Default 도구함의 가시 상태 — 등록된 서비스마다 service-level enable/disable 토글과 per-tool count 색 핀(callable / visible_only / hidden / disabled)을 표시합니다. 토글 변경은 즉시 `notifications/tools/list_changed` SSE 로 fan-out 되어 다른 탭의 Playground 도구 목록까지 자동 동기화됩니다.
+
+### 5. Playground `/playground`
+
+![Playground](coremcp-docs/screenshots/web-admin/05-playground.png)
+
+도구함의 도구를 admin 권한으로 직접 호출 — dropdown 에서 도구 선택 → Arguments JSON 편집(catalog 캐시된 inputSchema 기반 검증) → `Call tool` → 응답 JSON(jsonrpc.result.content + structuredContent + isError + `_meta.coremcp`) 표시. 캡쳐는 `demo_ops.ops_status` 호출 결과 (`Personal Ops Desk status: warning; 2 checklist items need attention.`) 를 보여줍니다.
+
+### 6. Connected AI client `/clients`
+
+![Connected Clients](coremcp-docs/screenshots/web-admin/06-clients.png)
+
+외부 AI agent (Codex CLI exec / Claude Code / Cursor / ChatGPT / OpenClaw 등) 를 CoreMCP에 연결할 때 사용. `등록+Token` 으로 client_type / client_name 입력 후 client token 1회 발급(`cmcp_client_…`), `One-time Token` 으로 OAuth 미지원 client 용 10분 TTL 1회용 prompt+token 발급, `Revoke` 로 즉시 차단(다른 client 영향 0). 모든 발급/회수는 audit 기록됩니다.
+
+### 7. Logs `/logs`
+
+![Logs](coremcp-docs/screenshots/web-admin/07-logs.png)
+
+최근 tool invocation 과 audit event 를 단일 화면에서 — invocation 은 method/exposed_tool_name/status/latency_ms/created_at, audit 은 action(`service.create` / `service.validate.success` / `policy.deny` / `ssrf.block` / `credential.put` 등)/resource_type/resource_id/request_id 표시. `X-Request-ID` 가 invocation 과 audit cross-link 됩니다. metadata 에 admin/client token 노출 0건 (structlog `redact_sensitive_data` processor + 회귀 테스트로 보장).
+
+### 8. Settings / Tokens `/settings`
+
+![Settings / Tokens](coremcp-docs/screenshots/web-admin/08-settings.png)
+
+admin token 은 항상 마스킹 표시 (`cmcp_admin_••••`) — 실제 값은 sessionStorage 에만, 절대 응답·로그에 노출되지 않습니다. 전체 client token 리스트(prefix + scopes + status + last_used_at)와 환경 meta(auth_mode / secret_backend / cache_backend / app_version) 표시. Revoke 는 Settings 와 Connected Clients 양쪽에서 가능합니다.
+
+---
+
 ## 📦 Features
 
 | 영역 | 기능 | 상태 |
