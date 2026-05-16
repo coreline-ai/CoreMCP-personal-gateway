@@ -2,7 +2,7 @@
 
 # CoreMCP
 
-**개인용 MCP Toolbox + Authenticated MCP Gateway**
+**개인용 MCP 도구함·인증 게이트웨이 | Personal MCP toolbox and authenticated gateway**
 
 [![MCP Spec](https://img.shields.io/badge/MCP-2025--11--25-FF6B6B?logo=anthropic&logoColor=white)](https://modelcontextprotocol.io/specification/2025-11-25)
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
