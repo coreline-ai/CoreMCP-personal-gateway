@@ -1,23 +1,23 @@
 # CoreMCP Security Best Practices Review
 
 Review date: 2026-05-16  
-Reviewed base commit: `0f414b4 docs(readme): polish section anchors`  
+Reviewed base commit: `86ef5f6 docs(security): record hardening review status` + follow-up working tree hardening
 Scope: personal CoreMCP gateway only — `apps/api/coremcp` FastAPI backend, MCP gateway/proxy, credential vault, OAuth, STDIO transport, `apps/web` Next.js Web Admin, selected infra scripts. SaaS/team/workspace/marketplace/publisher/billing features are explicitly out of scope.
 
 ## Executive summary
 
 No Critical / P0 vulnerability was found in the current code review. The core personal-gateway security invariants are largely well implemented: CoreMCP tokens are not forwarded downstream, `/mcp` bearer auth is rechecked per request, downstream credentials go through the vault, HTTP downstream URLs have SSRF controls, STDIO env is sanitized, CSP is nonce-based, and raw tool arguments/results are not persisted by default.
 
-Current hardening batch status:
+Hardening batch status:
 
 | ID | Area | Batch status | Notes |
 |---|---|---|---|
 | S-02 | `TrustedHostMiddleware` / allowed hosts | Patched in this batch | `COREMCP_ALLOWED_HOSTS` + `TrustedHostMiddleware` + host regression tests. |
 | S-07 | value-based redaction | Patched in this batch | Structlog/audit metadata value-pattern redaction + regression tests. |
-| S-01 | OAuth consent / client allow policy | Next work | Keep OAuth optional and controlled; no scope expansion. |
-| S-04 | STDIO argv profiles | Next work | Defense-in-depth for personal gateway host-code-execution boundary. |
-| S-05 | remote icon proxy / opt-in | Next work | Privacy hardening; keep `<img src>` rendering only, no inline SVG. |
-| S-06 | allowlist DNS pinning | Next work | Tighten SSRF allowlist behavior without adding SaaS policy. |
+| S-01 | OAuth consent / client allow policy | Mitigated in follow-up batch | DCR disable toggle + client_id allowlist policy hook. Consent UI intentionally not added. |
+| S-04 | STDIO argv profiles | Patched in follow-up batch | Dangerous interpreter/docker argv profiles rejected before spawn. |
+| S-05 | remote icon proxy / opt-in | Patched in follow-up batch | Remote HTTPS icons are default-off with explicit opt-in. |
+| S-06 | allowlist DNS pinning | Patched in follow-up batch | Allowlisted hosts are resolved, DNS-change checked, and IP-pinned when resolvable. |
 
 Residual risks are operational / exposure-dependent and should remain bounded to the personal gateway model.
 
@@ -42,14 +42,15 @@ Residual risks are operational / exposure-dependent and should remain bounded to
 
 - **Rule ID:** FASTAPI-AUTHZ-001 / OAuth consent boundary
 - **Severity:** High when `AUTH_MODE=oauth` is reachable from untrusted clients; Medium for local-only/Tailscale ACL environments
-- **Batch status:** Next work — not part of the current TrustedHost/redaction batch
+- **Batch status:** Mitigated in follow-up batch — policy hook added, consent UI intentionally out of scope
 - **Location:** `apps/api/coremcp/api/oauth.py:139-205`; `apps/api/coremcp/settings.py:71`
 - **Evidence:**
   - DCR is unauthenticated and only rate-limited (`/oauth/register`, lines 139-174).
   - `/oauth/authorize` validates parameters and immediately issues a code + redirect; no local admin approval / consent UI exists (lines 176-205).
   - `AUTH_MODE=static_bearer` remains the default (`settings.py:71`), which limits default exposure.
 - **Impact:** If OAuth mode is enabled and the gateway is reachable by an untrusted browser/client, a client can self-register and complete an authorization-code + PKCE flow without a human consent step. This can mint access tokens for CoreMCP scopes.
-- **Next-work direction:** Keep OAuth disabled by default. Before external OAuth exposure, choose one personal-gateway policy: admin-token-gated consent page, pre-registered client allowlist, or explicitly documented local/Tailscale-only operation.
+- **Patch evidence:** `COREMCP_OAUTH_DCR_ENABLED=false` disables `/oauth/register`; `COREMCP_OAUTH_ALLOWED_CLIENT_IDS` enforces `client_id` allowlist on `/oauth/authorize` and `/oauth/token`; tests cover no-store OAuth errors and allowed/blocked clients.
+- **Next-work direction:** Keep OAuth disabled by default. Before external OAuth exposure, set DCR disabled or a narrow client allowlist. A browser consent UI remains optional future work, not part of the personal gateway hardening batch.
 - **Mitigation:** Document that OAuth mode is for controlled clients only until consent exists; require Tailscale ACL or loopback binding for `/oauth/*`.
 - **False positive notes:** This is acceptable for personal local-only usage if network reachability is strictly controlled.
 
@@ -89,11 +90,12 @@ Residual risks are operational / exposure-dependent and should remain bounded to
 
 - **Rule ID:** Command execution defense-in-depth
 - **Severity:** Medium if admin token can be stolen; Low if only trusted local admin can register services
-- **Batch status:** Next work — argv profile policy only, no current-batch code ownership
+- **Batch status:** Patched in follow-up batch — argv profile deny layer added
 - **Location:** `apps/api/coremcp/settings.py:14`, `59-62`; `apps/api/coremcp/proxy/stdio.py:48-50`
 - **Evidence:** Default allowlist includes interpreters/runtimes (`npx,uvx,python,python3,node,docker,deno`), and enforcement checks only `Path(command[0]).name`.
 - **Impact:** A compromised admin token or malicious operator action can still run commands such as `python -c ...`, `node -e ...`, or powerful `docker` invocations. This is not privilege escalation against a trusted admin, but it weakens defense-in-depth for exposed admin surfaces.
-- **Next-work direction:** Add optional per-command argument profiles, e.g. allow `uvx package` / `npx package` patterns but deny `python -c`, `node -e`, unrestricted `docker run -v`, shell binaries, and absolute symlink tricks where possible.
+- **Patch evidence:** `validate_stdio_argv_profile()` rejects `python -c`, `node -e/--eval/-p/--print`, `deno eval`, and dangerous Docker host/volume/socket options while preserving common `npx`, `uvx`, `python server.py`, and `node server.js` launches.
+- **Residual direction:** This is still a deny-profile defense layer, not a sandbox. macOS sandbox/container isolation remains a separate long-term ADR if needed.
 - **Mitigation:** Keep STDIO services admin-only, audit `service.stdio_command_rejected`, keep allowlist small per deployment, and document that STDIO is host-code execution.
 - **False positive notes:** CoreMCP correctly avoids `shell=True` and sanitizes env; this finding is about sandboxing depth, not an immediate injection bug.
 
@@ -101,11 +103,12 @@ Residual risks are operational / exposure-dependent and should remain bounded to
 
 - **Rule ID:** Frontend privacy / third-party resource loading
 - **Severity:** Low to Medium
-- **Batch status:** Next work — remote icon proxy/cache or explicit opt-in decision
+- **Batch status:** Patched in follow-up batch — remote HTTPS icon opt-in added
 - **Location:** `apps/api/coremcp/registry/catalog.py:53-96`; `apps/web/middleware.ts:15`; `apps/web/components/tool-icon.tsx:33-45`
 - **Evidence:** Tool icon metadata accepts `https://` and `data:image/` sources; Web CSP allows `img-src 'self' data: https:`; Web Admin renders icon URLs directly in `<img>`.
 - **Impact:** A downstream MCP service can cause the admin browser to load an arbitrary HTTPS image. `Referrer-Policy: no-referrer` reduces URL leakage, but the remote host still sees the operator IP, user-agent, and timing. This is a privacy/tracking concern, not server-side SSRF.
-- **Next-work direction:** Prefer same-origin icon proxy/cache with SSRF checks and size/mime validation, or make remote icons opt-in. Keep rendering through `src` and `<img>` only; never inline SVG.
+- **Patch evidence:** `COREMCP_REMOTE_TOOL_ICONS_ENABLED=false` by default drops remote HTTPS icons during catalog normalization; `true` explicitly opts in. Rendering still uses `src` and `<img>` only; inline SVG remains forbidden.
+- **Residual direction:** Same-origin icon proxy/cache can be considered later if remote icon UX is required without browser privacy leakage.
 - **Mitigation:** SVG is disabled by default (`ICON_SVG_ENABLED=false`), and icons are rendered via `<img>` only, which is good.
 - **False positive notes:** If all downstream services are trusted/local, this is low risk.
 
@@ -113,11 +116,12 @@ Residual risks are operational / exposure-dependent and should remain bounded to
 
 - **Rule ID:** SSRF hardening
 - **Severity:** Low to Medium, depending on use of `COREMCP_SSRF_ALLOW_HOSTS`
-- **Batch status:** Next work — allowlist DNS pinning policy
+- **Batch status:** Patched in follow-up batch — allowlisted host resolve/DNS-change check/IP pinning added
 - **Location:** `apps/api/coremcp/proxy/security.py:62-73`, `97-117`; `apps/api/coremcp/proxy/downstream.py:267-291`
-- **Evidence:** If `host in ssrf_allow_hosts`, `UrlSafetyResult.resolved_ips` is empty and `_pinned_destination()` returns the original URL without IP pinning.
+- **Previous evidence:** If `host in ssrf_allow_hosts`, `UrlSafetyResult.resolved_ips` was empty and `_pinned_destination()` returned the original URL without IP pinning.
 - **Impact:** If an allowlisted host is compromised or DNS changes unexpectedly, downstream HTTP requests may go to a private or unintended address without the same pinning protection used for public DNS.
-- **Next-work direction:** Still resolve and pin allowlisted hosts, but allow private IPs only because the host was explicitly allowlisted. Log resolved IPs for audit.
+- **Patch evidence:** Allowlisted hosts are resolved when possible, metadata IP remains blocked, before/after DNS set changes are rejected, and resolvable allowlisted hosts are IP-pinned while preserving original Host/SNI.
+- **Residual direction:** Use `COREMCP_SSRF_ALLOW_HOSTS` sparingly; allowlist remains an explicit operator override for personal internal/Tailscale destinations.
 - **Mitigation:** Use `COREMCP_SSRF_ALLOW_HOSTS` sparingly; prefer exact internal hostnames and stable Tailscale IP/CIDR policy.
 - **False positive notes:** An allowlist is an explicit operator override; current behavior may be intentional for local/internal services.
 
@@ -137,21 +141,24 @@ Residual risks are operational / exposure-dependent and should remain bounded to
 
 ## Recommended next actions
 
-### Completed in this hardening batch
+### Completed in hardening batches
 
 1. **S-02 TrustedHostMiddleware:** allowed-hosts config and tests landed without changing auth semantics.
 2. **S-07 value-based redaction:** recursive value-pattern redaction landed for structlog/audit metadata.
-3. Focused API tests and full regression should be run before commit/push.
+3. **S-01 OAuth policy hook:** DCR disable toggle and client_id allowlist added without adding SaaS/user-consent scope.
+4. **S-04 STDIO argv profiles:** dangerous interpreter/docker argv patterns are rejected before subprocess spawn.
+5. **S-05 Remote icon opt-in:** remote HTTPS tool icons are default-off; data/self fallback remains.
+6. **S-06 Allowlist DNS pinning:** allowlisted hosts are resolved, rechecked, and pinned when possible.
 
-### Next batch, do not expand scope
+### Remaining operational choices
 
-1. **S-01 OAuth consent / allowlist policy:** choose admin consent, pre-registered client allowlist, or documented Tailscale-only operation before any untrusted OAuth exposure.
-2. **S-04 STDIO argv profiles:** add optional command-specific argument profiles while keeping STDIO admin-only.
-3. **S-05 Remote icon proxy / opt-in:** decide same-origin proxy/cache or disable remote icons by default; continue to render only via `<img src>`.
-4. **S-06 Allowlist DNS pinning:** resolve/pin allowlisted hosts while still permitting explicitly allowed private/Tailscale destinations.
+1. **OAuth external exposure:** set `COREMCP_OAUTH_DCR_ENABLED=false` or `COREMCP_OAUTH_ALLOWED_CLIENT_IDS=...`; a consent UI is still out of scope.
+2. **STDIO sandboxing:** argv profiles are not a sandbox; keep STDIO admin-only.
+3. **Remote icon UX:** only enable remote icons for trusted downstreams, or implement a same-origin proxy/cache later.
+4. **SSRF allowlist:** keep `COREMCP_SSRF_ALLOW_HOSTS` narrow and exact.
 
 ## Overall security rating
 
 - Localhost-only personal operation: **A-**
 - Tailscale private tailnet with strict ACL: **A-** when `COREMCP_ALLOWED_HOSTS` includes the external hostname
-- Public internet exposure: **Not recommended** until OAuth consent/allowlist and Web Admin token/session model are revisited
+- Public internet exposure: **Not recommended** without OAuth DCR/client allowlist controls and Web Admin token/session model review

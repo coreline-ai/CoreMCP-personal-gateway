@@ -88,7 +88,7 @@ make test && pnpm lint && pnpm build && pnpm test && make smoke && make codex-sm
 
 ## Current verification snapshot — 2026-05-16
 
-- `cd apps/api && uv run pytest -q`: **159 passed**.
+- `cd apps/api && uv run pytest -q`: **199 passed**.
 - `cd apps/fake-mcp && uv run pytest -q`: **12 passed**.
 - `cd apps/demo-mcp-suite && uv run pytest -q`: **21 passed**.
 - `make test`: **PASS** (API + fake-mcp + demo-mcp-suite).
@@ -100,7 +100,8 @@ make test && pnpm lint && pnpm build && pnpm test && make smoke && make codex-sm
 - `infra/scripts/coremcp-launchctl.sh restart && infra/scripts/ops-smoke.sh`: **PASS** (`fake-mcp/api/web/backup/logrotate/refresh` labels loaded, Fake/API/Web ready; Tailscale CLI missing so skipped).
 - `make run`: **PASS** (bootstrap, Web build, launchd restart, ops smoke).
 - `COREMCP_WEB_URL=http://127.0.0.1:3004 infra/scripts/web-route-smoke.sh`: **PASS** (security headers + `/services` → `/toolbox` → `/clients` → `/settings` → `/playground` → `/logs`).
-- `make ui-smoke`: **PASS** (`8` services, `40` playground tools, `demo_ops.ops_status` call, screenshots/events generated).
+- `make ui-smoke`: **PASS** (`8` services, `40` playground tools, `demo_ops.ops_status` call, Logs recent-call verification, screenshots/events generated).
+- `make ui-smoke-p0`: **PASS** (`23 PASS / 0 FAIL / 0 SKIP`, auth/services/playground/clients/settings/logs/CORS/body cap/favicon/Web UI flows).
 - `make codex-install && make codex-smoke`: **PASS** (Codex MCP config + CoreMCP initialize/tools-list with Codex client token).
 - OAuth persistence smoke: **PASS** (`tests/test_oauth_persistence.py`, app recreate 후 access token/refresh rotation/revocation 유지, signing private key vault reference 저장).
 - STDIO transport/CLI/ops modules: **PASS** (`tests/test_stdio_transport.py`, `tests/test_cli.py`, `tests/test_ops_stability.py`).
@@ -117,7 +118,10 @@ make test && pnpm lint && pnpm build && pnpm test && make smoke && make codex-sm
 - SSRF DNS pinning smoke: **PASS** (`tests/test_url_safety.py`, DNS mismatch 차단 + IP pinning Host/SNI 보존).
 - Admin token rotate + OAuth rate limit smoke: **PASS** (`tests/test_admin_rate_limit.py`, `tests/test_oauth_rate_limit.py`, file-backed rotate, old-token reject, DCR 10/hour/IP, CIMD 30/hour/IP).
 - Health probe/dashboard smoke: **PASS** (`/v1/dashboard/summary`, proactive service health probe fields, Prometheus health gauges).
-- External validation helpers: **PASS** (`make external-env-validate` local ops smoke passed with Tailscale/external URL skipped; `COREMCP_SOAK_DURATION_SECONDS=60 COREMCP_SOAK_INTERVAL_SECONDS=15 make soak-check` passed with 4 checks/0 failures; `make mobile-qa-checklist` printed physical-device QA checklist).
+- External validation helpers: **PASS** (`make external-env-validate --post-reboot` local ops smoke passed with Tailscale/external URL skipped; `make soak-check` default 300s passed with 10 checks/0 failures; `make mobile-qa-checklist` printed physical-device QA checklist).
+- Codex CLI real-use smoke: **PASS** (`make codex-smoke` initialized CoreMCP and listed 40 tools with Codex client token; `make codex-exec` summarized available CoreMCP tools through Codex CLI exec).
+- Backup/export smoke: **PASS** (`make cli-backup-export && make cli-backup-import-dry-run`, DB + admin token included, Keychain export intentionally excluded).
+- Operational fix during validation: **PASS** (Web Admin default API base changed to `http://127.0.0.1:8787`, `/v1` rate limit default raised to 240/min, and rate-limit 429 now includes CORS headers for allowed origins; `make ui-smoke` recovered from previous Logs visibility failure).
 - Design docs/assets smoke: **PASS** (`docs/design/README.md`, code-level audit, component patterns, token JSON/CSS/SVG asset present).
 - MCP runtime curl smoke: **PASS** (`initialize` → `tools/list` → `fake.echo tools/call`).
 - CSP smoke: **PASS** (`script-src` nonce, no `unsafe-inline` in `script-src`/`style-src`).

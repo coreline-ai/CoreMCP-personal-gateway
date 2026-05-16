@@ -92,9 +92,10 @@ CoreMCP Web UI는 service / tool icons를 다음 정책으로 렌더링한다:
    - false면 SVG는 default icon으로 대체
    - true면 backend에서 sanitize된 SVG만 표시
 5. **외부 URL icons**:
-   - https URL만 허용 (mixed content 차단)
+   - 기본값은 remote HTTPS icon 차단 (`COREMCP_REMOTE_TOOL_ICONS_ENABLED=false`)
+   - 명시 opt-in 시 https URL만 허용 (mixed content 차단)
    - lazy load + onError fallback
-   - hover 시에만 fetch (cache hit 후엔 항상 표시)
+   - privacy 요구가 큰 운영 환경에서는 opt-in하지 않고 fallback/default icon 사용
 
 ### 3.6 Toolbox / Service 카드의 icons 렌더링
 

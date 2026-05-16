@@ -238,6 +238,11 @@ Rate limit: DCR 10/hour/IP.
 
 DCR은 abuse 위험이 큼 (악성 client metadata 등록 가능). 운영자는 weekly DCR 등록 로그 검토 권장.
 
+2026-05-16 보안 보강:
+- `COREMCP_OAUTH_DCR_ENABLED=false`이면 `/oauth/register`는 `access_denied`로 거부한다.
+- `COREMCP_OAUTH_ALLOWED_CLIENT_IDS`가 비어 있지 않으면 `/oauth/authorize`와 `/oauth/token`은 해당 allowlist의 `client_id`만 허용한다.
+- 기본값은 personal/local 호환을 위해 DCR enabled + empty allowlist지만, 외부 OAuth 노출 전에는 DCR 비활성 또는 client allowlist 설정을 권장한다.
+
 ### 4.5 Resource Indicator (RFC 8707)
 authorize와 token request 양쪽에 `resource=http://localhost:8787/mcp`. JWT aud claim과 일치 검증.
 
@@ -457,6 +462,12 @@ X-API-Key ••••1234
 
 `169.254.169.254` (cloud metadata)은 어떤 옵션으로도 허용 불가 (hard reject).
 
+2026-05-16 보안 보강:
+- `COREMCP_SSRF_ALLOW_HOSTS`에 포함된 host도 가능하면 DNS resolve 결과를 기록한다.
+- allowlisted host가 private/Tailscale IP로 resolve되는 것은 운영자 명시 예외로 허용하지만, `169.254.169.254` metadata IP는 계속 차단한다.
+- outbound 직전 재resolve 결과가 최초 resolve 결과와 달라지면 allowlist 여부와 관계없이 DNS 변경으로 차단한다.
+- resolve 가능한 allowlisted host는 검증된 IP로 connection pinning을 적용하고 원래 Host/SNI를 유지한다.
+
 ### 7.3 DNS Rebinding
 - 등록 시 DNS resolve
 - 매 outbound call 직전 재resolve
@@ -566,6 +577,7 @@ multi-process 확장 시 Redis 또는 DB.
 | one-time token create | 10/hour | global |
 | token exchange | 30/min | global per IP |
 | DCR (옵션) | 30/hour | global per IP |
+| Web Admin `/v1/*` | 240/min | per bearer token + IP |
 | downstream call to service X | 300/min | per service |
 | client token 발급 | 30/hour | per admin token |
 | client token 검증 실패 | 60/min | global (brute force 감지) |
@@ -583,9 +595,10 @@ STDIO transport는 host process 실행면을 만들기 때문에 다음 방어�
 
 | 방어 | 정책 |
 |---|---|
-| command path | absolute path만 허용 |
+| command path | shell 없이 argv 배열로만 실행 |
 | command basename | `COREMCP_STDIO_ALLOWED_COMMANDS` allowlist 통과 필요 |
 | 기본 allowlist | `npx,uvx,python,python3,node,docker,deno` |
+| argv profile | `python -c`, `node -e/--eval/-p/--print`, `deno eval`, 위험한 `docker` host/volume/socket 옵션 차단 |
 | env | CoreMCP admin/client token, Authorization 계열 key 저장/전달 금지 |
 | process 수 | `COREMCP_STDIO_MAX_CONCURRENT_PROCESSES` 기본 8 |
 | idle timeout | `COREMCP_STDIO_DEFAULT_IDLE_TIMEOUT_SECONDS` 기본 300초 |
@@ -603,6 +616,8 @@ stdio_command=/bin/sh
 ```bash
 COREMCP_STDIO_ALLOWED_COMMANDS=npx,uvx,python,python3,node,docker,deno,custom-mcp
 ```
+
+allowlist는 실행 파일 이름을 넓히는 설정이고, argv profile deny layer는 별도로 유지된다. 예를 들어 `python`이 allowlist에 있어도 `python -c ...`는 차단된다.
 
 ---
 
@@ -782,15 +797,19 @@ production_docs_donotuse/06-security-auth.md에 있지만 본 프로젝트에 �
 |---|---|---|---|
 | S-02 | TrustedHostMiddleware / allowed hosts | 패치 완료 | invalid Host 차단, localhost/custom allowed host 회귀 테스트 |
 | S-07 | value-based redaction | 패치 완료 | neutral key/nested metadata의 token-like 값 redaction 테스트 |
+| S-01 | OAuth consent / allowlist policy | 정책 hook 완료 | DCR disable toggle, client_id allowlist, OAuthError/no-store 회귀 테스트 |
+| S-04 | STDIO argv profile | 패치 완료 | interpreter inline eval, docker host/volume/socket 옵션 차단 테스트 |
+| S-05 | remote icon opt-in | 패치 완료 | remote HTTPS icon default 차단, `COREMCP_REMOTE_TOOL_ICONS_ENABLED=true` opt-in 테스트 |
+| S-06 | allowlist DNS pinning | 패치 완료 | allowlisted host resolve 보존, metadata 차단, DNS 변경 차단, IP pinning 테스트 |
 
-### 16.2 다음 작업으로 남기는 항목
+### 16.2 잔여 운영 주의
 
 | ID | 항목 | 다음 작업 범위 |
 |---|---|---|
-| S-01 | OAuth consent / allowlist policy | `AUTH_MODE=oauth` 외부 노출 전에 admin consent, pre-registered client allowlist, 또는 Tailscale-only 문서화 중 하나를 선택 |
-| S-04 | STDIO argv profile | basename allowlist에 더해 `python -c`, `node -e`, 위험한 `docker run -v` 같은 argument profile 제한 검토 |
-| S-05 | remote icon proxy / opt-in | remote HTTPS icon을 same-origin proxy/cache로 받거나 opt-in으로 전환. SVG inline 금지와 `<img src>` 원칙 유지 |
-| S-06 | allowlist DNS pinning | allowlisted host도 resolve/pin하되 명시 allowlist이므로 private/Tailscale IP 허용 여부만 별도 정책화 |
+| S-01 | OAuth 외부 노출 | consent UI는 의도적으로 미구현. 외부 OAuth 노출 시 `COREMCP_OAUTH_DCR_ENABLED=false` 또는 `COREMCP_OAUTH_ALLOWED_CLIENT_IDS` 설정 권장 |
+| S-04 | STDIO sandbox | argv profile은 방어층이며 sandbox/container 격리는 별도 장기 ADR |
+| S-05 | remote icon proxy/cache | 현재는 remote HTTPS icon default-off + opt-in. same-origin proxy/cache는 필요 시 별도 작업 |
+| S-06 | allowlist 운영 | allowlist는 운영자 명시 예외다. Tailscale/internal host만 최소 범위로 지정 |
 
 ### 16.3 범위 제한
 
