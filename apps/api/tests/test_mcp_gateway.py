@@ -19,6 +19,7 @@ import coremcp.main as main_module
 from coremcp.credentials import FernetBackend, KeychainBackend
 from coremcp.logging import REDACTED, redact_sensitive_data
 from coremcp.main import _run_service_health_probe_once, create_app
+from coremcp.plugins import PluginRegistry, ToolCallContext
 from coremcp.proxy import DownstreamMcpClient, DownstreamMcpError, DownstreamTimeoutError, UrlSafetyChecker, UrlSafetyError
 from coremcp.registry.catalog import normalize_downstream_tools
 from coremcp.settings import Settings
@@ -337,6 +338,23 @@ async def test_request_body_size_limit_rejects_large_payload(app_client):
         "/mcp",
         headers={**auth_headers(), "Content-Type": "application/json"},
         content=b"{}" + (b" " * (1024 * 1024)),
+    )
+    assert response.status_code == 413
+    assert response.json()["error"]["code"] == "request_too_large"
+
+
+@pytest.mark.asyncio
+async def test_request_body_streaming_limit_rejects_chunked_payload(app_client):
+    client, _, _ = app_client
+
+    async def oversized_stream():
+        yield b'{"jsonrpc":"2.0","id":1,"method":"ping"}'
+        yield b" " * (1024 * 1024)
+
+    response = await client.post(
+        "/mcp",
+        headers={**auth_headers(), "Content-Type": "application/json"},
+        content=oversized_stream(),
     )
     assert response.status_code == 413
     assert response.json()["error"]["code"] == "request_too_large"
@@ -1332,6 +1350,65 @@ async def test_circuit_open_invalidates_downstream_session(app_client):
 
 
 @pytest.mark.asyncio
+async def test_credential_changes_invalidate_downstream_session(app_client):
+    client, _, app = app_client
+    created = await client.post(
+        "/v1/mcp-services",
+        headers=auth_headers(),
+        json={"name": "Credential Session Fake", "slug": "credential-session", "endpoint_url": "http://fake.local/mcp"},
+    )
+    service_id = created.json()["id"]
+
+    app.state.downstream_sessions[service_id] = {
+        "session_id": "credential-session-1",
+        "updated_at": time.time(),
+        "expires_at": time.time() + 3600,
+    }
+    put = await client.put(
+        f"/v1/mcp-services/{service_id}/credential",
+        headers=auth_headers(),
+        json={"secret": "first-secret", "credential_type": "bearer_token"},
+    )
+    assert put.status_code == 200
+    assert service_id not in app.state.downstream_sessions
+
+    app.state.downstream_sessions[service_id] = {
+        "session_id": "credential-session-2",
+        "updated_at": time.time(),
+        "expires_at": time.time() + 3600,
+    }
+    rotated = await client.post(
+        f"/v1/mcp-services/{service_id}/credential/rotate",
+        headers=auth_headers(),
+        json={"secret": "second-secret", "credential_type": "bearer_token"},
+    )
+    assert rotated.status_code == 200
+    assert service_id not in app.state.downstream_sessions
+
+    app.state.downstream_sessions[service_id] = {
+        "session_id": "credential-session-3",
+        "updated_at": time.time(),
+        "expires_at": time.time() + 3600,
+    }
+    deleted = await client.delete(f"/v1/mcp-services/{service_id}/credential", headers=auth_headers())
+    assert deleted.status_code == 202
+    assert service_id not in app.state.downstream_sessions
+
+    app.state.downstream_sessions[service_id] = {
+        "session_id": "credential-session-4",
+        "updated_at": time.time(),
+        "expires_at": time.time() + 3600,
+    }
+    patched = await client.patch(
+        f"/v1/mcp-services/{service_id}",
+        headers=auth_headers(),
+        json={"auth_type": "none"},
+    )
+    assert patched.status_code == 200
+    assert service_id not in app.state.downstream_sessions
+
+
+@pytest.mark.asyncio
 async def test_dynamic_capabilities_omit_resources_and_prompts_when_services_do_not_support_them(tmp_path: Path):
     async def transport(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content.decode("utf-8"))
@@ -1430,6 +1507,104 @@ async def test_tool_args_schema_validation_blocks_downstream_call(app_client):
     assert after == before
     audit = await app.state.repository.recent_audit_logs(limit=5, action="policy.invalid_args")
     assert audit and audit[0]["resource_type"] == "service_tool"
+
+
+@pytest.mark.asyncio
+async def test_plugin_before_failure_returns_tool_error_without_downstream_call(app_client):
+    class _FailBeforePlugin:
+        name = "fail-before"
+
+        async def before_tool_call(self, context: ToolCallContext, arguments: Any) -> Any:
+            raise RuntimeError("before boom")
+
+        async def after_tool_response(self, context: ToolCallContext, result: dict[str, Any]) -> dict[str, Any]:
+            return result
+
+    client, recorder, app = app_client
+    created = await client.post(
+        "/v1/mcp-services",
+        headers=auth_headers(),
+        json={"name": "Plugin Before Fake", "slug": "plugin-before", "endpoint_url": "http://fake.local/mcp"},
+    )
+    service_id = created.json()["id"]
+    assert (await client.post(f"/v1/mcp-services/{service_id}/validate", headers=auth_headers())).status_code == 200
+    assert (await client.post("/v1/toolboxes/tbx_default/items", headers=auth_headers(), json={"service_id": service_id})).status_code == 201
+    app.state.plugins = PluginRegistry([_FailBeforePlugin()])
+
+    init = await initialize(client)
+    before = len([request for request in recorder.requests if request["body"]["method"] == "tools/call"])
+    response = await client.post(
+        "/mcp",
+        headers={**auth_headers(), "Mcp-Session-Id": init.headers["Mcp-Session-Id"]},
+        json={
+            "jsonrpc": "2.0",
+            "id": "plugin-before",
+            "method": "tools/call",
+            "params": {"name": "plugin-before.echo", "arguments": {"text": "blocked"}},
+        },
+    )
+    after = len([request for request in recorder.requests if request["body"]["method"] == "tools/call"])
+
+    assert response.status_code == 200
+    assert response.json()["result"]["isError"] is True
+    assert response.json()["result"]["_meta"]["coremcp"]["error_code"] == "plugin_error"
+    assert after == before
+    audit = await app.state.repository.recent_audit_logs(limit=5, action="plugin.error")
+    assert audit[0]["metadata"] == {
+        "tool": "plugin-before.echo",
+        "plugin_name": "fail-before",
+        "stage": "before_tool_call",
+        "error_type": "RuntimeError",
+    }
+
+
+@pytest.mark.asyncio
+async def test_plugin_after_failure_returns_tool_error_after_downstream_success(app_client):
+    class _FailAfterPlugin:
+        name = "fail-after"
+
+        async def before_tool_call(self, context: ToolCallContext, arguments: Any) -> Any:
+            return arguments
+
+        async def after_tool_response(self, context: ToolCallContext, result: dict[str, Any]) -> dict[str, Any]:
+            raise RuntimeError("after boom")
+
+    client, recorder, app = app_client
+    created = await client.post(
+        "/v1/mcp-services",
+        headers=auth_headers(),
+        json={"name": "Plugin After Fake", "slug": "plugin-after", "endpoint_url": "http://fake.local/mcp"},
+    )
+    service_id = created.json()["id"]
+    assert (await client.post(f"/v1/mcp-services/{service_id}/validate", headers=auth_headers())).status_code == 200
+    assert (await client.post("/v1/toolboxes/tbx_default/items", headers=auth_headers(), json={"service_id": service_id})).status_code == 201
+    app.state.plugins = PluginRegistry([_FailAfterPlugin()])
+
+    init = await initialize(client)
+    before = len([request for request in recorder.requests if request["body"]["method"] == "tools/call"])
+    response = await client.post(
+        "/mcp",
+        headers={**auth_headers(), "Mcp-Session-Id": init.headers["Mcp-Session-Id"]},
+        json={
+            "jsonrpc": "2.0",
+            "id": "plugin-after",
+            "method": "tools/call",
+            "params": {"name": "plugin-after.echo", "arguments": {"text": "redact-me"}},
+        },
+    )
+    after = len([request for request in recorder.requests if request["body"]["method"] == "tools/call"])
+
+    assert response.status_code == 200
+    assert response.json()["result"]["isError"] is True
+    assert response.json()["result"]["_meta"]["coremcp"]["error_code"] == "plugin_error"
+    assert after == before + 1
+    audit = await app.state.repository.recent_audit_logs(limit=5, action="plugin.error")
+    assert audit[0]["metadata"] == {
+        "tool": "plugin-after.echo",
+        "plugin_name": "fail-after",
+        "stage": "after_tool_response",
+        "error_type": "RuntimeError",
+    }
 
 
 @pytest.mark.asyncio
@@ -1657,6 +1832,66 @@ async def test_stdio_service_metadata_create_filters_sensitive_env(app_client):
     )
     assert patched.status_code == 200
     assert patched.json()["stdio_env"] == {"NEXT_PUBLIC_SAFE": "ok"}
+
+
+@pytest.mark.asyncio
+async def test_stdio_service_rejects_disallowed_command_and_audits(app_client):
+    client, _, app = app_client
+
+    created = await client.post(
+        "/v1/mcp-services",
+        headers=auth_headers(),
+        json={
+            "name": "Shell Stdio MCP",
+            "slug": "shell-stdio",
+            "transport_type": "stdio",
+            "stdio_command": "/bin/sh",
+            "stdio_args": ["-c", "echo unsafe"],
+        },
+    )
+
+    assert created.status_code == 422
+    assert created.json()["error"]["code"] == "validation_failed"
+    assert "not allowed" in created.json()["error"]["message"]
+    assert "/bin/sh" not in json.dumps(created.json())
+
+    audit = await app.state.repository.recent_audit_logs(limit=5, action="service.stdio_command_rejected")
+    assert audit
+    assert audit[0]["metadata"]["command_basename"] == "sh"
+    assert "/bin/sh" not in json.dumps(audit[0], default=str)
+
+
+@pytest.mark.asyncio
+async def test_stdio_service_patch_rejects_disallowed_command_and_keeps_existing(app_client):
+    client, _, app = app_client
+
+    created = await client.post(
+        "/v1/mcp-services",
+        headers=auth_headers(),
+        json={
+            "name": "Patch Safe Stdio MCP",
+            "slug": "patch-safe-stdio",
+            "transport_type": "stdio",
+            "stdio_command": sys.executable,
+        },
+    )
+    assert created.status_code == 201
+    service_id = created.json()["id"]
+
+    patched = await client.patch(
+        f"/v1/mcp-services/{service_id}",
+        headers=auth_headers(),
+        json={"stdio_command": "/bin/sh"},
+    )
+
+    assert patched.status_code == 422
+    assert "not allowed" in patched.json()["error"]["message"]
+    service = await app.state.repository.get_mcp_service(service_id)
+    assert service is not None
+    assert service["stdio_command"] == sys.executable
+
+    audit = await app.state.repository.recent_audit_logs(limit=5, action="service.stdio_command_rejected")
+    assert audit and audit[0]["resource_id"] == service_id
 
 
 @pytest.mark.asyncio
@@ -3077,6 +3312,7 @@ class FakeStdioClient:
         timeout=30.0,
         idle_timeout_seconds=None,
         max_response_bytes=1024 * 1024,
+        allowed_basenames=None,
     ) -> None:
         self.command = list(command)
         self.cwd = cwd

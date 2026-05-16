@@ -5,10 +5,12 @@ from urllib.parse import urlparse
 
 import httpx
 
+from coremcp.errors import CoreMcpRuntimeError
+
 from .security import UrlSafetyChecker, UrlSafetyError, UrlSafetyResult
 
 
-class DownstreamMcpError(RuntimeError):
+class DownstreamMcpError(CoreMcpRuntimeError):
     def __init__(self, message: str, *, code: int = -32000) -> None:
         super().__init__(message)
         self.code = code

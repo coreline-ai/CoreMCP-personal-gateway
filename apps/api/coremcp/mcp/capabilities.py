@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import FastAPI
 
 from coremcp.db import DEFAULT_TOOLBOX_ID
+from coremcp.mcp.context import McpHandlerContext
 
 DEFAULT_SERVER_CAPABILITIES: dict[str, dict[str, Any]] = {
     "tools": {"listChanged": True},
@@ -24,9 +25,10 @@ def summary_supports(summary: dict[str, Any], *keys: str) -> bool:
 
 
 async def server_capabilities_for_default_toolbox(app: FastAPI) -> dict[str, Any]:
+    ctx = McpHandlerContext.from_app(app)
     items = [
         item
-        for item in await app.state.repository.list_toolbox_items(DEFAULT_TOOLBOX_ID)
+        for item in await ctx.repos.toolbox.list_toolbox_items(DEFAULT_TOOLBOX_ID)
         if bool(item.get("enabled")) and item.get("service_status") == "active"
     ]
     if not items:
@@ -36,7 +38,7 @@ async def server_capabilities_for_default_toolbox(app: FastAPI) -> dict[str, Any
     resources_supported = False
     prompts_supported = False
     for item in items:
-        service = await app.state.repository.get_mcp_service(str(item.get("service_id") or ""))
+        service = await ctx.repos.services.get_mcp_service(str(item.get("service_id") or ""))
         if not service:
             continue
         downstream_capabilities = service.get("capabilities_json") if isinstance(service.get("capabilities_json"), dict) else {}

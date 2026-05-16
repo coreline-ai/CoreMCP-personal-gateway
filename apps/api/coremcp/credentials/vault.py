@@ -12,10 +12,11 @@ from uuid import uuid4
 
 from cryptography.fernet import Fernet, InvalidToken
 
+from coremcp.errors import CoreMcpRuntimeError
 from coremcp.settings import Settings
 
 
-class CredentialVaultError(RuntimeError):
+class CredentialVaultError(CoreMcpRuntimeError):
     pass
 
 

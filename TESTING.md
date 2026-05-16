@@ -86,9 +86,9 @@ make test && pnpm lint && pnpm build && pnpm test && make smoke && make codex-sm
 - `dev-plan/.artifacts/ui-smoke/events.json`
 - `dev-plan/.artifacts/ui-smoke/screenshots/*.png`
 
-## Current verification snapshot — 2026-05-15
+## Current verification snapshot — 2026-05-16
 
-- `cd apps/api && uv run pytest -q`: **144 passed**.
+- `cd apps/api && uv run pytest -q`: **159 passed**.
 - `cd apps/fake-mcp && uv run pytest -q`: **12 passed**.
 - `cd apps/demo-mcp-suite && uv run pytest -q`: **21 passed**.
 - `make test`: **PASS** (API + fake-mcp + demo-mcp-suite).
@@ -104,6 +104,7 @@ make test && pnpm lint && pnpm build && pnpm test && make smoke && make codex-sm
 - `make codex-install && make codex-smoke`: **PASS** (Codex MCP config + CoreMCP initialize/tools-list with Codex client token).
 - OAuth persistence smoke: **PASS** (`tests/test_oauth_persistence.py`, app recreate 후 access token/refresh rotation/revocation 유지, signing private key vault reference 저장).
 - STDIO transport/CLI/ops modules: **PASS** (`tests/test_stdio_transport.py`, `tests/test_cli.py`, `tests/test_ops_stability.py`).
+- STDIO command allowlist smoke: **PASS** (`COREMCP_STDIO_ALLOWED_COMMANDS` default allows `python3`, rejects `/bin/sh`, create/update rejection audited as `service.stdio_command_rejected`).
 - MCP resources/prompts proxy smoke: **PASS** (`resources/list`, `resources/read` large-content truncate, `resources/templates/list`, `prompts/list`, `prompts/get` API regression).
 - MCP catalog notification smoke: **PASS** (`notifications/{tools,resources,prompts}/list_changed` category emission, `Last-Event-Id` SSE replay, unsupported protocol downgrade warning).
 - MCP batch/progress notification smoke: **PASS** (JSON-RPC batch mixed/notification-only/empty-array behavior, downstream `notifications/progress` + `notifications/resources/updated` SSE fan-out, STDIO notification callback, app/repository facade imports).
@@ -116,12 +117,12 @@ make test && pnpm lint && pnpm build && pnpm test && make smoke && make codex-sm
 - SSRF DNS pinning smoke: **PASS** (`tests/test_url_safety.py`, DNS mismatch 차단 + IP pinning Host/SNI 보존).
 - Admin token rotate + OAuth rate limit smoke: **PASS** (`tests/test_admin_rate_limit.py`, `tests/test_oauth_rate_limit.py`, file-backed rotate, old-token reject, DCR 10/hour/IP, CIMD 30/hour/IP).
 - Health probe/dashboard smoke: **PASS** (`/v1/dashboard/summary`, proactive service health probe fields, Prometheus health gauges).
-- External validation helpers: **PASS** (`make external-env-validate` local ops smoke passed with Tailscale/external URL skipped; `COREMCP_SOAK_DURATION_SECONDS=1 COREMCP_SOAK_INTERVAL_SECONDS=1 make soak-check` passed; `make mobile-qa-checklist` printed device QA checklist).
+- External validation helpers: **PASS** (`make external-env-validate` local ops smoke passed with Tailscale/external URL skipped; `COREMCP_SOAK_DURATION_SECONDS=60 COREMCP_SOAK_INTERVAL_SECONDS=15 make soak-check` passed with 4 checks/0 failures; `make mobile-qa-checklist` printed physical-device QA checklist).
 - Design docs/assets smoke: **PASS** (`docs/design/README.md`, code-level audit, component patterns, token JSON/CSS/SVG asset present).
 - MCP runtime curl smoke: **PASS** (`initialize` → `tools/list` → `fake.echo tools/call`).
 - CSP smoke: **PASS** (`script-src` nonce, no `unsafe-inline` in `script-src`/`style-src`).
 - `/metrics` default-off smoke: **PASS** (`404`).
-- Structural refactor smoke: **PASS** (`coremcp.mcp` helper extraction, domain repository facades, ADR-038 external validation runbook; `tests/test_structure_facades.py` 4 passed).
+- Structural refactor smoke: **PASS** (`coremcp.mcp` catalog/resource/prompt helper extraction + MCP dispatcher, `coremcp.api.meta`/`admin_meta`/`oauth`/`mcp_endpoint`/`services`/`connections`/`toolboxes`/`playground` router extraction, closed-by-default `coremcp.plugins` hook boundary + fail-closed exception policy, credential/auth downstream session invalidation, initialize RPC session-header suppression, services APIRouter registration, jobs repository first-slice split, streaming body size guard, domain repository facades + `app.state.repos`, ADR-038 external validation runbook; `tests/test_structure_facades.py` 8 passed, `tests/test_plugins.py` 4 passed).
 - `git diff --check`: **PASS**.
 
 Remaining Work Classification — 2026-05-14:

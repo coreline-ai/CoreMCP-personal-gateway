@@ -7,7 +7,19 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from coremcp.errors import CoreMcpValueError
+
 from .downstream import DownstreamMcpError, DownstreamTimeoutError, DownstreamToolError
+
+
+class StdioCommandNotAllowedError(CoreMcpValueError):
+    """Raised when a stdio command basename is outside the configured allowlist."""
+
+    def __init__(self, basename: str, allowed_basenames: set[str]) -> None:
+        allowed = ", ".join(sorted(allowed_basenames)) or "<none>"
+        super().__init__(f"stdio command basename is not allowed: {basename} (allowed: {allowed})")
+        self.basename = basename
+        self.allowed_basenames = set(allowed_basenames)
 
 
 class StdioMcpTransport:
@@ -29,9 +41,13 @@ class StdioMcpTransport:
         max_response_bytes: int = 1024 * 1024,
         idle_timeout_seconds: float | None = None,
         notification_callback: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
+        allowed_basenames: set[str] | None = None,
     ) -> None:
         if not command:
             raise ValueError("stdio command must not be empty")
+        command_basename = Path(str(command[0])).name
+        if allowed_basenames is not None and command_basename not in allowed_basenames:
+            raise StdioCommandNotAllowedError(command_basename, allowed_basenames)
         if idle_timeout_seconds is not None and idle_timeout_seconds < 0:
             raise ValueError("idle_timeout_seconds must be non-negative")
         self.command = [str(part) for part in command]

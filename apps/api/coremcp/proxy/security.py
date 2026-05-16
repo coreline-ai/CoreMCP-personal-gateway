@@ -5,10 +5,11 @@ import socket
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
+from coremcp.errors import CoreMcpValueError
 from coremcp.settings import Settings
 
 
-class UrlSafetyError(ValueError):
+class UrlSafetyError(CoreMcpValueError):
     pass
 
 

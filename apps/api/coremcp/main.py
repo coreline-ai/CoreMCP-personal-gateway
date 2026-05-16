@@ -2,38 +2,42 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import secrets
-import sqlite3
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs
 
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse
 
 from coremcp.auth import (
     CLIENT_TOKEN_PREFIX,
     ClientTokenService,
-    OAuthError,
     OAuthService,
     extract_bearer_token,
-    hash_token,
     verify_admin_bearer,
 )
-from coremcp.auth.admin import (
-    ADMIN_TOKEN_PREFIX,
-    AdminTokenFileError,
-    generate_admin_token,
-    write_admin_token_atomic,
-)
+from coremcp.auth.admin import ADMIN_TOKEN_PREFIX
 from coremcp.auth.rate_limit import FixedWindowRateLimiter
-from coremcp.credentials import build_vault, mask_secret
-from coremcp.db import DEFAULT_TOOLBOX_ID, Repository
+from coremcp.api.body_limit import RequestBodyTooLarge, contains_request_body_too_large, install_streaming_body_limit
+from coremcp.api import (
+    oauth_issuer,
+    oauth_resource,
+    register_admin_meta_routes,
+    register_connections_routes,
+    register_mcp_routes,
+    register_meta_routes,
+    register_oauth_routes,
+    register_playground_routes,
+    register_services_routes,
+    register_toolboxes_routes,
+)
+from coremcp.credentials import build_vault
+from coremcp.db import Repository
+from coremcp.db.repository_facade import RepositoryFacades
 from coremcp.logging import configure_logging
 from coremcp.mcp_gateway import (
     IdempotencyCache,
@@ -46,15 +50,34 @@ from coremcp.mcp_gateway import (
     protocol_negotiation_warning,
     run_reaper_loop,
 )
-from coremcp.mcp.args_validator import validate_tool_arguments as _validate_tool_arguments
 from coremcp.mcp.capabilities import (
     DEFAULT_SERVER_CAPABILITIES,
     server_capabilities_for_default_toolbox as _server_capabilities_for_default_toolbox,
+)
+from coremcp.mcp.dispatcher import (
+    McpDispatchHandlers,
+    dispatch_mcp as _dispatch_mcp,
+    dispatch_mcp_batch as _dispatch_mcp_batch,
 )
 from coremcp.mcp.notifications import (
     is_downstream_notification_method,
     list_changed_category_for_method,
     notification_params,
+)
+from coremcp.mcp.prompts_handlers import (
+    PromptsHandlerDeps,
+    handle_prompts_get as _mcp_handle_prompts_get,
+    handle_prompts_list as _mcp_handle_prompts_list,
+)
+from coremcp.mcp.resources_handlers import (
+    ResourcesHandlerDeps,
+    handle_resources_list as _mcp_handle_resources_list,
+    handle_resources_read as _mcp_handle_resources_read,
+)
+from coremcp.mcp.rpc import (
+    RpcHelperDeps,
+    request_default_downstream_rpc as _mcp_request_default_downstream_rpc,
+    request_service_rpc as _mcp_request_service_rpc,
 )
 from coremcp.mcp.session_proxy import (
     downstream_session_callback as _downstream_session_callback,
@@ -62,18 +85,23 @@ from coremcp.mcp.session_proxy import (
     forget_downstream_session as _forget_downstream_session,
     reap_expired_downstream_sessions as _reap_expired_downstream_sessions,
 )
+from coremcp.mcp.tools_handlers import (
+    ToolsHandlerDeps,
+    handle_tools_call as _mcp_handle_tools_call,
+    handle_tools_list as _mcp_handle_tools_list,
+    refresh_tools as _mcp_refresh_tools,
+)
+from coremcp.plugins import PluginRegistry
 from coremcp.proxy import (
     CircuitBreaker,
-    CircuitOpenError,
     DownstreamMcpClient,
     DownstreamMcpError,
-    DownstreamTimeoutError,
-    DownstreamToolError,
+    StdioCommandNotAllowedError,
     StdioMcpClient,
     UrlSafetyChecker,
     UrlSafetyError,
 )
-from coremcp.registry.catalog import catalog_row_to_mcp_tool, normalize_downstream_tools, slugify_tool_name
+from coremcp.registry.catalog import normalize_downstream_tools
 from coremcp.settings import Settings, get_settings
 
 SERVER_CAPABILITIES = DEFAULT_SERVER_CAPABILITIES
@@ -92,8 +120,6 @@ INFLIGHT_REAP_INTERVAL_SECONDS = 30
 JOB_REAP_MAX_AGE_SECONDS = 60 * 60
 SERVICE_HEALTH_FAILURE_THRESHOLD = 3
 SERVICE_HEALTH_CIRCUIT_OPEN_SECONDS = 30
-RESOURCE_READ_MAX_TEXT_CHARS = 20_000
-RESOURCE_READ_MAX_BLOB_CHARS = 1_000_000
 DANGEROUS_TOOL_KEYWORDS = (
     "delete",
     "remove",
@@ -165,7 +191,7 @@ def verify_admin_request(request: Request) -> bool:
 
 async def verify_mcp_request(request: Request) -> bool:
     token = extract_bearer_token(request.headers.get("Authorization"))
-    token_service = ClientTokenService(request.app.state.repository)
+    token_service = ClientTokenService(request.app.state.repos.credentials)
     client_auth = await token_service.verify(token)
     if client_auth is not None:
         request.state.client_auth = client_auth
@@ -209,14 +235,6 @@ def request_ip(request: Request) -> str | None:
     return request.client.host if request.client else None
 
 
-def oauth_issuer(request: Request) -> str:
-    return str(request.base_url).rstrip("/")
-
-
-def oauth_resource(request: Request) -> str:
-    return str(request.url_for("mcp"))
-
-
 def tool_error_result(
     error_code: str,
     message: str,
@@ -237,14 +255,6 @@ def tool_error_result(
         "isError": True,
         "_meta": {"coremcp": meta},
     }
-
-
-def _normalize_downstream_tool(tool: dict[str, Any]) -> tuple[dict[str, Any], str]:
-    original_name = str(tool.get("name", "")).strip()
-    exposed_name = f"fake.{slugify_tool_name(original_name)}"
-    normalized = dict(tool)
-    normalized["name"] = exposed_name
-    return normalized, original_name
 
 
 def _get_request_id(payload: dict[str, Any]) -> Any:
@@ -283,7 +293,7 @@ async def _scope_denied_response(
     params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
     tool_name = params.get("name") if isinstance(params.get("name"), str) else None
     request_log_id = correlation_id(request)
-    await app.state.repository.log_audit(
+    await app.state.repos.audit.log_audit(
         action="policy.deny",
         resource_type="mcp_scope",
         metadata={
@@ -296,7 +306,7 @@ async def _scope_denied_response(
         ip=request_ip(request),
         user_agent=request.headers.get("user-agent"),
     )
-    await app.state.repository.log_invocation(
+    await app.state.repos.audit.log_invocation(
         session_id=request.headers.get("Mcp-Session-Id"),
         method=method,
         tool_name=tool_name,
@@ -323,24 +333,6 @@ async def _json_body(request: Request) -> dict[str, Any] | JSONResponse:
     if not isinstance(payload, dict):
         return api_error("validation_failed", "Request body must be an object", status_code=422)
     return payload
-
-
-async def _form_or_json_body(request: Request) -> dict[str, Any]:
-    content_type = request.headers.get("content-type", "")
-    if "application/json" in content_type:
-        try:
-            payload = await request.json()
-        except ValueError as exc:
-            raise OAuthError("invalid_request", "request body must be valid JSON") from exc
-        if not isinstance(payload, dict):
-            raise OAuthError("invalid_request", "request body must be an object")
-        return payload
-    raw = (await request.body()).decode("utf-8")
-    parsed = parse_qs(raw, keep_blank_values=True)
-    for key, values in parsed.items():
-        if len(values) > 1:
-            raise OAuthError("invalid_request", f"duplicate form field: {key}")
-    return {key: values[0] if values else "" for key, values in parsed.items()}
 
 
 def _string_list(value: Any) -> list[str]:
@@ -381,12 +373,26 @@ def _transport_type(config: dict[str, Any]) -> str:
     return transport if transport in SERVICE_TRANSPORT_TYPES else "http"
 
 
-def _validate_stdio_runtime_config(command: str | None, cwd: str | None = None) -> str | None:
+def _stdio_command_basename(command: str | None) -> str:
+    return Path(str(command or "").strip()).name
+
+
+def _validate_stdio_runtime_config(
+    command: str | None,
+    cwd: str | None = None,
+    *,
+    settings: Settings | None = None,
+) -> str | None:
     if not command or not command.strip():
         return "stdio_command is required for stdio transport"
     command_path = Path(command.strip()).expanduser()
     if not command_path.is_absolute():
         return "stdio_command must be an absolute path"
+    allowed_basenames = (settings or get_settings()).stdio_allowed_command_set
+    command_basename = command_path.name
+    if command_basename not in allowed_basenames:
+        allowed = ", ".join(sorted(allowed_basenames)) or "<none>"
+        return f"stdio_command basename is not allowed: {command_basename} (allowed: {allowed})"
     if cwd and cwd.strip():
         cwd_path = Path(cwd.strip()).expanduser()
         if not cwd_path.is_absolute():
@@ -403,17 +409,38 @@ def _stdio_default_idle_timeout(settings: Settings) -> int:
 def _stdio_signature(config: dict[str, Any], settings: Settings | None = None) -> tuple[Any, ...]:
     command = str(config.get("stdio_command") or "").strip()
     cwd = str(config.get("stdio_cwd") or "").strip() or None
-    validation_error = _validate_stdio_runtime_config(command, cwd)
+    settings = settings or get_settings()
+    validation_error = _validate_stdio_runtime_config(command, cwd, settings=settings)
     if validation_error:
         raise DownstreamMcpError(validation_error, code=-32602)
     args = tuple(_string_list(config.get("stdio_args")))
     env = _stdio_env(config.get("stdio_env"))
-    settings = settings or get_settings()
     idle_timeout = _positive_int(
         config.get("stdio_idle_timeout_seconds"),
         _stdio_default_idle_timeout(settings),
     )
     return (command, args, tuple(sorted(env.items())), cwd, idle_timeout)
+
+
+async def _audit_stdio_command_rejected(
+    request: Request,
+    *,
+    command: str | None,
+    reason: str,
+    service_id: str | None = None,
+) -> None:
+    await request.app.state.repos.audit.log_audit(
+        action="service.stdio_command_rejected",
+        resource_type="mcp_service",
+        resource_id=service_id,
+        metadata={
+            "command_basename": _stdio_command_basename(command),
+            "reason": reason,
+        },
+        request_id=correlation_id(request),
+        ip=request_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
 
 
 def _stdio_snapshot_sort_key(snapshot: dict[str, Any]) -> float:
@@ -498,14 +525,18 @@ async def _stdio_client_for_config(app: FastAPI, config: dict[str, Any]) -> Stdi
         await _ensure_stdio_client_capacity_locked(app, service_key=service_key, clients=clients)
 
         command = [str(signature[0]), *list(signature[1])]
-        client = StdioMcpClient(
-            command,
-            cwd=signature[3],
-            env=dict(signature[2]),
-            timeout=float(app.state.settings.downstream_timeout_seconds),
-            idle_timeout_seconds=int(signature[4]),
-            max_response_bytes=app.state.settings.downstream_max_response_bytes,
-        )
+        try:
+            client = StdioMcpClient(
+                command,
+                cwd=signature[3],
+                env=dict(signature[2]),
+                timeout=float(app.state.settings.downstream_timeout_seconds),
+                idle_timeout_seconds=int(signature[4]),
+                max_response_bytes=app.state.settings.downstream_max_response_bytes,
+                allowed_basenames=app.state.settings.stdio_allowed_command_set,
+            )
+        except StdioCommandNotAllowedError as exc:
+            raise DownstreamMcpError(str(exc), code=-32602) from exc
         client.notification_callback = _downstream_notification_callback(
             app,
             service_id=service_key,
@@ -513,33 +544,6 @@ async def _stdio_client_for_config(app: FastAPI, config: dict[str, Any]) -> Stdi
         )
         clients[service_key] = (signature, client)
         return client
-
-
-def _oauth_error_response(exc: OAuthError) -> JSONResponse:
-    headers = {"Cache-Control": "no-store"}
-    if exc.retry_after_seconds is not None:
-        headers["Retry-After"] = str(exc.retry_after_seconds)
-    return JSONResponse(
-        {"error": exc.code, "error_description": str(exc)},
-        status_code=exc.status_code,
-        headers=headers,
-    )
-
-
-def _check_oauth_dcr_rate_limit(request: Request) -> OAuthError | None:
-    decision = request.app.state.oauth_dcr_rate_limiter.check(
-        f"oauth:dcr:{request_ip(request) or 'unknown'}",
-        limit=OAUTH_DCR_RATE_LIMIT,
-        window_seconds=OAUTH_DCR_RATE_LIMIT_WINDOW_SECONDS,
-    )
-    if decision.allowed:
-        return None
-    return OAuthError(
-        "rate_limited",
-        "OAuth dynamic client registration rate limit exceeded",
-        status_code=429,
-        retry_after_seconds=decision.retry_after_seconds,
-    )
 
 
 def _bearer_rate_limit_bucket(request: Request, *, route_kind: str) -> str:
@@ -632,7 +636,7 @@ def _check_service_rate_limit(app: FastAPI, *, service_id: str, method: str, too
 async def _downstream_headers_for_service(app: FastAPI, service_id: str | None) -> dict[str, str]:
     if not service_id:
         return {}
-    credential = await app.state.repository.get_service_credential(service_id)
+    credential = await app.state.repos.credentials.get_service_credential(service_id)
     if not credential:
         return {}
     secret = await app.state.vault.get(credential["secret_ref"])
@@ -955,7 +959,7 @@ async def _forward_downstream_cancellation(
                 ),
                 timeout=2.0,
             )
-            await app.state.repository.log_audit(
+            await app.state.repos.audit.log_audit(
                 action="downstream.cancel.forward",
                 resource_type="mcp_service",
                 resource_id=inflight.get("service_id"),
@@ -965,7 +969,7 @@ async def _forward_downstream_cancellation(
                 user_agent=request.headers.get("user-agent"),
             )
         except (TimeoutError, DownstreamMcpError) as exc:
-            await app.state.repository.log_audit(
+            await app.state.repos.audit.log_audit(
                 action="downstream.cancel.forward_failed",
                 resource_type="mcp_service",
                 resource_id=inflight.get("service_id"),
@@ -983,7 +987,7 @@ async def _forward_downstream_cancellation(
         try:
             safety_result = checker.assert_safe(target_url)
         except UrlSafetyError as exc:
-            await app.state.repository.log_audit(
+            await app.state.repos.audit.log_audit(
                 action="downstream.cancel.forward_failed",
                 resource_type="mcp_service",
                 resource_id=inflight.get("service_id") if isinstance(inflight, dict) else None,
@@ -1011,7 +1015,7 @@ async def _forward_downstream_cancellation(
             ),
             timeout=2.0,
         )
-        await app.state.repository.log_audit(
+        await app.state.repos.audit.log_audit(
             action="downstream.cancel.forward",
             resource_type="mcp_service",
             resource_id=inflight.get("service_id") if isinstance(inflight, dict) else None,
@@ -1021,7 +1025,7 @@ async def _forward_downstream_cancellation(
             user_agent=request.headers.get("user-agent"),
         )
     except TimeoutError:
-        await app.state.repository.log_audit(
+        await app.state.repos.audit.log_audit(
             action="downstream.cancel.forward_failed",
             resource_type="mcp_service",
             resource_id=inflight.get("service_id") if isinstance(inflight, dict) else None,
@@ -1031,7 +1035,7 @@ async def _forward_downstream_cancellation(
             user_agent=request.headers.get("user-agent"),
         )
     except DownstreamMcpError as exc:
-        await app.state.repository.log_audit(
+        await app.state.repos.audit.log_audit(
             action="downstream.cancel.forward_failed",
             resource_type="mcp_service",
             resource_id=inflight.get("service_id") if isinstance(inflight, dict) else None,
@@ -1042,126 +1046,25 @@ async def _forward_downstream_cancellation(
         )
 
 
-async def _refresh_tools(
-    app: FastAPI,
-    *,
-    request_id: Any,
-    protocol_version: str | None,
-    session_id: str | None,
-    params: dict[str, Any] | None = None,
-    correlation_id_value: str | None = None,
-) -> dict[str, Any]:
-    repository: Repository = app.state.repository
-    catalog_rows = await repository.get_catalog_tools(DEFAULT_TOOLBOX_ID)
-    if catalog_rows:
-        registry: dict[str, dict[str, Any]] = {}
-        tools: list[dict[str, Any]] = []
-        for row in catalog_rows:
-            tool = catalog_row_to_mcp_tool(row)
-            registry[tool["name"]] = {
-                "original_name": row["original_name"],
-                "endpoint_url": row["endpoint_url"],
-                "transport_type": row.get("transport_type") or "http",
-                "stdio_command": row.get("stdio_command"),
-                "stdio_args": row.get("stdio_args") or [],
-                "stdio_env": row.get("stdio_env") or {},
-                "stdio_cwd": row.get("stdio_cwd"),
-                "stdio_idle_timeout_seconds": row.get("stdio_idle_timeout_seconds"),
-                "input_schema_json": row.get("input_schema_json") or {"type": "object"},
-                "schema_hash": row.get("schema_hash"),
-                "service_id": row["service_id"],
-                "service_tool_id": row["service_tool_id"],
-                "override_enabled": row.get("override_enabled", 1),
-                "permission_level": row.get("permission_level", "callable"),
-            }
-            if bool(row.get("override_enabled", 1)) and row.get("permission_level", "callable") != "hidden":
-                tools.append(tool)
-        app.state.tool_registry = registry
-        result_payload: dict[str, Any] = {"tools": tools, "nextCursor": None}
-        unavailable = await _toolbox_unavailable_services(app, DEFAULT_TOOLBOX_ID)
-        if unavailable:
-            result_payload["_meta"] = {"coremcp": {"unavailable_services": unavailable}}
-        return result_payload
-
-    downstream: DownstreamMcpClient = app.state.downstream
-    response = await downstream.request(
-        method="tools/list",
-        params=params or {},
-        request_id=request_id,
-        protocol_version=protocol_version,
-        session_id=_downstream_session_id(app, None),
-        correlation_id=correlation_id_value,
-        session_id_callback=_downstream_session_callback(app, None),
-        notification_callback=_downstream_notification_callback(app, source="http"),
+def _rpc_helper_deps(app: FastAPI) -> RpcHelperDeps:
+    deps = getattr(app.state, "rpc_helper_deps", None)
+    if isinstance(deps, RpcHelperDeps):
+        return deps
+    deps = RpcHelperDeps(
+        settings=app.state.settings,
+        downstream=app.state.downstream,
+        stdio_client_for_config=lambda config: _stdio_client_for_config(app, config),
+        downstream_headers_for_service=lambda service_id: _downstream_headers_for_service(app, service_id),
+        downstream_session_id=lambda service_id: _downstream_session_id(app, service_id),
+        downstream_session_callback=lambda service_id: _downstream_session_callback(app, service_id),
+        downstream_notification_callback=lambda service_id, source: _downstream_notification_callback(
+            app,
+            service_id=service_id,
+            source=source,
+        ),
     )
-    result = response.get("result")
-    if not isinstance(result, dict):
-        raise DownstreamMcpError("downstream tools/list returned invalid result")
-
-    transformed_tools: list[dict[str, Any]] = []
-    registry = {}
-    for tool in result.get("tools", []):
-        if not isinstance(tool, dict) or not tool.get("name"):
-            continue
-        transformed, original_name = _normalize_downstream_tool(tool)
-        transformed_tools.append(transformed)
-        registry[transformed["name"]] = {
-            "original_name": original_name,
-            "endpoint_url": app.state.settings.fake_mcp_url,
-            "transport_type": "http",
-            "service_id": None,
-            "service_tool_id": None,
-            "input_schema_json": tool.get("inputSchema") if isinstance(tool.get("inputSchema"), dict) else {"type": "object"},
-        }
-
-    app.state.tool_registry = registry
-    result = dict(result)
-    result["tools"] = transformed_tools
-    result.setdefault("nextCursor", None)
-    return result
-
-
-async def _active_toolbox_services(app: FastAPI, toolbox_id: str = DEFAULT_TOOLBOX_ID) -> list[dict[str, Any]]:
-    services: list[dict[str, Any]] = []
-    for item in await app.state.repository.list_toolbox_items(toolbox_id):
-        if not bool(item.get("enabled")) or item.get("service_status") != "active":
-            continue
-        service = await app.state.repository.get_mcp_service(str(item["service_id"]))
-        if service and service.get("status") == "active":
-            services.append(service)
-    return services
-
-
-async def _toolbox_unavailable_services(app: FastAPI, toolbox_id: str = DEFAULT_TOOLBOX_ID) -> list[dict[str, Any]]:
-    unavailable: list[dict[str, Any]] = []
-    for item in await app.state.repository.list_toolbox_items(toolbox_id):
-        if not bool(item.get("enabled")):
-            continue
-        service_id = str(item.get("service_id") or "")
-        service_status = str(item.get("service_status") or "unknown")
-        if service_status != "active":
-            unavailable.append(
-                {
-                    "service_id": service_id,
-                    "service_slug": item.get("service_slug"),
-                    "status": service_status,
-                    "reason": "service_not_active",
-                }
-            )
-            continue
-        if service_id:
-            snapshot = app.state.circuit_breaker.snapshot(service_id)
-            if snapshot.state == "open":
-                unavailable.append(
-                    {
-                        "service_id": service_id,
-                        "service_slug": item.get("service_slug"),
-                        "status": "circuit_open",
-                        "reason": "circuit_open",
-                        "retry_after_seconds": snapshot.retry_after_seconds,
-                    }
-                )
-    return unavailable
+    app.state.rpc_helper_deps = deps
+    return deps
 
 
 async def _request_service_rpc(
@@ -1174,35 +1077,20 @@ async def _request_service_rpc(
     protocol_version: str | None,
     session_id: str | None = None,
     correlation_id_value: str | None = None,
+    timeout: httpx.Timeout | float | None = None,
+    send_downstream_session: bool = True,
 ) -> dict[str, Any]:
-    service_id = str(service.get("id") or service.get("service_id") or "")
-    if _transport_type(service) == "stdio":
-        client = await _stdio_client_for_config(app, service)
-        return await client.request(
-            method=method,
-            params=params or {},
-            request_id=request_id,
-            protocol_version=protocol_version,
-            session_id=session_id,
-            correlation_id=correlation_id_value,
-        )
-
-    checker = UrlSafetyChecker(app.state.settings)
-    safety_result = checker.assert_safe(service["endpoint_url"])
-    downstream_session_id = _downstream_session_id(app, service_id)
-    return await app.state.downstream.request(
+    return await _mcp_request_service_rpc(
+        _rpc_helper_deps(app),
+        service,
         method=method,
-        params=params or {},
+        params=params,
         request_id=request_id,
         protocol_version=protocol_version,
-        session_id=downstream_session_id,
-        url=service["endpoint_url"],
-        downstream_headers=await _downstream_headers_for_service(app, service_id),
-        url_safety_checker=checker,
-        safety_result=safety_result,
-        correlation_id=correlation_id_value,
-        session_id_callback=_downstream_session_callback(app, service_id),
-        notification_callback=_downstream_notification_callback(app, service_id=service_id, source="http"),
+        session_id=session_id,
+        correlation_id_value=correlation_id_value,
+        timeout=timeout,
+        send_downstream_session=send_downstream_session,
     )
 
 
@@ -1215,16 +1103,19 @@ async def _request_default_downstream_rpc(
     protocol_version: str | None,
     session_id: str | None,
     correlation_id_value: str | None,
+    timeout: httpx.Timeout | float | None = None,
+    send_downstream_session: bool = True,
 ) -> dict[str, Any]:
-    return await app.state.downstream.request(
+    return await _mcp_request_default_downstream_rpc(
+        _rpc_helper_deps(app),
         method=method,
-        params=params or {},
+        params=params,
         request_id=request_id,
         protocol_version=protocol_version,
-        session_id=_downstream_session_id(app, None),
-        correlation_id=correlation_id_value,
-        session_id_callback=_downstream_session_callback(app, None),
-        notification_callback=_downstream_notification_callback(app, source="http"),
+        session_id=session_id,
+        correlation_id_value=correlation_id_value,
+        timeout=timeout,
+        send_downstream_session=send_downstream_session,
     )
 
 
@@ -1243,145 +1134,11 @@ def _service_config_from_catalog_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _cached_resource_to_mcp(row: dict[str, Any]) -> dict[str, Any]:
-    metadata = row.get("metadata_json") if isinstance(row.get("metadata_json"), dict) else {}
-    item = dict(metadata)
-    item["uri"] = row["uri"]
-    if row.get("name"):
-        item["name"] = row["name"]
-    if row.get("title"):
-        item["title"] = row["title"]
-    if row.get("description"):
-        item["description"] = row["description"]
-    if row.get("mime_type"):
-        item["mimeType"] = row["mime_type"]
-    if isinstance(row.get("annotations"), dict) and row["annotations"]:
-        item["annotations"] = row["annotations"]
-    return item
-
-
-def _unambiguous_resource_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    counts: dict[str, int] = {}
-    for row in rows:
-        uri = str(row.get("uri") or "")
-        if uri:
-            counts[uri] = counts.get(uri, 0) + 1
-    return [row for row in rows if counts.get(str(row.get("uri") or ""), 0) == 1]
-
-
-def _cached_resource_template_to_mcp(row: dict[str, Any]) -> dict[str, Any]:
-    metadata = row.get("metadata_json") if isinstance(row.get("metadata_json"), dict) else {}
-    item = dict(metadata)
-    item["uriTemplate"] = row["uri_template"]
-    if row.get("name"):
-        item["name"] = row["name"]
-    if row.get("title"):
-        item["title"] = row["title"]
-    if row.get("description"):
-        item["description"] = row["description"]
-    if row.get("mime_type"):
-        item["mimeType"] = row["mime_type"]
-    if isinstance(row.get("annotations"), dict) and row["annotations"]:
-        item["annotations"] = row["annotations"]
-    return item
-
-
-def _cached_prompt_to_mcp(row: dict[str, Any]) -> dict[str, Any]:
-    metadata = row.get("metadata_json") if isinstance(row.get("metadata_json"), dict) else {}
-    item = dict(metadata)
-    item["name"] = f"{row['service_slug']}.{row['name']}"
-    if row.get("title"):
-        item["title"] = row["title"]
-    if row.get("description"):
-        item["description"] = row["description"]
-    if isinstance(row.get("arguments_json"), list):
-        item["arguments"] = row["arguments_json"]
-    return item
-
-
-def _resource_content_meta(
-    *,
-    kind: str,
-    original_length: int,
-    max_length: int,
-) -> dict[str, Any]:
-    return {
-        "truncated": True,
-        "kind": kind,
-        "originalLength": original_length,
-        "maxLength": max_length,
-        "reason": "resource_content_too_large",
-    }
-
-
-def _truncate_resource_read_result(result: dict[str, Any]) -> dict[str, Any]:
-    """Keep `resources/read` responses usable for LLM clients.
-
-    MCP resources can be large files or binary blobs. CoreMCP remains a
-    personal gateway, so we do not store or inspect the full content, but we do
-    cap oversized payloads before returning them to clients to prevent one
-    resource from flooding Codex/Claude context windows.
-    """
-
-    contents = result.get("contents")
-    if not isinstance(contents, list):
-        return result
-
-    truncated_any = False
-    normalized_contents: list[Any] = []
-    for item in contents:
-        if not isinstance(item, dict):
-            normalized_contents.append(item)
-            continue
-
-        normalized = dict(item)
-        item_meta = dict(normalized.get("_meta") or {}) if isinstance(normalized.get("_meta"), dict) else {}
-
-        text = normalized.get("text")
-        if isinstance(text, str) and len(text) > RESOURCE_READ_MAX_TEXT_CHARS:
-            normalized["text"] = text[:RESOURCE_READ_MAX_TEXT_CHARS] + "\n…[CoreMCP truncated oversized resource text]"
-            item_meta["coremcp"] = _resource_content_meta(
-                kind="text",
-                original_length=len(text),
-                max_length=RESOURCE_READ_MAX_TEXT_CHARS,
-            )
-            truncated_any = True
-
-        blob = normalized.get("blob")
-        if isinstance(blob, str) and len(blob) > RESOURCE_READ_MAX_BLOB_CHARS:
-            normalized["blob"] = blob[:RESOURCE_READ_MAX_BLOB_CHARS]
-            item_meta["coremcp"] = _resource_content_meta(
-                kind="blob",
-                original_length=len(blob),
-                max_length=RESOURCE_READ_MAX_BLOB_CHARS,
-            )
-            truncated_any = True
-
-        if item_meta:
-            normalized["_meta"] = item_meta
-        normalized_contents.append(normalized)
-
-    if not truncated_any:
-        return result
-
-    normalized_result = dict(result)
-    normalized_result["contents"] = normalized_contents
-    result_meta = dict(normalized_result.get("_meta") or {}) if isinstance(normalized_result.get("_meta"), dict) else {}
-    result_meta["coremcp"] = {
-        "truncated": True,
-        "reason": "resource_content_too_large",
-        "maxTextChars": RESOURCE_READ_MAX_TEXT_CHARS,
-        "maxBlobChars": RESOURCE_READ_MAX_BLOB_CHARS,
-    }
-    normalized_result["_meta"] = result_meta
-    return normalized_result
-
-
 async def _persist_stdio_state(app: FastAPI, service_id: str | None, client: StdioMcpClient | None) -> None:
     if not service_id or client is None:
         return
     snapshot = client.snapshot()
-    await app.state.repository.update_mcp_service(
+    await app.state.repos.services.update_mcp_service(
         service_id,
         {
             "last_stdio_started_at": snapshot.get("started_at"),
@@ -1406,7 +1163,7 @@ async def _run_ops_reapers_once(app: FastAPI) -> None:
         )
 
     async def stuck_job_cleanup() -> int:
-        marked = await app.state.repository.mark_stuck_jobs_failed(max_age_seconds=JOB_REAP_MAX_AGE_SECONDS)
+        marked = await app.state.repos.jobs.mark_stuck_jobs_failed(max_age_seconds=JOB_REAP_MAX_AGE_SECONDS)
         return marked + _reap_expired_downstream_sessions(app)
 
     await run_reaper_loop(
@@ -1429,39 +1186,21 @@ async def _detect_service_tool_schema_drift(
     service_id = str(service.get("id") or "")
     if not service_id:
         return False
-    if _transport_type(service) == "stdio":
-        stdio_client = await _stdio_client_for_config(app, service)
-        response = await stdio_client.request(
-            method="tools/list",
-            params={},
-            request_id=f"health-{service_id}-tools",
-            protocol_version=protocol_version,
-            correlation_id=f"health-probe-{service_id}",
-        )
-    else:
-        checker = UrlSafetyChecker(app.state.settings)
-        safety_result = checker.assert_safe(str(service.get("endpoint_url") or ""))
-        downstream_headers = await _downstream_headers_for_service(app, service_id)
-        response = await app.state.downstream.request(
-            method="tools/list",
-            params={},
-            request_id=f"health-{service_id}-tools",
-            protocol_version=protocol_version,
-            session_id=_downstream_session_id(app, service_id),
-            url=str(service.get("endpoint_url") or ""),
-            downstream_headers=downstream_headers,
-            url_safety_checker=checker,
-            safety_result=safety_result,
-            correlation_id=f"health-probe-{service_id}",
-            timeout=timeout,
-            session_id_callback=_downstream_session_callback(app, service_id),
-            notification_callback=_downstream_notification_callback(app, service_id=service_id, source="http"),
-        )
+    response = await _request_service_rpc(
+        app,
+        service,
+        method="tools/list",
+        params={},
+        request_id=f"health-{service_id}-tools",
+        protocol_version=protocol_version,
+        correlation_id_value=f"health-probe-{service_id}",
+        timeout=timeout,
+    )
     result = response.get("result")
     tools = result.get("tools") if isinstance(result, dict) else None
     if not isinstance(tools, list):
         return False
-    existing_tools = await app.state.repository.list_service_tools(service_id)
+    existing_tools = await app.state.repos.catalog.list_service_tools(service_id)
     normalized, _warnings = normalize_downstream_tools(
         tools,
         service_slug=str(service.get("slug") or service_id),
@@ -1484,34 +1223,20 @@ async def _probe_service_health(app: FastAPI, service: dict[str, Any]) -> tuple[
         pool=timeout_seconds,
     )
     try:
+        await _request_service_rpc(
+            app,
+            service,
+            method="initialize",
+            params={"protocolVersion": protocol_version, "capabilities": {}, "clientInfo": {"name": "coremcp-health-probe", "version": app.state.settings.app_version}},
+            request_id=f"health-{service_id}",
+            protocol_version=protocol_version,
+            correlation_id_value=f"health-probe-{service_id}",
+            timeout=timeout,
+            send_downstream_session=False,
+        )
         if _transport_type(service) == "stdio":
             stdio_client = await _stdio_client_for_config(app, service)
-            await stdio_client.request(
-                method="initialize",
-                params={"protocolVersion": protocol_version, "capabilities": {}, "clientInfo": {"name": "coremcp-health-probe", "version": app.state.settings.app_version}},
-                request_id=f"health-{service_id}",
-                protocol_version=protocol_version,
-                correlation_id=f"health-probe-{service_id}",
-            )
             await _persist_stdio_state(app, service_id, stdio_client)
-        else:
-            checker = UrlSafetyChecker(app.state.settings)
-            safety_result = checker.assert_safe(str(service.get("endpoint_url") or ""))
-            downstream_headers = await _downstream_headers_for_service(app, service_id)
-            await app.state.downstream.request(
-                method="initialize",
-                params={"protocolVersion": protocol_version, "capabilities": {}, "clientInfo": {"name": "coremcp-health-probe", "version": app.state.settings.app_version}},
-                request_id=f"health-{service_id}",
-                protocol_version=protocol_version,
-                url=str(service.get("endpoint_url") or ""),
-                downstream_headers=downstream_headers,
-                url_safety_checker=checker,
-                safety_result=safety_result,
-                correlation_id=f"health-probe-{service_id}",
-                timeout=timeout,
-                session_id_callback=_downstream_session_callback(app, service_id),
-                notification_callback=_downstream_notification_callback(app, service_id=service_id, source="http"),
-            )
         if await _detect_service_tool_schema_drift(
             app,
             service,
@@ -1520,11 +1245,11 @@ async def _probe_service_health(app: FastAPI, service: dict[str, Any]) -> tuple[
         ):
             await validate_service(app, service_id, correlation_id_value=f"health-drift-{service_id}")
         app.state.circuit_breaker.record_success(service_id)
-        await app.state.repository.mark_service_health_probe(service_id=service_id, ok=True)
+        await app.state.repos.services.mark_service_health_probe(service_id=service_id, ok=True)
         return True, None
     except Exception as exc:  # noqa: BLE001 - health probes must isolate failing services.
         _record_downstream_failure(app, service_id)
-        await app.state.repository.mark_service_health_probe(
+        await app.state.repos.services.mark_service_health_probe(
             service_id=service_id,
             ok=False,
             error_message=str(exc),
@@ -1535,7 +1260,7 @@ async def _probe_service_health(app: FastAPI, service: dict[str, Any]) -> tuple[
 
 
 async def _run_service_health_probe_once(app: FastAPI) -> dict[str, Any]:
-    services = await app.state.repository.list_mcp_services(limit=500)
+    services = await app.state.repos.services.list_mcp_services(limit=500)
     candidates = [
         service
         for service in services
@@ -1613,306 +1338,6 @@ async def _handle_initialize(
     return jsonrpc_result(_get_request_id(payload), result), session.id
 
 
-async def _handle_tools_list(
-    app: FastAPI,
-    payload: dict[str, Any],
-    request: Request,
-) -> dict[str, Any]:
-    started = time.perf_counter()
-    session_id = request.headers.get("Mcp-Session-Id")
-    session = app.state.sessions.get(session_id)
-    protocol_version = session.protocol_version if session else request.headers.get("MCP-Protocol-Version")
-    request_log_id = correlation_id(request)
-    try:
-        result = await _refresh_tools(
-            app,
-            request_id=_get_request_id(payload),
-            protocol_version=protocol_version,
-            session_id=session_id,
-            params=payload.get("params") if isinstance(payload.get("params"), dict) else {},
-            correlation_id_value=correlation_id(request),
-        )
-        await app.state.repository.log_invocation(
-            session_id=session_id,
-            method="tools/list",
-            tool_name=None,
-            status="success",
-            latency_ms=int((time.perf_counter() - started) * 1000),
-            request_id=request_log_id,
-            protocol_version=protocol_version,
-            client_ip=request_ip(request),
-            user_agent=request.headers.get("user-agent"),
-        )
-        return jsonrpc_result(_get_request_id(payload), result)
-    except DownstreamMcpError as exc:
-        await app.state.repository.log_invocation(
-            session_id=session_id,
-            method="tools/list",
-            tool_name=None,
-            status="error",
-            error_code=exc.code,
-            latency_ms=int((time.perf_counter() - started) * 1000),
-            request_id=request_log_id,
-            error_message=str(exc),
-            protocol_version=protocol_version,
-            client_ip=request_ip(request),
-            user_agent=request.headers.get("user-agent"),
-        )
-        return jsonrpc_error(_get_request_id(payload), exc.code, str(exc))
-
-
-async def _handle_resources_list(
-    app: FastAPI,
-    payload: dict[str, Any],
-    request: Request,
-    *,
-    method: str = "resources/list",
-    result_key: str = "resources",
-) -> dict[str, Any]:
-    request_id = _get_request_id(payload)
-    params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
-    session_id = request.headers.get("Mcp-Session-Id")
-    session = app.state.sessions.get(session_id)
-    protocol_version = session.protocol_version if session else request.headers.get("MCP-Protocol-Version")
-    if method == "resources/list":
-        cached = await app.state.repository.list_catalog_resources(DEFAULT_TOOLBOX_ID)
-        if cached:
-            return jsonrpc_result(
-                request_id,
-                {
-                    "resources": [
-                        _cached_resource_to_mcp(row)
-                        for row in _unambiguous_resource_rows(cached)
-                    ],
-                    "nextCursor": None,
-                },
-            )
-    elif method == "resources/templates/list":
-        cached_templates = await app.state.repository.list_catalog_resource_templates(DEFAULT_TOOLBOX_ID)
-        if cached_templates:
-            return jsonrpc_result(
-                request_id,
-                {"resourceTemplates": [_cached_resource_template_to_mcp(row) for row in cached_templates], "nextCursor": None},
-            )
-    services = await _active_toolbox_services(app)
-    if not services:
-        try:
-            response = await _request_default_downstream_rpc(
-                app,
-                method=method,
-                params=params,
-                request_id=request_id,
-                protocol_version=protocol_version,
-                session_id=session_id,
-                correlation_id_value=correlation_id(request),
-            )
-            result = response.get("result")
-            return jsonrpc_result(request_id, result if isinstance(result, dict) else {result_key: [], "nextCursor": None})
-        except DownstreamMcpError as exc:
-            return jsonrpc_error(request_id, exc.code, str(exc))
-
-    merged: list[dict[str, Any]] = []
-    for service in services:
-        try:
-            response = await _request_service_rpc(
-                app,
-                service,
-                method=method,
-                params=params,
-                request_id=f"{request_id}-{service['id']}-{method}",
-                protocol_version=protocol_version,
-                session_id=session_id,
-                correlation_id_value=correlation_id(request),
-            )
-        except DownstreamMcpError as exc:
-            if exc.code == -32601:
-                continue
-            continue
-        result = response.get("result")
-        items = result.get(result_key) if isinstance(result, dict) else None
-        if isinstance(items, list):
-            merged.extend(item for item in items if isinstance(item, dict))
-    return jsonrpc_result(request_id, {result_key: merged, "nextCursor": None})
-
-
-async def _handle_resources_read(app: FastAPI, payload: dict[str, Any], request: Request) -> dict[str, Any]:
-    request_id = _get_request_id(payload)
-    params = payload.get("params")
-    if not isinstance(params, dict) or not isinstance(params.get("uri"), str):
-        return jsonrpc_error(request_id, -32602, "Invalid params")
-    session_id = request.headers.get("Mcp-Session-Id")
-    session = app.state.sessions.get(session_id)
-    protocol_version = session.protocol_version if session else request.headers.get("MCP-Protocol-Version")
-    cached = await app.state.repository.get_catalog_resource_by_uri(str(params["uri"]), DEFAULT_TOOLBOX_ID)
-    if cached is not None:
-        try:
-            response = await _request_service_rpc(
-                app,
-                _service_config_from_catalog_row(cached),
-                method="resources/read",
-                params=params,
-                request_id=f"{request_id}-{cached['service_id']}-resource-read",
-                protocol_version=protocol_version,
-                session_id=session_id,
-                correlation_id_value=correlation_id(request),
-            )
-            result = response.get("result")
-            return jsonrpc_result(request_id, _truncate_resource_read_result(result) if isinstance(result, dict) else {})
-        except DownstreamMcpError as exc:
-            return jsonrpc_error(request_id, exc.code, str(exc))
-    services = await _active_toolbox_services(app)
-    if not services:
-        try:
-            response = await _request_default_downstream_rpc(
-                app,
-                method="resources/read",
-                params=params,
-                request_id=request_id,
-                protocol_version=protocol_version,
-                session_id=session_id,
-                correlation_id_value=correlation_id(request),
-            )
-            result = response.get("result")
-            return jsonrpc_result(request_id, _truncate_resource_read_result(result) if isinstance(result, dict) else {})
-        except DownstreamMcpError as exc:
-            return jsonrpc_error(request_id, exc.code, str(exc))
-    return jsonrpc_error(request_id, -32602, "Unknown resource")
-
-
-async def _handle_prompts_list(app: FastAPI, payload: dict[str, Any], request: Request) -> dict[str, Any]:
-    request_id = _get_request_id(payload)
-    params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
-    session_id = request.headers.get("Mcp-Session-Id")
-    session = app.state.sessions.get(session_id)
-    protocol_version = session.protocol_version if session else request.headers.get("MCP-Protocol-Version")
-    cached_prompts = await app.state.repository.list_catalog_prompts(DEFAULT_TOOLBOX_ID)
-    if cached_prompts:
-        return jsonrpc_result(request_id, {"prompts": [_cached_prompt_to_mcp(row) for row in cached_prompts], "nextCursor": None})
-    services = await _active_toolbox_services(app)
-    if not services:
-        try:
-            response = await _request_default_downstream_rpc(
-                app,
-                method="prompts/list",
-                params=params,
-                request_id=request_id,
-                protocol_version=protocol_version,
-                session_id=session_id,
-                correlation_id_value=correlation_id(request),
-            )
-            result = response.get("result")
-            return jsonrpc_result(request_id, result if isinstance(result, dict) else {"prompts": [], "nextCursor": None})
-        except DownstreamMcpError as exc:
-            return jsonrpc_error(request_id, exc.code, str(exc))
-
-    prompts: list[dict[str, Any]] = []
-    for service in services:
-        try:
-            response = await _request_service_rpc(
-                app,
-                service,
-                method="prompts/list",
-                params=params,
-                request_id=f"{request_id}-{service['id']}-prompts-list",
-                protocol_version=protocol_version,
-                session_id=session_id,
-                correlation_id_value=correlation_id(request),
-            )
-        except DownstreamMcpError as exc:
-            if exc.code == -32601:
-                continue
-            continue
-        result = response.get("result")
-        items = result.get("prompts") if isinstance(result, dict) else None
-        if not isinstance(items, list):
-            continue
-        for item in items:
-            if not isinstance(item, dict) or not isinstance(item.get("name"), str):
-                continue
-            prompt = dict(item)
-            prompt["name"] = f"{service['slug']}.{item['name']}"
-            prompts.append(prompt)
-    return jsonrpc_result(request_id, {"prompts": prompts, "nextCursor": None})
-
-
-async def _handle_prompts_get(app: FastAPI, payload: dict[str, Any], request: Request) -> dict[str, Any]:
-    request_id = _get_request_id(payload)
-    params = payload.get("params")
-    if not isinstance(params, dict) or not isinstance(params.get("name"), str):
-        return jsonrpc_error(request_id, -32602, "Invalid params")
-    session_id = request.headers.get("Mcp-Session-Id")
-    session = app.state.sessions.get(session_id)
-    protocol_version = session.protocol_version if session else request.headers.get("MCP-Protocol-Version")
-    requested_name = str(params["name"])
-    cached = await app.state.repository.get_catalog_prompt_by_exposed_name(requested_name, DEFAULT_TOOLBOX_ID)
-    if cached is not None:
-        downstream_params = dict(params)
-        downstream_params["name"] = cached["name"]
-        try:
-            response = await _request_service_rpc(
-                app,
-                _service_config_from_catalog_row(cached),
-                method="prompts/get",
-                params=downstream_params,
-                request_id=f"{request_id}-{cached['service_id']}-prompts-get",
-                protocol_version=protocol_version,
-                session_id=session_id,
-                correlation_id_value=correlation_id(request),
-            )
-            result = response.get("result")
-            return jsonrpc_result(request_id, result if isinstance(result, dict) else {})
-        except DownstreamMcpError as exc:
-            return jsonrpc_error(request_id, exc.code, str(exc))
-    services = await _active_toolbox_services(app)
-    if not services:
-        try:
-            response = await _request_default_downstream_rpc(
-                app,
-                method="prompts/get",
-                params=params,
-                request_id=request_id,
-                protocol_version=protocol_version,
-                session_id=session_id,
-                correlation_id_value=correlation_id(request),
-            )
-            result = response.get("result")
-            return jsonrpc_result(request_id, result if isinstance(result, dict) else {})
-        except DownstreamMcpError as exc:
-            return jsonrpc_error(request_id, exc.code, str(exc))
-
-    candidates: list[tuple[dict[str, Any], str]] = []
-    if "." in requested_name:
-        service_slug, original_name = requested_name.split(".", 1)
-        candidates = [(service, original_name) for service in services if service.get("slug") == service_slug]
-    else:
-        candidates = [(service, requested_name) for service in services]
-
-    last_error: DownstreamMcpError | None = None
-    for service, original_name in candidates:
-        downstream_params = dict(params)
-        downstream_params["name"] = original_name
-        try:
-            response = await _request_service_rpc(
-                app,
-                service,
-                method="prompts/get",
-                params=downstream_params,
-                request_id=f"{request_id}-{service['id']}-prompts-get",
-                protocol_version=protocol_version,
-                session_id=session_id,
-                correlation_id_value=correlation_id(request),
-            )
-            result = response.get("result")
-            if isinstance(result, dict):
-                return jsonrpc_result(request_id, result)
-        except DownstreamMcpError as exc:
-            last_error = exc
-            continue
-    if last_error is not None and last_error.code not in {-32601, -32602}:
-        return jsonrpc_error(request_id, last_error.code, str(last_error))
-    return jsonrpc_error(request_id, -32602, "Unknown prompt")
-
-
 async def _refresh_resource_prompt_catalog(
     app: FastAPI,
     service: dict[str, Any],
@@ -1951,19 +1376,19 @@ async def _refresh_resource_prompt_catalog(
     resources = await request_list("resources/list", "resources")
     if resources:
         summary["resources_supported"] = True
-    saved_resources = await app.state.repository.replace_service_resources(str(service["id"]), resources)
+    saved_resources = await app.state.repos.catalog.replace_service_resources(str(service["id"]), resources)
     summary["resources_found"] = len(saved_resources)
 
     templates = await request_list("resources/templates/list", "resourceTemplates")
     if templates:
         summary["resource_templates_supported"] = True
-    saved_templates = await app.state.repository.replace_service_resource_templates(str(service["id"]), templates)
+    saved_templates = await app.state.repos.catalog.replace_service_resource_templates(str(service["id"]), templates)
     summary["resource_templates_found"] = len(saved_templates)
 
     prompts = await request_list("prompts/list", "prompts")
     if prompts:
         summary["prompts_supported"] = True
-    saved_prompts = await app.state.repository.replace_service_prompts(str(service["id"]), prompts)
+    saved_prompts = await app.state.repos.catalog.replace_service_prompts(str(service["id"]), prompts)
     summary["prompts_found"] = len(saved_prompts)
 
     return summary
@@ -1974,500 +1399,12 @@ async def _handle_tools_call(
     payload: dict[str, Any],
     request: Request,
 ) -> dict[str, Any]:
-    started = time.perf_counter()
-    request_id = _get_request_id(payload)
-    params = payload.get("params")
-    if not isinstance(params, dict) or not isinstance(params.get("name"), str):
-        return jsonrpc_error(request_id, -32602, "Invalid params")
-
-    session_id = request.headers.get("Mcp-Session-Id")
-    session = app.state.sessions.get(session_id)
-    protocol_version = session.protocol_version if session else request.headers.get("MCP-Protocol-Version")
-    request_log_id = correlation_id(request)
-    exposed_name = params["name"]
-    idempotency_key = _idempotency_cache_key(request, exposed_name)
-    cached_response = app.state.idempotency_cache.get(idempotency_key)
-    if cached_response is not None:
-        # Safe to mutate: IdempotencyCache.get() returns a deepcopy.
-        cached_response["id"] = request_id
-        await app.state.repository.log_invocation(
-            session_id=session_id,
-            method="tools/call",
-            tool_name=exposed_name,
-            status="success",
-            latency_ms=int((time.perf_counter() - started) * 1000),
-            request_id=request_log_id,
-            protocol_version=protocol_version,
-            idempotency_key=request.headers.get("Idempotency-Key"),
-            client_ip=request_ip(request),
-            user_agent=request.headers.get("user-agent"),
-        )
-        return cached_response
-
-    registry: dict[str, dict[str, Any]] = getattr(app.state, "tool_registry", {})
-    if exposed_name not in registry:
-        try:
-            await _refresh_tools(
-                app,
-                request_id=request_id,
-                protocol_version=protocol_version,
-                session_id=session_id,
-                correlation_id_value=correlation_id(request),
-            )
-            registry = app.state.tool_registry
-        except DownstreamMcpError as exc:
-            await app.state.repository.log_invocation(
-                session_id=session_id,
-                method="tools/call",
-                tool_name=exposed_name,
-                status="error",
-                error_code=exc.code,
-                latency_ms=int((time.perf_counter() - started) * 1000),
-                request_id=request_log_id,
-                error_message=str(exc),
-                protocol_version=protocol_version,
-                client_ip=request_ip(request),
-                user_agent=request.headers.get("user-agent"),
-            )
-            return jsonrpc_error(request_id, exc.code, str(exc))
-
-    route = registry.get(exposed_name)
-    if route is None:
-        await app.state.repository.log_invocation(
-            session_id=session_id,
-            method="tools/call",
-            tool_name=exposed_name,
-            status="error",
-            error_code=-32602,
-            latency_ms=int((time.perf_counter() - started) * 1000),
-            request_id=request_log_id,
-            error_message="Unknown tool",
-            protocol_version=protocol_version,
-            client_ip=request_ip(request),
-            user_agent=request.headers.get("user-agent"),
-        )
-        return jsonrpc_error(request_id, -32602, "Unknown tool")
-
-    permission_level = str(route.get("permission_level") or "callable")
-    override_enabled = bool(route.get("override_enabled", 1))
-    if not override_enabled or permission_level != "callable":
-        reason = "tool_disabled" if not override_enabled or permission_level == "hidden" else f"tool_permission_{permission_level}"
-        await app.state.repository.log_audit(
-            action="policy.deny",
-            resource_type="service_tool",
-            resource_id=route.get("service_tool_id"),
-            metadata={"tool": exposed_name, "reason": reason, "permission_level": permission_level, "enabled": override_enabled},
-            request_id=request_log_id,
-            ip=request_ip(request),
-            user_agent=request.headers.get("user-agent"),
-        )
-        await app.state.repository.log_invocation(
-            session_id=session_id,
-            method="tools/call",
-            tool_name=exposed_name,
-            status="policy_denied",
-            error_code="tool_permission_denied",
-            latency_ms=int((time.perf_counter() - started) * 1000),
-            request_id=request_log_id,
-            service_id=route.get("service_id"),
-            service_tool_id=route.get("service_tool_id"),
-            downstream_tool_name=route.get("original_name"),
-            error_message=reason,
-            protocol_version=protocol_version,
-            client_ip=request_ip(request),
-            user_agent=request.headers.get("user-agent"),
-        )
-        return jsonrpc_result(
-            request_id,
-            tool_error_result(
-                "policy_denied",
-                f"Tool call denied by CoreMCP toolbox policy: {reason}",
-                reason=reason,
-            ),
-        )
-
-    arguments = params.get("arguments", {})
-    schema_error = _validate_tool_arguments(route.get("input_schema_json"), arguments)
-    if schema_error is not None:
-        await app.state.repository.log_audit(
-            action="policy.invalid_args",
-            resource_type="service_tool",
-            resource_id=route.get("service_tool_id"),
-            metadata={"tool": exposed_name, "error": schema_error, "schema_hash": route.get("schema_hash")},
-            request_id=request_log_id,
-            ip=request_ip(request),
-            user_agent=request.headers.get("user-agent"),
-        )
-        await app.state.repository.log_invocation(
-            session_id=session_id,
-            method="tools/call",
-            tool_name=exposed_name,
-            status="policy_denied",
-            error_code="invalid_args",
-            latency_ms=int((time.perf_counter() - started) * 1000),
-            request_id=request_log_id,
-            service_id=route.get("service_id"),
-            service_tool_id=route.get("service_tool_id"),
-            downstream_tool_name=route.get("original_name"),
-            error_message=schema_error,
-            protocol_version=protocol_version,
-            client_ip=request_ip(request),
-            user_agent=request.headers.get("user-agent"),
-        )
-        return jsonrpc_error(
-            request_id,
-            -32602,
-            "Invalid tool arguments",
-            {"details": schema_error},
-        )
-
-    downstream_params = dict(params)
-    downstream_params["name"] = route["original_name"]
-    service_id = str(route.get("service_id") or "")
-    if service_id:
-        if decision := _check_service_rate_limit(
-            app,
-            service_id=service_id,
-            method="tools/call",
-            tool_name=exposed_name,
-        ):
-            await app.state.repository.log_audit(
-                action="rate_limit.exceeded",
-                resource_type="mcp_service",
-                resource_id=service_id,
-                metadata={"tool": exposed_name, "route": "tools/call", "retry_after_seconds": decision.retry_after_seconds},
-                request_id=request_log_id,
-                ip=request_ip(request),
-                user_agent=request.headers.get("user-agent"),
-            )
-            await app.state.repository.log_invocation(
-                session_id=session_id,
-                method="tools/call",
-                tool_name=exposed_name,
-                status="rate_limited",
-                error_code="service_rate_limited",
-                latency_ms=int((time.perf_counter() - started) * 1000),
-                request_id=request_log_id,
-                service_id=route.get("service_id"),
-                service_tool_id=route.get("service_tool_id"),
-                downstream_tool_name=route.get("original_name"),
-                error_message="service_rate_limit_exceeded",
-                protocol_version=protocol_version,
-                client_ip=request_ip(request),
-                user_agent=request.headers.get("user-agent"),
-            )
-            return jsonrpc_result(request_id, _rate_limit_tool_error(decision.retry_after_seconds))
-        try:
-            app.state.circuit_breaker.before_request(service_id)
-        except CircuitOpenError as exc:
-            await app.state.repository.log_invocation(
-                session_id=session_id,
-                method="tools/call",
-                tool_name=exposed_name,
-                status="error",
-                error_code="circuit_open",
-                latency_ms=int((time.perf_counter() - started) * 1000),
-                request_id=request_log_id,
-                service_id=route.get("service_id"),
-                service_tool_id=route.get("service_tool_id"),
-                downstream_tool_name=route.get("original_name"),
-                error_message=str(exc),
-                protocol_version=protocol_version,
-                client_ip=request_ip(request),
-                user_agent=request.headers.get("user-agent"),
-            )
-            return jsonrpc_result(
-                request_id,
-                tool_error_result(
-                    "circuit_open",
-                    "Downstream service circuit is temporarily open",
-                    retry_after_seconds=exc.retry_after_seconds,
-                ),
-            )
-
-    stdio_client_for_call: StdioMcpClient | None = None
-    try:
-        inflight_key = str(request_id)
-        inflight_started_at = time.time()
-        inflight_timeout_at = inflight_started_at + float(app.state.settings.downstream_timeout_seconds)
-        if _transport_type(route) == "stdio":
-            stdio_client = await _stdio_client_for_config(app, route)
-            stdio_client_for_call = stdio_client
-            app.state.inflight_downstream_calls[inflight_key] = {
-                **route,
-                "transport_type": "stdio",
-                "method": "tools/call",
-                "started_at": inflight_started_at,
-                "timeout_at": inflight_timeout_at,
-                "service_id": route.get("service_id"),
-                "session_id": session_id,
-                "protocol_version": protocol_version,
-            }
-            downstream_response = await stdio_client.request(
-                method="tools/call",
-                params=downstream_params,
-                request_id=request_id,
-                protocol_version=protocol_version,
-                session_id=session_id,
-                correlation_id=correlation_id(request),
-            )
-        else:
-            checker = UrlSafetyChecker(app.state.settings)
-            safety_result = checker.assert_safe(route["endpoint_url"])
-            downstream_headers = await _downstream_headers_for_service(app, route.get("service_id"))
-            downstream_headers.update(_idempotency_downstream_header(request))
-            downstream_session_id = _downstream_session_id(
-                app,
-                route.get("service_id") if isinstance(route.get("service_id"), str) else None,
-            )
-            app.state.inflight_downstream_calls[inflight_key] = {
-                "url": route["endpoint_url"],
-                "transport_type": "http",
-                "method": "tools/call",
-                "started_at": inflight_started_at,
-                "timeout_at": inflight_timeout_at,
-                "service_id": route.get("service_id"),
-                "session_id": downstream_session_id,
-                "protocol_version": protocol_version,
-                "downstream_headers": downstream_headers,
-            }
-            downstream_response = await app.state.downstream.request(
-                method="tools/call",
-                params=downstream_params,
-                request_id=request_id,
-                protocol_version=protocol_version,
-                session_id=downstream_session_id,
-                url=route["endpoint_url"],
-                downstream_headers=downstream_headers,
-                url_safety_checker=checker,
-                safety_result=safety_result,
-                correlation_id=correlation_id(request),
-                session_id_callback=_downstream_session_callback(
-                    app,
-                    route.get("service_id") if isinstance(route.get("service_id"), str) else None,
-                ),
-                notification_callback=_downstream_notification_callback(
-                    app,
-                    service_id=route.get("service_id") if isinstance(route.get("service_id"), str) else None,
-                    source="http",
-                ),
-            )
-        app.state.inflight_downstream_calls.pop(inflight_key, None)
-        result = downstream_response.get("result")
-        if not isinstance(result, dict):
-            raise DownstreamMcpError("downstream tools/call returned invalid result")
-        if service_id:
-            app.state.circuit_breaker.record_success(service_id)
-        await app.state.repository.log_invocation(
-            session_id=session_id,
-            method="tools/call",
-            tool_name=exposed_name,
-            status="success",
-            latency_ms=int((time.perf_counter() - started) * 1000),
-            request_id=request_log_id,
-            service_id=route.get("service_id"),
-            service_tool_id=route.get("service_tool_id"),
-            downstream_tool_name=route.get("original_name"),
-            protocol_version=protocol_version,
-            idempotency_key=request.headers.get("Idempotency-Key"),
-            client_ip=request_ip(request),
-            user_agent=request.headers.get("user-agent"),
-        )
-        response_payload = jsonrpc_result(request_id, result)
-        app.state.idempotency_cache.set(idempotency_key, response_payload)
-        return response_payload
-    except DownstreamTimeoutError as exc:
-        app.state.inflight_downstream_calls.pop(str(request_id), None)
-        if service_id:
-            _record_downstream_failure(app, service_id)
-        await app.state.repository.log_invocation(
-            session_id=session_id,
-            method="tools/call",
-            tool_name=exposed_name,
-            status="timeout",
-            error_code="downstream_timeout",
-            latency_ms=int((time.perf_counter() - started) * 1000),
-            request_id=request_log_id,
-            service_id=route.get("service_id"),
-            service_tool_id=route.get("service_tool_id"),
-            downstream_tool_name=route.get("original_name"),
-            error_message=str(exc),
-            protocol_version=protocol_version,
-            client_ip=request_ip(request),
-            user_agent=request.headers.get("user-agent"),
-        )
-        return jsonrpc_result(
-            request_id,
-            tool_error_result("downstream_timeout", "Downstream tool call timed out", downstream_code=exc.code),
-        )
-    except DownstreamToolError as exc:
-        app.state.inflight_downstream_calls.pop(str(request_id), None)
-        if service_id:
-            app.state.circuit_breaker.record_success(service_id)
-        await app.state.repository.log_invocation(
-            session_id=session_id,
-            method="tools/call",
-            tool_name=exposed_name,
-            status="error",
-            error_code=exc.code,
-            latency_ms=int((time.perf_counter() - started) * 1000),
-            request_id=request_log_id,
-            service_id=route.get("service_id"),
-            service_tool_id=route.get("service_tool_id"),
-            downstream_tool_name=route.get("original_name"),
-            error_message=str(exc),
-            protocol_version=protocol_version,
-            client_ip=request_ip(request),
-            user_agent=request.headers.get("user-agent"),
-        )
-        response_payload = jsonrpc_result(request_id, tool_error_result("downstream_error", str(exc), downstream_code=exc.code))
-        app.state.idempotency_cache.set(idempotency_key, response_payload)
-        return response_payload
-    except DownstreamMcpError as exc:
-        app.state.inflight_downstream_calls.pop(str(request_id), None)
-        if service_id and exc.code != -32003:
-            _record_downstream_failure(app, service_id)
-        if exc.code == -32003:
-            await app.state.repository.log_audit(
-                action="ssrf.block",
-                resource_type="mcp_service",
-                resource_id=route.get("service_id"),
-                metadata={"url": route["endpoint_url"], "reason": str(exc)},
-                request_id=request_log_id,
-                ip=request_ip(request),
-                user_agent=request.headers.get("user-agent"),
-            )
-        await app.state.repository.log_invocation(
-            session_id=session_id,
-            method="tools/call",
-            tool_name=exposed_name,
-            status="error",
-            error_code=exc.code,
-            latency_ms=int((time.perf_counter() - started) * 1000),
-            request_id=request_log_id,
-            service_id=route.get("service_id"),
-            service_tool_id=route.get("service_tool_id"),
-            downstream_tool_name=route.get("original_name"),
-            error_message=str(exc),
-            protocol_version=protocol_version,
-            client_ip=request_ip(request),
-            user_agent=request.headers.get("user-agent"),
-        )
-        return jsonrpc_error(request_id, exc.code, str(exc))
-    except UrlSafetyError as exc:
-        app.state.inflight_downstream_calls.pop(str(request_id), None)
-        await app.state.repository.log_audit(
-            action="ssrf.block",
-            resource_type="mcp_service",
-            resource_id=route.get("service_id"),
-            metadata={"url": route["endpoint_url"], "reason": str(exc)},
-            request_id=request_log_id,
-            ip=request_ip(request),
-            user_agent=request.headers.get("user-agent"),
-        )
-        await app.state.repository.log_invocation(
-            session_id=session_id,
-            method="tools/call",
-            tool_name=exposed_name,
-            status="policy_denied",
-            error_code="ssrf_block",
-            latency_ms=int((time.perf_counter() - started) * 1000),
-            request_id=request_log_id,
-            service_id=route.get("service_id"),
-            service_tool_id=route.get("service_tool_id"),
-            downstream_tool_name=route.get("original_name"),
-            error_message=str(exc),
-            protocol_version=protocol_version,
-            client_ip=request_ip(request),
-            user_agent=request.headers.get("user-agent"),
-        )
-        return jsonrpc_result(request_id, tool_error_result("ssrf_block", "Downstream endpoint is blocked by CoreMCP policy"))
-    finally:
-        if service_id and stdio_client_for_call is not None:
-            await _persist_stdio_state(app, service_id, stdio_client_for_call)
-
-
-async def dispatch_mcp(app: FastAPI, payload: dict[str, Any], request: Request) -> tuple[dict[str, Any] | None, str | None]:
-    request_id = _get_request_id(payload)
-    if payload.get("jsonrpc") != JSONRPC_VERSION or not isinstance(payload.get("method"), str):
-        return jsonrpc_error(request_id, -32600, "Invalid Request"), None
-
-    method = payload["method"]
-    if method == "initialize":
-        return await _handle_initialize(app, payload, request)
-    if method == "notifications/initialized":
-        app.state.sessions.mark_initialized(request.headers.get("Mcp-Session-Id"))
-        return None, None
-    if method == "notifications/cancelled":
-        params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
-        await _forward_downstream_cancellation(app, request, params=params, request_id=request_id)
-        await app.state.repository.log_invocation(
-            session_id=request.headers.get("Mcp-Session-Id"),
-            method="notifications/cancelled",
-            tool_name=None,
-            status="cancelled",
-            request_id=str(params.get("requestId") or request_id or "cancelled"),
-            error_message=params.get("reason") if isinstance(params.get("reason"), str) else None,
-            client_ip=request_ip(request),
-            user_agent=request.headers.get("user-agent"),
-        )
-        return None, None
-    if method == "ping":
-        return jsonrpc_result(request_id, {}), None
-    if method == "tools/list":
-        if not _mcp_has_scope(request, "mcp:tools.read"):
-            return await _scope_denied_response(app, payload, request, required_scope="mcp:tools.read"), None
-        return await _handle_tools_list(app, payload, request), None
-    if method == "tools/call":
-        if not _mcp_has_scope(request, "mcp:tools.call"):
-            return await _scope_denied_response(app, payload, request, required_scope="mcp:tools.call"), None
-        return await _handle_tools_call(app, payload, request), None
-    if method == "resources/list":
-        if not _mcp_has_scope(request, "mcp:tools.read"):
-            return await _scope_denied_response(app, payload, request, required_scope="mcp:tools.read"), None
-        return await _handle_resources_list(app, payload, request), None
-    if method == "resources/templates/list":
-        if not _mcp_has_scope(request, "mcp:tools.read"):
-            return await _scope_denied_response(app, payload, request, required_scope="mcp:tools.read"), None
-        return await _handle_resources_list(app, payload, request, method="resources/templates/list", result_key="resourceTemplates"), None
-    if method == "resources/read":
-        if not _mcp_has_scope(request, "mcp:tools.read"):
-            return await _scope_denied_response(app, payload, request, required_scope="mcp:tools.read"), None
-        return await _handle_resources_read(app, payload, request), None
-    if method == "prompts/list":
-        if not _mcp_has_scope(request, "mcp:tools.read"):
-            return await _scope_denied_response(app, payload, request, required_scope="mcp:tools.read"), None
-        return await _handle_prompts_list(app, payload, request), None
-    if method == "prompts/get":
-        if not _mcp_has_scope(request, "mcp:tools.read"):
-            return await _scope_denied_response(app, payload, request, required_scope="mcp:tools.read"), None
-        return await _handle_prompts_get(app, payload, request), None
-    return jsonrpc_error(request_id, -32601, "Method not found"), None
-
-
-async def dispatch_mcp_batch(
-    app: FastAPI,
-    payloads: list[Any],
-    request: Request,
-) -> tuple[list[dict[str, Any]] | None, str | None]:
-    """Dispatch a JSON-RPC 2.0 batch request sequentially.
-
-    JSON-RPC notifications do not produce response items. Sequential dispatch
-    keeps side-effect ordering deterministic for initialize/cancel/tools calls.
-    """
-
-    responses: list[dict[str, Any]] = []
-    new_session_id: str | None = None
-    for item in payloads:
-        if not isinstance(item, dict):
-            responses.append(jsonrpc_error(None, -32600, "Invalid Request"))
-            continue
-        response_payload, item_session_id = await dispatch_mcp(app, item, request)
-        if item_session_id and new_session_id is None:
-            new_session_id = item_session_id
-        if response_payload is not None:
-            responses.append(response_payload)
-    return (responses or None), new_session_id
+    return await _mcp_handle_tools_call(
+        app,
+        payload,
+        request,
+        deps=app.state.tools_handler_deps,
+    )
 
 
 async def validate_service(
@@ -2477,8 +1414,8 @@ async def validate_service(
     job_id: str | None = None,
     correlation_id_value: str | None = None,
 ) -> dict[str, Any]:
-    repository: Repository = app.state.repository
-    service = await repository.get_mcp_service(service_id)
+    repos = app.state.repos
+    service = await repos.services.get_mcp_service(service_id)
     if service is None:
         raise ValueError("service not found")
 
@@ -2487,46 +1424,30 @@ async def validate_service(
     protocol_version = "2025-11-25"
     stdio_client: StdioMcpClient | None = None
     try:
-        await repository.update_mcp_service(service_id, {"status": "validating"})
+        await repos.services.update_mcp_service(service_id, {"status": "validating"})
         if job_id:
-            await repository.update_job(job_id, status="running", progress=0.2)
+            await repos.jobs.update_job(job_id, status="running", progress=0.2)
 
         transport_type = _transport_type(service)
-        downstream_headers: dict[str, str] = {}
-        checker: UrlSafetyChecker | None = None
-        safety_result = None
         if transport_type == "stdio":
             _stdio_signature(service, app.state.settings)
             stdio_client = await _stdio_client_for_config(app, service)
             stages.append({"name": "stdio_config_check", "status": "success"})
         else:
             checker = UrlSafetyChecker(app.state.settings)
-            safety_result = checker.assert_safe(service["endpoint_url"])
-            downstream_headers = await _downstream_headers_for_service(app, service_id)
+            checker.assert_safe(service["endpoint_url"])
             stages.append({"name": "url_safety_check", "status": "success"})
 
-        if stdio_client is not None:
-            init_response = await stdio_client.request(
-                method="initialize",
-                params={"protocolVersion": protocol_version, "capabilities": {}, "clientInfo": {"name": "coremcp-validator", "version": app.state.settings.app_version}},
-                request_id=f"validate-{service_id}-init",
-                protocol_version=protocol_version,
-                correlation_id=correlation_id_value,
-            )
-        else:
-            init_response = await app.state.downstream.request(
-                method="initialize",
-                params={"protocolVersion": protocol_version, "capabilities": {}, "clientInfo": {"name": "coremcp-validator", "version": app.state.settings.app_version}},
-                request_id=f"validate-{service_id}-init",
-                protocol_version=protocol_version,
-                url=service["endpoint_url"],
-                downstream_headers=downstream_headers,
-                url_safety_checker=checker,
-                safety_result=safety_result,
-                correlation_id=correlation_id_value,
-                session_id_callback=_downstream_session_callback(app, service_id),
-                notification_callback=_downstream_notification_callback(app, service_id=service_id, source="http"),
-            )
+        init_response = await _request_service_rpc(
+            app,
+            service,
+            method="initialize",
+            params={"protocolVersion": protocol_version, "capabilities": {}, "clientInfo": {"name": "coremcp-validator", "version": app.state.settings.app_version}},
+            request_id=f"validate-{service_id}-init",
+            protocol_version=protocol_version,
+            correlation_id_value=correlation_id_value,
+            send_downstream_session=False,
+        )
         init_result = init_response.get("result") if isinstance(init_response, dict) else {}
         downstream_capabilities = (
             init_result.get("capabilities")
@@ -2537,45 +1458,31 @@ async def validate_service(
             protocol_version = str(init_result["protocolVersion"])
         stages.append({"name": "mcp_initialize", "status": "success"})
         if job_id:
-            await repository.update_job(job_id, status="running", progress=0.5)
+            await repos.jobs.update_job(job_id, status="running", progress=0.5)
 
-        if stdio_client is not None:
-            tools_response = await stdio_client.request(
-                method="tools/list",
-                params={},
-                request_id=f"validate-{service_id}-tools",
-                protocol_version=protocol_version,
-                correlation_id=correlation_id_value,
-            )
-        else:
-            tools_response = await app.state.downstream.request(
-                method="tools/list",
-                params={},
-                request_id=f"validate-{service_id}-tools",
-                protocol_version=protocol_version,
-                session_id=_downstream_session_id(app, service_id),
-                url=service["endpoint_url"],
-                downstream_headers=downstream_headers,
-                url_safety_checker=checker,
-                safety_result=safety_result,
-                correlation_id=correlation_id_value,
-                session_id_callback=_downstream_session_callback(app, service_id),
-                notification_callback=_downstream_notification_callback(app, service_id=service_id, source="http"),
-            )
+        tools_response = await _request_service_rpc(
+            app,
+            service,
+            method="tools/list",
+            params={},
+            request_id=f"validate-{service_id}-tools",
+            protocol_version=protocol_version,
+            correlation_id_value=correlation_id_value,
+        )
         result = tools_response.get("result")
         tools = result.get("tools") if isinstance(result, dict) else None
         if not isinstance(tools, list):
             raise DownstreamMcpError("downstream tools/list returned invalid tools")
         stages.append({"name": "tools_list", "status": "success", "tools_found": len(tools)})
 
-        existing_tools = await repository.list_service_tools(service_id)
+        existing_tools = await repos.catalog.list_service_tools(service_id)
         normalized, metadata_warnings = normalize_downstream_tools(tools, service_slug=service["slug"], settings=app.state.settings)
         warnings.extend(metadata_warnings)
         if tools and not normalized:
             raise DownstreamMcpError("downstream tools/list returned no valid tools", code=-32602)
         schema_diff = _tool_schema_diff(existing_tools, normalized)
         change_summary = schema_diff["summary"]
-        saved = await repository.replace_service_tools(service_id, normalized)
+        saved = await repos.catalog.replace_service_tools(service_id, normalized)
         catalog_summary = await _refresh_resource_prompt_catalog(
             app,
             service,
@@ -2594,15 +1501,15 @@ async def validate_service(
             "resource_prompt_catalog": catalog_summary,
             "downstream_capabilities": downstream_capabilities,
         }
-        await repository.mark_service_validated(
+        await repos.services.mark_service_validated(
             service_id=service_id,
             status="active",
             protocol_version=protocol_version,
             summary=summary,
             capabilities=downstream_capabilities,
         )
-        await repository.apply_resource_shadow_policy(service_id)
-        await repository.log_audit(
+        await repos.catalog.apply_resource_shadow_policy(service_id)
+        await repos.audit.log_audit(
             action="service.validate.success",
             resource_type="mcp_service",
             resource_id=service_id,
@@ -2610,13 +1517,13 @@ async def validate_service(
             request_id=correlation_id_value,
         )
         if job_id:
-            await repository.update_job(job_id, status="success", progress=1.0, result=summary)
+            await repos.jobs.update_job(job_id, status="success", progress=1.0, result=summary)
         await _publish_list_changed(app, reason="service.validate.success", resource_id=service_id)
         return {"service_id": service_id, "status": "success", **summary}
     except UrlSafetyError as exc:
         summary = {"stages": stages + [{"name": "url_safety_check", "status": "failed"}], "tools_found": 0, "warnings": warnings, "error": str(exc)}
-        await repository.mark_service_validated(service_id=service_id, status="error", protocol_version=None, summary=summary)
-        await repository.log_audit(
+        await repos.services.mark_service_validated(service_id=service_id, status="error", protocol_version=None, summary=summary)
+        await repos.audit.log_audit(
             action="ssrf.block",
             resource_type="mcp_service",
             resource_id=service_id,
@@ -2624,20 +1531,20 @@ async def validate_service(
             request_id=correlation_id_value,
         )
         if job_id:
-            await repository.update_job(job_id, status="failed", progress=1.0, error=summary)
+            await repos.jobs.update_job(job_id, status="failed", progress=1.0, error=summary)
         await _publish_list_changed(app, reason="service.validate.failed", resource_id=service_id)
         raise
     except DownstreamMcpError as exc:
         summary = {"stages": stages, "tools_found": 0, "warnings": warnings, "error": str(exc)}
-        existing_tools = await repository.list_service_tools(service_id)
+        existing_tools = await repos.catalog.list_service_tools(service_id)
         preserve_active_catalog = bool(existing_tools and service["status"] == "active")
-        await repository.mark_service_validated(
+        await repos.services.mark_service_validated(
             service_id=service_id,
             status="active" if preserve_active_catalog else "error",
             protocol_version=protocol_version,
             summary={**summary, "preserved_active_catalog": preserve_active_catalog},
         )
-        await repository.log_audit(
+        await repos.audit.log_audit(
             action="ssrf.block" if exc.code == -32003 else "service.validate.failed",
             resource_type="mcp_service",
             resource_id=service_id,
@@ -2645,7 +1552,7 @@ async def validate_service(
             request_id=correlation_id_value,
         )
         if job_id:
-            await repository.update_job(job_id, status="failed", progress=1.0, error={**summary, "preserved_active_catalog": preserve_active_catalog})
+            await repos.jobs.update_job(job_id, status="failed", progress=1.0, error={**summary, "preserved_active_catalog": preserve_active_catalog})
         await _publish_list_changed(app, reason="service.validate.failed", resource_id=service_id)
         raise
     finally:
@@ -2669,6 +1576,7 @@ def create_app(settings: Settings | None = None, http_client: httpx.AsyncClient 
         app.state.settings = settings
         app.state.sessions = SessionStore()
         app.state.repository = Repository(settings.resolved_database_path)
+        app.state.repos = RepositoryFacades(app.state.repository)
         app.state.http_client = http_client
         app.state.downstream = DownstreamMcpClient(
             settings.fake_mcp_url,
@@ -2688,6 +1596,7 @@ def create_app(settings: Settings | None = None, http_client: httpx.AsyncClient 
         app.state.service_rate_limiter = FixedWindowRateLimiter()
         app.state.oauth_dcr_rate_limiter = FixedWindowRateLimiter()
         app.state.oauth_cimd_rate_limiter = FixedWindowRateLimiter()
+        app.state.plugins = PluginRegistry()
         app.state.reaper_task = None
         app.state.health_probe_task = None
         app.state.vault = build_vault(settings)
@@ -2723,6 +1632,9 @@ def create_app(settings: Settings | None = None, http_client: httpx.AsyncClient 
             for _, client in list(app.state.stdio_clients.values()):
                 await client.aclose()
             app.state.stdio_clients.clear()
+            oauth_service = getattr(app.state, "oauth", None)
+            if oauth_service is not None:
+                await oauth_service.shutdown()
             await app.state.repository.close()
             if owns_http_client:
                 await http_client.aclose()
@@ -2750,6 +1662,13 @@ def create_app(settings: Settings | None = None, http_client: httpx.AsyncClient 
         incoming = request.headers.get("X-Request-ID")
         request_id = incoming.strip() if incoming and incoming.strip() else f"req_{secrets.token_hex(16)}"
         request.state.request_id = request_id
+        def request_too_large_response() -> JSONResponse:
+            return api_error(
+                "request_too_large",
+                f"request body exceeds {settings.max_request_body_bytes} bytes",
+                status_code=413,
+            )
+
         content_length = request.headers.get("content-length")
         if content_length is not None:
             try:
@@ -2759,13 +1678,10 @@ def create_app(settings: Settings | None = None, http_client: httpx.AsyncClient 
                 response.headers["X-Request-ID"] = request_id
                 return response
             if length > settings.max_request_body_bytes:
-                response = api_error(
-                    "request_too_large",
-                    f"request body exceeds {settings.max_request_body_bytes} bytes",
-                    status_code=413,
-                )
+                response = request_too_large_response()
                 response.headers["X-Request-ID"] = request_id
                 return response
+        install_streaming_body_limit(request, max_bytes=settings.max_request_body_bytes)
         if request.method != "OPTIONS":
             rate_limited: JSONResponse | None = None
             if request.url.path == "/mcp":
@@ -2783,983 +1699,230 @@ def create_app(settings: Settings | None = None, http_client: httpx.AsyncClient 
             if rate_limited is not None:
                 rate_limited.headers["X-Request-ID"] = request_id
                 return rate_limited
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except RequestBodyTooLarge:
+            response = request_too_large_response()
+            response.headers["X-Request-ID"] = request_id
+            return response
+        except BaseExceptionGroup as exc:
+            if not contains_request_body_too_large(exc):
+                raise
+            response = request_too_large_response()
+            response.headers["X-Request-ID"] = request_id
+            return response
         response.headers["X-Request-ID"] = request_id
         return response
 
-    @app.get("/health")
-    async def health() -> dict[str, str]:
-        return {"status": "ok"}
+    register_meta_routes(app, prometheus_metrics=_prometheus_metrics)
 
-    @app.get("/live")
-    async def live() -> dict[str, str]:
-        return {"status": "alive"}
+    register_oauth_routes(
+        app,
+        request_ip=request_ip,
+        dcr_rate_limit=OAUTH_DCR_RATE_LIMIT,
+        dcr_rate_limit_window_seconds=OAUTH_DCR_RATE_LIMIT_WINDOW_SECONDS,
+    )
 
-    @app.get("/ready")
-    async def ready(request: Request) -> dict[str, str]:
-        db_ok = await request.app.state.repository.healthcheck()
-        vault_ok = await request.app.state.vault.is_ready()
-        return {"status": "ready" if db_ok and vault_ok else "degraded"}
+    tools_handler_deps = ToolsHandlerDeps(
+        get_request_id=_get_request_id,
+        jsonrpc_result=jsonrpc_result,
+        jsonrpc_error=jsonrpc_error,
+        request_ip=request_ip,
+        correlation_id=correlation_id,
+        downstream_session_id=_downstream_session_id,
+        downstream_session_callback=_downstream_session_callback,
+        downstream_notification_callback=_downstream_notification_callback,
+        tool_error_result=tool_error_result,
+        idempotency_cache_key=_idempotency_cache_key,
+        check_service_rate_limit=_check_service_rate_limit,
+        rate_limit_tool_error=_rate_limit_tool_error,
+        transport_type=_transport_type,
+        stdio_client_for_config=_stdio_client_for_config,
+        downstream_headers_for_service=_downstream_headers_for_service,
+        idempotency_downstream_header=_idempotency_downstream_header,
+        record_downstream_failure=_record_downstream_failure,
+        persist_stdio_state=_persist_stdio_state,
+    )
+    app.state.tools_handler_deps = tools_handler_deps
+    resources_handler_deps = ResourcesHandlerDeps(
+        get_request_id=_get_request_id,
+        jsonrpc_result=jsonrpc_result,
+        jsonrpc_error=jsonrpc_error,
+        request_service_rpc=_request_service_rpc,
+        request_default_downstream_rpc=_request_default_downstream_rpc,
+        service_config_from_catalog_row=_service_config_from_catalog_row,
+        correlation_id=correlation_id,
+    )
+    prompts_handler_deps = PromptsHandlerDeps(
+        get_request_id=_get_request_id,
+        jsonrpc_result=jsonrpc_result,
+        jsonrpc_error=jsonrpc_error,
+        request_service_rpc=_request_service_rpc,
+        request_default_downstream_rpc=_request_default_downstream_rpc,
+        service_config_from_catalog_row=_service_config_from_catalog_row,
+        correlation_id=correlation_id,
+    )
 
-    @app.get("/metrics")
-    async def metrics(request: Request) -> Response:
-        if not request.app.state.settings.metrics_enabled:
-            return Response(status_code=404)
-        snapshot = await request.app.state.repository.metrics_snapshot()
-        snapshot["active_mcp_sessions"] = request.app.state.sessions.count_active()
-        return Response(
-            _prometheus_metrics(snapshot),
-            media_type="text/plain; version=0.0.4; charset=utf-8",
-            headers={"Cache-Control": "no-store"},
+    async def handle_resources_list_route(
+        app_: FastAPI,
+        payload: dict[str, Any],
+        request_: Request,
+        *,
+        method: str = "resources/list",
+        result_key: str = "resources",
+    ):
+        return await _mcp_handle_resources_list(
+            app_,
+            payload,
+            request_,
+            deps=resources_handler_deps,
+            method=method,
+            result_key=result_key,
         )
 
-    @app.get("/.well-known/oauth-protected-resource")
-    async def protected_resource_metadata(request: Request) -> Response:
-        settings_obj: Settings = request.app.state.settings
-        if settings_obj.auth_mode != "oauth" and not settings_obj.expose_resource_metadata_in_static_mode:
-            return Response(status_code=404)
-        resource = str(request.url_for("mcp"))
-        payload: dict[str, Any] = {
-            "resource": resource,
-            "bearer_methods_supported": ["header"],
-            "scopes_supported": ["mcp:tools.read", "mcp:tools.call", "mcp:connections.manage"],
-        }
-        if settings_obj.auth_mode == "oauth":
-            payload["authorization_servers"] = [str(request.base_url).rstrip("/")]
-        return JSONResponse(payload)
+    async def handle_resources_read_route(app_: FastAPI, payload: dict[str, Any], request_: Request):
+        return await _mcp_handle_resources_read(app_, payload, request_, deps=resources_handler_deps)
 
-    @app.get("/.well-known/oauth-authorization-server")
-    async def authorization_server_metadata(request: Request) -> Response:
-        if request.app.state.settings.auth_mode != "oauth":
-            return Response(status_code=404)
-        issuer = str(request.base_url).rstrip("/")
-        return JSONResponse(
-            {
-                "issuer": issuer,
-                "authorization_endpoint": f"{issuer}/oauth/authorize",
-                "token_endpoint": f"{issuer}/oauth/token",
-                "registration_endpoint": f"{issuer}/oauth/register",
-                "revocation_endpoint": f"{issuer}/oauth/revoke",
-                "introspection_endpoint": f"{issuer}/oauth/introspect",
-                "jwks_uri": f"{issuer}/.well-known/jwks.json",
-                "response_types_supported": ["code"],
-                "grant_types_supported": ["authorization_code", "refresh_token"],
-                "code_challenge_methods_supported": ["S256"],
-                "token_endpoint_auth_methods_supported": ["none"],
-                "registration_endpoint_auth_methods_supported": ["none"],
-                "client_id_metadata_document_supported": True,
-                "client_id_metadata_document_required": False,
-            }
+    async def handle_prompts_list_route(app_: FastAPI, payload: dict[str, Any], request_: Request):
+        return await _mcp_handle_prompts_list(app_, payload, request_, deps=prompts_handler_deps)
+
+    async def handle_prompts_get_route(app_: FastAPI, payload: dict[str, Any], request_: Request):
+        return await _mcp_handle_prompts_get(app_, payload, request_, deps=prompts_handler_deps)
+
+    async def handle_tools_list_route(app_: FastAPI, payload: dict[str, Any], request_: Request):
+        return await _mcp_handle_tools_list(app_, payload, request_, deps=tools_handler_deps)
+
+    async def refresh_tools_route(
+        app_: FastAPI,
+        *,
+        request_id: Any,
+        protocol_version: str | None,
+        session_id: str | None,
+        params: dict[str, Any] | None = None,
+        correlation_id_value: str | None = None,
+    ):
+        return await _mcp_refresh_tools(
+            app_,
+            deps=tools_handler_deps,
+            request_id=request_id,
+            protocol_version=protocol_version,
+            session_id=session_id,
+            params=params,
+            correlation_id_value=correlation_id_value,
         )
 
-    @app.get("/.well-known/jwks.json")
-    async def jwks(request: Request) -> Response:
-        if request.app.state.settings.auth_mode != "oauth":
-            return Response(status_code=404)
-        return JSONResponse(request.app.state.oauth.jwks(), headers={"Cache-Control": "no-store"})
+    mcp_dispatch_handlers = McpDispatchHandlers(
+        jsonrpc_version=JSONRPC_VERSION,
+        get_request_id=_get_request_id,
+        jsonrpc_error=jsonrpc_error,
+        jsonrpc_result=jsonrpc_result,
+        has_scope=_mcp_has_scope,
+        scope_denied_response=_scope_denied_response,
+        request_ip=request_ip,
+        handle_initialize=_handle_initialize,
+        forward_downstream_cancellation=_forward_downstream_cancellation,
+        handle_tools_list=handle_tools_list_route,
+        handle_tools_call=_handle_tools_call,
+        handle_resources_list=handle_resources_list_route,
+        handle_resources_read=handle_resources_read_route,
+        handle_prompts_list=handle_prompts_list_route,
+        handle_prompts_get=handle_prompts_get_route,
+    )
 
-    @app.post("/oauth/register")
-    async def oauth_register(request: Request) -> Response:
-        if request.app.state.settings.auth_mode != "oauth":
-            return Response(status_code=404)
-        try:
-            if limited := _check_oauth_dcr_rate_limit(request):
-                return _oauth_error_response(limited)
-            body = await _form_or_json_body(request)
-            client = await request.app.state.oauth.register_client(body)
-            return JSONResponse(
-                {
-                    "client_id": client.client_id,
-                    "client_id_issued_at": int(time.time()),
-                    "client_name": client.client_name,
-                    "redirect_uris": client.redirect_uris,
-                    "grant_types": client.grant_types or ["authorization_code", "refresh_token"],
-                    "response_types": client.response_types or ["code"],
-                    "token_endpoint_auth_method": "none",
-                    "scope": client.scope,
-                },
-                status_code=201,
-                headers={"Cache-Control": "no-store"},
-            )
-        except OAuthError as exc:
-            return _oauth_error_response(exc)
+    async def dispatch_mcp_route(app_: FastAPI, payload: dict[str, Any], request_: Request):
+        return await _dispatch_mcp(app_, payload, request_, handlers=mcp_dispatch_handlers)
 
-    @app.get("/oauth/authorize")
-    async def oauth_authorize(request: Request) -> Response:
-        if request.app.state.settings.auth_mode != "oauth":
-            return Response(status_code=404)
-        query = request.query_params
-        if query.get("response_type") != "code":
-            return _oauth_error_response(OAuthError("unsupported_response_type", "only response_type=code is supported"))
-        resource = query.get("resource") or oauth_resource(request)
-        if resource != oauth_resource(request):
-            return _oauth_error_response(OAuthError("invalid_target", "resource must match CoreMCP /mcp"))
-        try:
-            code = await request.app.state.oauth.create_authorization_code(
-                client_id=str(query.get("client_id") or ""),
-                redirect_uri=str(query.get("redirect_uri") or ""),
-                resource=resource,
-                scope=str(query.get("scope") or "mcp:tools.read mcp:tools.call"),
-                code_challenge=str(query.get("code_challenge") or ""),
-                code_challenge_method=str(query.get("code_challenge_method") or ""),
-                client_ip=request_ip(request),
-            )
-            location = request.app.state.oauth.redirect_with_code(
-                str(query.get("redirect_uri")),
-                code=code,
-                state=query.get("state"),
-            )
-            return RedirectResponse(location, status_code=302)
-        except OAuthError as exc:
-            return _oauth_error_response(exc)
+    async def dispatch_mcp_batch_route(app_: FastAPI, payloads: list[Any], request_: Request):
+        return await _dispatch_mcp_batch(app_, payloads, request_, handlers=mcp_dispatch_handlers)
 
-    @app.post("/oauth/token")
-    async def oauth_token(request: Request) -> Response:
-        if request.app.state.settings.auth_mode != "oauth":
-            return Response(status_code=404)
-        try:
-            body = await _form_or_json_body(request)
-            grant_type = body.get("grant_type")
-            resource = str(body.get("resource") or oauth_resource(request))
-            if resource != oauth_resource(request):
-                raise OAuthError("invalid_target", "resource must match CoreMCP /mcp")
-            if grant_type == "authorization_code":
-                payload = await request.app.state.oauth.exchange_authorization_code(
-                    code=str(body.get("code") or ""),
-                    client_id=str(body.get("client_id") or ""),
-                    redirect_uri=str(body.get("redirect_uri") or ""),
-                    code_verifier=str(body.get("code_verifier") or ""),
-                    resource=resource,
-                    issuer=oauth_issuer(request),
-                    client_ip=request_ip(request),
-                )
-            elif grant_type == "refresh_token":
-                payload = await request.app.state.oauth.refresh(
-                    refresh_token=str(body.get("refresh_token") or ""),
-                    client_id=str(body.get("client_id") or ""),
-                    resource=resource,
-                    issuer=oauth_issuer(request),
-                    client_ip=request_ip(request),
-                )
-            else:
-                raise OAuthError("unsupported_grant_type", "grant_type must be authorization_code or refresh_token")
-            return JSONResponse(payload, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
-        except OAuthError as exc:
-            return _oauth_error_response(exc)
+    register_mcp_routes(
+        app,
+        verify_mcp_request=verify_mcp_request,
+        unauthorized_response=unauthorized_response,
+        jsonrpc_error=jsonrpc_error,
+        dispatch_mcp=dispatch_mcp_route,
+        dispatch_mcp_batch=dispatch_mcp_batch_route,
+        parse_last_event_id=_parse_last_event_id,
+        correlation_id=correlation_id,
+        request_ip=request_ip,
+        session_idle_reap_seconds=SESSION_IDLE_REAP_SECONDS,
+    )
 
-    @app.post("/oauth/revoke")
-    async def oauth_revoke(request: Request) -> Response:
-        if request.app.state.settings.auth_mode != "oauth":
-            return Response(status_code=404)
-        try:
-            body = await _form_or_json_body(request)
-            await request.app.state.oauth.revoke(str(body.get("token") or ""))
-            return JSONResponse({"revoked": True}, headers={"Cache-Control": "no-store"})
-        except OAuthError as exc:
-            return _oauth_error_response(exc)
+    register_services_routes(
+        app,
+        verify_admin_request=verify_admin_request,
+        unauthorized_response=unauthorized_response,
+        json_body=_json_body,
+        api_error=api_error,
+        not_found=not_found,
+        accepted=accepted,
+        request_ip=request_ip,
+        correlation_id=correlation_id,
+        validate_service=validate_service,
+        validate_stdio_runtime_config=_validate_stdio_runtime_config,
+        audit_stdio_command_rejected=_audit_stdio_command_rejected,
+        close_stdio_client_for_service=_close_stdio_client_for_service,
+        forget_downstream_session=_forget_downstream_session,
+        publish_list_changed=_publish_list_changed,
+        tool_preset_policy=_tool_preset_policy,
+        tool_override_counts=_tool_override_counts,
+        string_list=_string_list,
+        stdio_env=_stdio_env,
+        positive_int=_positive_int,
+        stdio_default_idle_timeout=_stdio_default_idle_timeout,
+        service_transport_types=SERVICE_TRANSPORT_TYPES,
+        tool_permission_levels=TOOL_PERMISSION_LEVELS,
+        tool_presets=TOOL_PRESETS,
+    )
 
-    @app.post("/oauth/introspect")
-    async def oauth_introspect(request: Request) -> Response:
-        if request.app.state.settings.auth_mode != "oauth":
-            return Response(status_code=404)
-        try:
-            body = await _form_or_json_body(request)
-            payload = await request.app.state.oauth.introspect(
-                str(body.get("token") or ""),
-                issuer=oauth_issuer(request),
-                audience=oauth_resource(request),
-            )
-            return JSONResponse(payload, headers={"Cache-Control": "no-store"})
-        except OAuthError as exc:
-            return _oauth_error_response(exc)
+    register_connections_routes(
+        app,
+        verify_admin_request=verify_admin_request,
+        unauthorized_response=unauthorized_response,
+        json_body=_json_body,
+        api_error=api_error,
+        accepted=accepted,
+        request_ip=request_ip,
+        validated_scopes=_validated_scopes,
+        generate_one_time_token=_generate_one_time_token,
+        utc_sql_timestamp=_utc_sql_timestamp,
+        iso_z=_iso_z,
+        connection_token_prompt=_connection_token_prompt,
+        one_time_token_prefix=ONE_TIME_TOKEN_PREFIX,
+        one_time_token_ttl_seconds=ONE_TIME_TOKEN_TTL_SECONDS,
+    )
 
-    @app.post("/mcp")
-    async def mcp(request: Request) -> Response:
-        if not await verify_mcp_request(request):
-            await request.app.state.repository.log_audit(
-                action="auth.failure",
-                resource_type="mcp",
-                request_id=correlation_id(request),
-                ip=request_ip(request),
-                user_agent=request.headers.get("user-agent"),
-            )
-            return unauthorized_response(request)
+    register_toolboxes_routes(
+        app,
+        verify_admin_request=verify_admin_request,
+        unauthorized_response=unauthorized_response,
+        json_body=_json_body,
+        api_error=api_error,
+        not_found=not_found,
+        accepted=accepted,
+        publish_list_changed=_publish_list_changed,
+    )
 
-        try:
-            payload = await request.json()
-        except ValueError:
-            return JSONResponse(jsonrpc_error(None, -32700, "Parse error"), status_code=400)
-        if isinstance(payload, list) and not payload:
-            return JSONResponse(jsonrpc_error(None, -32600, "Invalid Request"), status_code=400)
-        if not isinstance(payload, (dict, list)):
-            return JSONResponse(jsonrpc_error(None, -32600, "Invalid Request"), status_code=400)
+    register_playground_routes(
+        app,
+        verify_admin_request=verify_admin_request,
+        unauthorized_response=unauthorized_response,
+        json_body=_json_body,
+        api_error=api_error,
+        refresh_tools=refresh_tools_route,
+        handle_tools_call=_handle_tools_call,
+        correlation_id=correlation_id,
+    )
 
-        request.app.state.sessions.touch(request.headers.get("Mcp-Session-Id"))
-        request.app.state.sessions.reap_idle(SESSION_IDLE_REAP_SECONDS)
-        if isinstance(payload, list):
-            response_payload, new_session_id = await dispatch_mcp_batch(request.app, payload, request)
-        else:
-            response_payload, new_session_id = await dispatch_mcp(request.app, payload, request)
-        if response_payload is None:
-            return Response(status_code=202)
-
-        headers = {}
-        if new_session_id:
-            headers["Mcp-Session-Id"] = new_session_id
-        elif request.headers.get("Mcp-Session-Id"):
-            headers["Mcp-Session-Id"] = request.headers["Mcp-Session-Id"]
-        return JSONResponse(response_payload, headers=headers)
-
-    @app.get("/mcp")
-    async def mcp_sse(request: Request, max_events: int | None = None, heartbeat_seconds: float = 15.0) -> Response:
-        if not await verify_mcp_request(request):
-            return unauthorized_response(request)
-        last_event_id = _parse_last_event_id(request.headers.get("Last-Event-Id"))
-
-        async def events():
-            subscription = await request.app.state.list_changed_bus.subscribe(last_event_id=last_event_id)
-            try:
-                yield ": CoreMCP SSE keepalive\n\n"
-                if max_events == 0:
-                    return
-                emitted = 0
-                heartbeat = max(0.1, min(heartbeat_seconds, 60.0))
-                while not await request.is_disconnected():
-                    try:
-                        event = await asyncio.wait_for(subscription.get(), timeout=heartbeat)
-                    except TimeoutError:
-                        yield ": CoreMCP SSE keepalive\n\n"
-                        continue
-                    emitted += 1
-                    yield (
-                        f"id: {event.id}\n"
-                        f"event: {event.event}\n"
-                        f"data: {json.dumps(event.data, ensure_ascii=False, separators=(',', ':'))}\n\n"
-                    )
-                    if max_events is not None and emitted >= max_events:
-                        return
-            finally:
-                await subscription.close()
-
-        return StreamingResponse(
-            events(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
-        )
-
-    @app.delete("/mcp")
-    async def mcp_delete(request: Request) -> Response:
-        if not await verify_mcp_request(request):
-            return unauthorized_response(request)
-        request.app.state.sessions.delete(request.headers.get("Mcp-Session-Id"))
-        return Response(status_code=204)
-
-    @app.get("/v1/me")
-    async def me(request: Request) -> Response:
-        if not verify_admin_request(request):
-            return unauthorized_response()
-        return JSONResponse(await request.app.state.repository.get_me())
-
-    @app.get("/v1/settings")
-    async def settings_endpoint(request: Request) -> Response:
-        if not verify_admin_request(request):
-            return unauthorized_response()
-        settings_obj: Settings = request.app.state.settings
-        token_count = await request.app.state.repository.count_active_client_tokens()
-        return JSONResponse(
-            {
-                "admin_token_masked": "cmcp_admin_••••",
-                "client_token_count": token_count,
-                "auth_mode": settings_obj.auth_mode,
-                "oauth_enabled": settings_obj.auth_mode == "oauth",
-                "secret_backend": settings_obj.secret_backend,
-                "tailscale_enabled": False,
-                "cache_backend": "memory",
-                "app_version": settings_obj.app_version,
-            }
-        )
-
-    @app.get("/v1/dashboard/summary")
-    async def dashboard_summary(request: Request) -> Response:
-        if not verify_admin_request(request):
-            return unauthorized_response()
-        return JSONResponse(await request.app.state.repository.dashboard_summary())
-
-    @app.post("/v1/settings/admin-token/rotate")
-    async def rotate_admin_token(request: Request) -> Response:
-        if not verify_admin_request(request):
-            return unauthorized_response()
-        settings_obj: Settings = request.app.state.settings
-        new_token = generate_admin_token()
-        try:
-            write_admin_token_atomic(settings_obj.resolved_admin_token_file, new_token)
-        except AdminTokenFileError as exc:
-            return api_error(
-                "admin_token_file_unavailable",
-                (
-                    "Admin token rotation requires a writable COREMCP_ADMIN_TOKEN_FILE; "
-                    "env-only COREMCP_ADMIN_TOKEN_VALUE cannot be rotated at runtime."
-                ),
-                status_code=409,
-                details={"reason": str(exc)},
-            )
-        await request.app.state.repository.log_audit(
-            action="admin_token.rotate",
-            resource_type="admin_token",
-            metadata={"admin_token_masked": mask_secret(new_token), "expires_at": None},
-            request_id=correlation_id(request),
-            ip=request_ip(request),
-            user_agent=request.headers.get("user-agent"),
-        )
-        return JSONResponse(
-            {"new_token": new_token, "admin_token_masked": mask_secret(new_token), "expires_at": None},
-            headers={"Cache-Control": "no-store"},
-        )
-
-    @app.get("/v1/settings/client-tokens")
-    async def list_client_tokens(request: Request, limit: int = 50) -> Response:
-        if not verify_admin_request(request):
-            return unauthorized_response()
-        items = await request.app.state.repository.list_personal_access_tokens(limit=max(1, min(limit, 100)))
-        return JSONResponse({"items": items, "next_cursor": None})
-
-    @app.post("/v1/settings/client-tokens")
-    async def issue_client_token(request: Request) -> Response:
-        if not verify_admin_request(request):
-            return unauthorized_response()
-        body = await _json_body(request)
-        if isinstance(body, JSONResponse):
-            return body
-        external_connection_id = body.get("external_connection_id")
-        if not isinstance(external_connection_id, str):
-            return api_error("validation_failed", "external_connection_id is required", status_code=422)
-        scopes = _validated_scopes(body.get("scopes"))
-        if scopes is None:
-            return api_error("validation_failed", "scopes must be supported MCP scopes", status_code=422)
-        try:
-            item = await ClientTokenService(request.app.state.repository).issue(
-                external_connection_id=external_connection_id,
-                scopes=scopes,
-                protocol_version=body.get("protocol_version") if isinstance(body.get("protocol_version"), str) else None,
-            )
-        except ValueError as exc:
-            return api_error("validation_failed", str(exc), status_code=422)
-        return JSONResponse(item, status_code=201)
-
-    @app.delete("/v1/settings/client-tokens/{token_id}")
-    async def revoke_client_token(request: Request, token_id: str) -> Response:
-        if not verify_admin_request(request):
-            return unauthorized_response()
-        await ClientTokenService(request.app.state.repository).revoke(token_id)
-        return accepted({"id": token_id, "status": "revoked"})
-
-    @app.post("/v1/external-connections/one-time-token")
-    async def create_one_time_connection_token(request: Request) -> Response:
-        if not verify_admin_request(request):
-            return unauthorized_response()
-        body = await _json_body(request)
-        if isinstance(body, JSONResponse):
-            return body
-        scopes = _validated_scopes(body.get("requested_scopes", body.get("scopes")))
-        if scopes is None:
-            return api_error("validation_failed", "requested_scopes must be supported MCP scopes", status_code=422)
-        client_type = str(body.get("client_type") or "openclaw")
-        toolbox_id = body.get("toolbox_id") if isinstance(body.get("toolbox_id"), str) else DEFAULT_TOOLBOX_ID
-        token = _generate_one_time_token()
-        expires_at = _utc_sql_timestamp(time.time() + ONE_TIME_TOKEN_TTL_SECONDS)
-        try:
-            record = await request.app.state.repository.create_connection_token(
-                token_hash=hash_token(token),
-                client_type=client_type,
-                toolbox_id=toolbox_id,
-                requested_scopes=scopes,
-                expires_at=expires_at,
-                created_ip=request_ip(request),
-                created_user_agent=request.headers.get("user-agent"),
-            )
-        except sqlite3.IntegrityError as exc:
-            return api_error("validation_failed", str(exc), status_code=422)
-        expires_at_iso = _iso_z(record["expires_at"])
-        return JSONResponse(
-            {
-                "token": token,
-                "token_type": "coremcp_one_time",
-                "expires_in": ONE_TIME_TOKEN_TTL_SECONDS,
-                "expires_at": expires_at_iso,
-                "client_type": record["client_type"],
-                "toolbox_id": record["toolbox_id"],
-                "requested_scopes": record["requested_scopes"],
-                "connection_prompt": _connection_token_prompt(token, expires_at_iso),
-            },
-            status_code=201,
-            headers={"Cache-Control": "no-store"},
-        )
-
-    @app.post("/v1/external-connections/exchange")
-    async def exchange_one_time_connection_token(request: Request) -> Response:
-        body = await _json_body(request)
-        if isinstance(body, JSONResponse):
-            return body
-        presented = body.get("one_time_token") or body.get("token")
-        if not isinstance(presented, str) or not presented.startswith(ONE_TIME_TOKEN_PREFIX):
-            return api_error("invalid_token", "one-time token is invalid or expired", status_code=401)
-        token_record = await request.app.state.repository.consume_connection_token(
-            token_hash=hash_token(presented),
-            used_ip=request_ip(request),
-            used_user_agent=request.headers.get("user-agent"),
-        )
-        if token_record is None:
-            return api_error("invalid_token", "one-time token is invalid or expired", status_code=401)
-        requested_client_type = body.get("client_type")
-        if isinstance(requested_client_type, str) and requested_client_type != token_record["client_type"]:
-            return api_error("validation_failed", "client_type does not match one-time token", status_code=422)
-        client_name = body.get("client_name") if isinstance(body.get("client_name"), str) else token_record["client_type"]
-        protocol_version = body.get("protocol_version") if isinstance(body.get("protocol_version"), str) else None
-        try:
-            connection = await request.app.state.repository.create_external_connection(
-                client_type=token_record["client_type"],
-                client_name=client_name,
-                toolbox_id=token_record["toolbox_id"],
-                protocol_version=protocol_version,
-                scopes=token_record["requested_scopes"],
-                created_ip=request_ip(request),
-                created_user_agent=request.headers.get("user-agent"),
-            )
-            issued = await ClientTokenService(request.app.state.repository).issue(
-                external_connection_id=connection["id"],
-                scopes=token_record["requested_scopes"],
-                protocol_version=protocol_version,
-            )
-        except (ValueError, sqlite3.IntegrityError) as exc:
-            return api_error("validation_failed", str(exc), status_code=422)
-        return JSONResponse(
-            {
-                "access_token": issued["token"],
-                "token_type": "Bearer",
-                "expires_in": None,
-                "connection_id": connection["id"],
-                "token_id": issued["id"],
-                "token_prefix": issued["token_prefix"],
-                "scopes": issued["scopes"],
-                "protocol_version": issued["protocol_version"],
-            },
-            status_code=201,
-            headers={"Cache-Control": "no-store"},
-        )
-
-    @app.get("/v1/external-connections")
-    async def list_external_connections(request: Request, limit: int = 50) -> Response:
-        if not verify_admin_request(request):
-            return unauthorized_response()
-        items = await request.app.state.repository.list_external_connections(limit=max(1, min(limit, 100)))
-        return JSONResponse({"items": items, "next_cursor": None})
-
-    @app.post("/v1/external-connections")
-    async def create_external_connection(request: Request) -> Response:
-        if not verify_admin_request(request):
-            return unauthorized_response()
-        body = await _json_body(request)
-        if isinstance(body, JSONResponse):
-            return body
-        client_type = str(body.get("client_type") or "other")
-        client_name = body.get("client_name") if isinstance(body.get("client_name"), str) else client_type
-        try:
-            item = await request.app.state.repository.create_external_connection(
-                client_type=client_type,
-                client_name=client_name,
-                toolbox_id=body.get("toolbox_id") if isinstance(body.get("toolbox_id"), str) else DEFAULT_TOOLBOX_ID,
-                protocol_version=body.get("protocol_version") if isinstance(body.get("protocol_version"), str) else None,
-                scopes=body.get("scopes") if isinstance(body.get("scopes"), list) else None,
-                created_ip=request_ip(request),
-                created_user_agent=request.headers.get("user-agent"),
-            )
-        except sqlite3.IntegrityError as exc:
-            return api_error("validation_failed", str(exc), status_code=422)
-        return JSONResponse(item, status_code=201)
-
-    @app.delete("/v1/external-connections/{connection_id}")
-    async def revoke_external_connection(request: Request, connection_id: str) -> Response:
-        if not verify_admin_request(request):
-            return unauthorized_response()
-        await request.app.state.repository.revoke_external_connection(connection_id)
-        return accepted({"id": connection_id, "status": "revoked"})
-
-    @app.get("/v1/mcp-services")
-    async def list_services(request: Request, limit: int = 50, status: str | None = None) -> Response:
-        if not verify_admin_request(request):
-            return unauthorized_response()
-        items = await request.app.state.repository.list_mcp_services(limit=max(1, min(limit, 100)), status=status)
-        return JSONResponse({"items": items, "next_cursor": None})
-
-    @app.post("/v1/mcp-services")
-    async def create_service(request: Request) -> Response:
-        if not verify_admin_request(request):
-            return unauthorized_response()
-        body = await _json_body(request)
-        if isinstance(body, JSONResponse):
-            return body
-        name = body.get("name")
-        transport_type = body.get("transport_type") if isinstance(body.get("transport_type"), str) else "http"
-        if transport_type not in SERVICE_TRANSPORT_TYPES:
-            return api_error("validation_failed", "transport_type must be http or stdio", status_code=422)
-        endpoint_url = body.get("endpoint_url")
-        if not isinstance(name, str) or not name.strip():
-            return api_error("validation_failed", "name is required", status_code=422)
-        slug = body.get("slug") if isinstance(body.get("slug"), str) and body.get("slug") else slugify_tool_name(name).lower()
-        stdio_command = body.get("stdio_command") if isinstance(body.get("stdio_command"), str) else None
-        if transport_type == "http":
-            if not isinstance(endpoint_url, str) or not endpoint_url.strip():
-                return api_error("validation_failed", "endpoint_url is required for http transport", status_code=422)
-            endpoint_value = endpoint_url.strip()
-        else:
-            if not stdio_command or not stdio_command.strip():
-                return api_error("validation_failed", "stdio_command is required for stdio transport", status_code=422)
-            runtime_error = _validate_stdio_runtime_config(
-                stdio_command,
-                body.get("stdio_cwd") if isinstance(body.get("stdio_cwd"), str) else None,
-            )
-            if runtime_error:
-                return api_error("validation_failed", runtime_error, status_code=422)
-            endpoint_value = endpoint_url.strip() if isinstance(endpoint_url, str) and endpoint_url.strip() else f"stdio://{slug}"
-        try:
-            service = await request.app.state.repository.create_mcp_service(
-                name=name.strip(),
-                slug=slug,
-                endpoint_url=endpoint_value,
-                auth_type=body.get("auth_type") if isinstance(body.get("auth_type"), str) else "none",
-                description=body.get("description") if isinstance(body.get("description"), str) else None,
-                category=body.get("category") if isinstance(body.get("category"), str) else None,
-                logo_url=body.get("logo_url") if isinstance(body.get("logo_url"), str) else None,
-                homepage_url=body.get("homepage_url") if isinstance(body.get("homepage_url"), str) else None,
-                documentation_url=body.get("documentation_url") if isinstance(body.get("documentation_url"), str) else None,
-                transport_type=transport_type,
-                stdio_command=stdio_command.strip() if stdio_command else None,
-                stdio_args=_string_list(body.get("stdio_args")),
-                stdio_env=_stdio_env(body.get("stdio_env")),
-                stdio_cwd=body.get("stdio_cwd") if isinstance(body.get("stdio_cwd"), str) else None,
-                stdio_idle_timeout_seconds=_positive_int(
-                    body.get("stdio_idle_timeout_seconds"),
-                    _stdio_default_idle_timeout(request.app.state.settings),
-                ),
-            )
-        except sqlite3.IntegrityError as exc:
-            return api_error("conflict", "service slug already exists", status_code=409, details=str(exc))
-        credential = body.get("credential")
-        if isinstance(credential, dict) and isinstance(credential.get("value"), str):
-            secret_ref = await request.app.state.vault.put(service_id=service["id"], secret=credential["value"])
-            await request.app.state.repository.upsert_service_credential(
-                service_id=service["id"],
-                credential_type=str(credential.get("type") or service.get("auth_type") or "bearer_token"),
-                secret_ref=secret_ref,
-                masked_value=mask_secret(credential["value"]),
-                header_name=credential.get("header_name") if isinstance(credential.get("header_name"), str) else None,
-            )
-        return JSONResponse(service, status_code=201)
-
-    @app.get("/v1/mcp-services/{service_id}")
-    async def get_service(request: Request, service_id: str) -> Response:
-        if not verify_admin_request(request):
-            return unauthorized_response()
-        service = await request.app.state.repository.get_mcp_service(service_id)
-        if service is None:
-            return not_found("mcp_service")
-        return JSONResponse(service)
-
-    @app.patch("/v1/mcp-services/{service_id}")
-    async def patch_service(request: Request, service_id: str) -> Response:
-        if not verify_admin_request(request):
-            return unauthorized_response()
-        body = await _json_body(request)
-        if isinstance(body, JSONResponse):
-            return body
-        updates = {
-            key: body[key]
-            for key in (
-                "name",
-                "slug",
-                "description",
-                "endpoint_url",
-                "auth_type",
-                "status",
-                "category",
-                "logo_url",
-                "homepage_url",
-                "documentation_url",
-                "transport_type",
-                "stdio_command",
-                "stdio_args",
-                "stdio_env",
-                "stdio_cwd",
-                "stdio_idle_timeout_seconds",
-            )
-            if key in body
-        }
-        if updates.get("transport_type") not in {None, "http", "stdio"}:
-            return api_error("validation_failed", "transport_type must be http or stdio", status_code=422)
-        if "stdio_args" in updates:
-            updates["stdio_args"] = _string_list(updates["stdio_args"])
-        if "stdio_env" in updates:
-            updates["stdio_env"] = _stdio_env(updates["stdio_env"])
-        if "stdio_idle_timeout_seconds" in updates:
-            updates["stdio_idle_timeout_seconds"] = _positive_int(
-                updates["stdio_idle_timeout_seconds"],
-                _stdio_default_idle_timeout(request.app.state.settings),
-            )
-        if updates.get("transport_type") == "stdio" or "stdio_command" in updates or "stdio_cwd" in updates:
-            current = await request.app.state.repository.get_mcp_service(service_id)
-            command = updates.get("stdio_command", current.get("stdio_command") if current else None)
-            cwd = updates.get("stdio_cwd", current.get("stdio_cwd") if current else None)
-            if updates.get("transport_type", current.get("transport_type") if current else None) == "stdio":
-                runtime_error = _validate_stdio_runtime_config(command if isinstance(command, str) else None, cwd if isinstance(cwd, str) else None)
-                if runtime_error:
-                    return api_error("validation_failed", runtime_error, status_code=422)
-        service = await request.app.state.repository.update_mcp_service(service_id, updates)
-        if service is None:
-            return not_found("mcp_service")
-        if (
-            ("status" in updates and str(updates.get("status") or "") != "active")
-            or ("transport_type" in updates and updates.get("transport_type") != "stdio")
-        ):
-            await _close_stdio_client_for_service(request.app, service_id)
-        if (
-            "endpoint_url" in updates
-            or "transport_type" in updates
-            or ("status" in updates and str(updates.get("status") or "") != "active")
-        ):
-            _forget_downstream_session(request.app, service_id)
-        await _publish_list_changed(request.app, reason="service.update", resource_id=service_id)
-        return JSONResponse(service)
-
-    @app.delete("/v1/mcp-services/{service_id}")
-    async def delete_service(request: Request, service_id: str) -> Response:
-        if not verify_admin_request(request):
-            return unauthorized_response()
-        await request.app.state.repository.soft_delete_mcp_service(service_id)
-        await _close_stdio_client_for_service(request.app, service_id)
-        _forget_downstream_session(request.app, service_id)
-        await _publish_list_changed(request.app, reason="service.delete", resource_id=service_id)
-        return accepted({"id": service_id, "status": "deleted"})
-
-    @app.post("/v1/mcp-services/{service_id}/validate")
-    async def validate_service_endpoint(request: Request, service_id: str) -> Response:
-        if not verify_admin_request(request):
-            return unauthorized_response()
-        if await request.app.state.repository.get_mcp_service(service_id) is None:
-            return not_found("mcp_service")
-        job = await request.app.state.repository.create_job(kind="service_validation", payload={"service_id": service_id})
-        try:
-            report = await validate_service(request.app, service_id, job_id=job["id"], correlation_id_value=correlation_id(request))
-            return JSONResponse({"job_id": job["id"], **report})
-        except UrlSafetyError as exc:
-            return api_error("unsafe_endpoint", str(exc), status_code=400, details={"job_id": job["id"]})
-        except DownstreamMcpError as exc:
-            return api_error("validation_failed", str(exc), status_code=400, details={"job_id": job["id"]})
-
-    @app.get("/v1/mcp-services/{service_id}/tools")
-    async def service_tools(request: Request, service_id: str) -> Response:
-        if not verify_admin_request(request):
-            return unauthorized_response()
-        if await request.app.state.repository.get_mcp_service(service_id) is None:
-            return not_found("mcp_service")
-        items = await request.app.state.repository.list_service_tools(service_id)
-        return JSONResponse({"items": items, "next_cursor": None})
-
-    @app.get("/v1/mcp-services/{service_id}/tool-overrides")
-    async def service_tool_overrides(request: Request, service_id: str) -> Response:
-        if not verify_admin_request(request):
-            return unauthorized_response()
-        if await request.app.state.repository.get_mcp_service(service_id) is None:
-            return not_found("mcp_service")
-        items = await request.app.state.repository.list_tool_overrides(service_id)
-        return JSONResponse({"items": items, "next_cursor": None})
-
-    @app.put("/v1/mcp-services/{service_id}/tool-overrides/{service_tool_id}")
-    async def put_service_tool_override(request: Request, service_id: str, service_tool_id: str) -> Response:
-        if not verify_admin_request(request):
-            return unauthorized_response()
-        body = await _json_body(request)
-        if isinstance(body, JSONResponse):
-            return body
-        permission_level = str(body.get("permission_level") or "callable")
-        if permission_level not in TOOL_PERMISSION_LEVELS:
-            return api_error("validation_failed", "permission_level must be hidden, visible_only, or callable", status_code=422)
-        item = await request.app.state.repository.upsert_tool_override(
-            service_id=service_id,
-            service_tool_id=service_tool_id,
-            enabled=bool(body.get("enabled", True)),
-            permission_level=permission_level,
-        )
-        if item is None:
-            return not_found("service_tool")
-        await _publish_list_changed(
-            request.app,
-            reason="tool_permission.update",
-            resource_id=service_tool_id,
-            categories=("tools",),
-        )
-        return JSONResponse(item)
-
-    @app.post("/v1/mcp-services/{service_id}/tool-overrides/preset")
-    async def apply_service_tool_preset(request: Request, service_id: str) -> Response:
-        if not verify_admin_request(request):
-            return unauthorized_response()
-        body = await _json_body(request)
-        if isinstance(body, JSONResponse):
-            return body
-        preset = str(body.get("preset") or "")
-        if preset not in TOOL_PRESETS:
-            return api_error("validation_failed", "preset must be readonly, full_access, or dangerous_off", status_code=422)
-        if await request.app.state.repository.get_mcp_service(service_id) is None:
-            return not_found("mcp_service")
-
-        tools = await request.app.state.repository.list_service_tools(service_id)
-        items: list[dict[str, Any]] = []
-        for tool in tools:
-            enabled, permission_level = _tool_preset_policy(tool, preset)
-            item = await request.app.state.repository.upsert_tool_override(
-                service_id=service_id,
-                service_tool_id=tool["id"],
-                enabled=enabled,
-                permission_level=permission_level,
-            )
-            if item is not None:
-                items.append(item)
-        await request.app.state.repository.log_audit(
-            action="tool_permission.preset",
-            resource_type="mcp_service",
-            resource_id=service_id,
-            metadata={"preset": preset, "counts": _tool_override_counts(items)},
-            request_id=correlation_id(request),
-        )
-        await _publish_list_changed(
-            request.app,
-            reason=f"tool_permission.preset.{preset}",
-            resource_id=service_id,
-            categories=("tools",),
-        )
-        return JSONResponse({"preset": preset, "items": items, "counts": _tool_override_counts(items), "next_cursor": None})
-
-    @app.put("/v1/mcp-services/{service_id}/credential")
-    async def put_credential(request: Request, service_id: str) -> Response:
-        if not verify_admin_request(request):
-            return unauthorized_response()
-        if await request.app.state.repository.get_mcp_service(service_id) is None:
-            return not_found("mcp_service")
-        body = await _json_body(request)
-        if isinstance(body, JSONResponse):
-            return body
-        secret = body.get("secret")
-        credential_type = body.get("credential_type")
-        if not isinstance(secret, str) or not secret:
-            return api_error("validation_failed", "secret is required", status_code=422)
-        if not isinstance(credential_type, str):
-            credential_type = "bearer_token"
-        secret_ref = await request.app.state.vault.put(service_id=service_id, secret=secret)
-        item = await request.app.state.repository.upsert_service_credential(
-            service_id=service_id,
-            credential_type=credential_type,
-            secret_ref=secret_ref,
-            masked_value=mask_secret(secret),
-            header_name=body.get("header_name") if isinstance(body.get("header_name"), str) else None,
-        )
-        return JSONResponse({"status": item["status"], "masked": item["masked_value"], "updated_at": item["updated_at"]})
-
-    @app.post("/v1/mcp-services/{service_id}/credential/rotate")
-    async def rotate_credential(request: Request, service_id: str) -> Response:
-        if not verify_admin_request(request):
-            return unauthorized_response()
-        if await request.app.state.repository.get_mcp_service(service_id) is None:
-            return not_found("mcp_service")
-        body = await _json_body(request)
-        if isinstance(body, JSONResponse):
-            return body
-        secret = body.get("secret")
-        credential_type = body.get("credential_type")
-        if not isinstance(secret, str) or not secret:
-            return api_error("validation_failed", "secret is required", status_code=422)
-        if not isinstance(credential_type, str):
-            existing = await request.app.state.repository.get_service_credential(service_id)
-            credential_type = existing["credential_type"] if existing else "bearer_token"
-        previous = await request.app.state.repository.get_service_credential(service_id)
-        secret_ref = await request.app.state.vault.put(service_id=service_id, secret=secret)
-        item = await request.app.state.repository.upsert_service_credential(
-            service_id=service_id,
-            credential_type=credential_type,
-            secret_ref=secret_ref,
-            masked_value=mask_secret(secret),
-            header_name=body.get("header_name") if isinstance(body.get("header_name"), str) else (previous or {}).get("header_name"),
-        )
-        if previous:
-            await request.app.state.vault.delete(previous["secret_ref"])
-        await request.app.state.repository.log_audit(
-            action="credential.rotate",
-            resource_type="mcp_service",
-            resource_id=service_id,
-            ip=request_ip(request),
-            user_agent=request.headers.get("user-agent"),
-        )
-        return JSONResponse({"status": item["status"], "masked": item["masked_value"], "updated_at": item["updated_at"]})
-
-    @app.get("/v1/mcp-services/{service_id}/credential")
-    async def get_credential(request: Request, service_id: str) -> Response:
-        if not verify_admin_request(request):
-            return unauthorized_response()
-        item = await request.app.state.repository.get_service_credential(service_id)
-        if item is None:
-            return JSONResponse({"status": "not_connected", "masked": None, "updated_at": None})
-        return JSONResponse({"status": item["status"], "masked": item["masked_value"], "updated_at": item["updated_at"]})
-
-    @app.delete("/v1/mcp-services/{service_id}/credential")
-    async def delete_credential(request: Request, service_id: str) -> Response:
-        if not verify_admin_request(request):
-            return unauthorized_response()
-        item = await request.app.state.repository.get_service_credential(service_id)
-        if item:
-            await request.app.state.vault.delete(item["secret_ref"])
-        await request.app.state.repository.revoke_service_credential(service_id)
-        await request.app.state.repository.update_mcp_service(service_id, {"status": "auth_required"})
-        await _close_stdio_client_for_service(request.app, service_id)
-        await _publish_list_changed(request.app, reason="credential.delete", resource_id=service_id)
-        return accepted({"service_id": service_id, "status": "not_connected"})
-
-    @app.get("/v1/toolboxes")
-    async def list_toolboxes(request: Request, limit: int = 50) -> Response:
-        if not verify_admin_request(request):
-            return unauthorized_response()
-        items = await request.app.state.repository.list_toolboxes(limit=max(1, min(limit, 100)))
-        return JSONResponse({"items": items, "next_cursor": None})
-
-    @app.get("/v1/toolboxes/{toolbox_id}")
-    async def get_toolbox(request: Request, toolbox_id: str) -> Response:
-        if not verify_admin_request(request):
-            return unauthorized_response()
-        toolboxes = await request.app.state.repository.list_toolboxes(limit=100)
-        toolbox = next((item for item in toolboxes if item["id"] == toolbox_id), None)
-        if toolbox is None:
-            return not_found("toolbox")
-        items = await request.app.state.repository.list_toolbox_items(toolbox_id)
-        return JSONResponse({**toolbox, "items": items})
-
-    @app.post("/v1/toolboxes/{toolbox_id}/items")
-    async def add_toolbox_item(request: Request, toolbox_id: str) -> Response:
-        if not verify_admin_request(request):
-            return unauthorized_response()
-        body = await _json_body(request)
-        if isinstance(body, JSONResponse):
-            return body
-        service_id = body.get("service_id")
-        if not isinstance(service_id, str):
-            return api_error("validation_failed", "service_id is required", status_code=422)
-        if await request.app.state.repository.get_mcp_service(service_id) is None:
-            return not_found("mcp_service")
-        item = await request.app.state.repository.add_toolbox_item(
-            toolbox_id, service_id, enabled=bool(body.get("enabled", True))
-        )
-        await _publish_list_changed(
-            request.app,
-            reason="toolbox_item.upsert",
-            resource_id=item.get("id"),
-            categories=("tools",),
-        )
-        return JSONResponse(item, status_code=201)
-
-    @app.patch("/v1/toolboxes/{toolbox_id}/items/{item_id}")
-    async def patch_toolbox_item(request: Request, toolbox_id: str, item_id: str) -> Response:
-        if not verify_admin_request(request):
-            return unauthorized_response()
-        body = await _json_body(request)
-        if isinstance(body, JSONResponse):
-            return body
-        item = await request.app.state.repository.update_toolbox_item(item_id, enabled=bool(body.get("enabled", True)))
-        if item is None or item["toolbox_id"] != toolbox_id:
-            return not_found("toolbox_item")
-        await _publish_list_changed(
-            request.app,
-            reason="toolbox_item.update",
-            resource_id=item_id,
-            categories=("tools",),
-        )
-        return JSONResponse(item)
-
-    @app.delete("/v1/toolboxes/{toolbox_id}/items/{item_id}")
-    async def delete_toolbox_item(request: Request, toolbox_id: str, item_id: str) -> Response:
-        if not verify_admin_request(request):
-            return unauthorized_response()
-        await request.app.state.repository.delete_toolbox_item(item_id)
-        await _publish_list_changed(
-            request.app,
-            reason="toolbox_item.delete",
-            resource_id=item_id,
-            categories=("tools",),
-        )
-        return accepted({"id": item_id, "status": "deleted"})
-
-    @app.get("/v1/playground/tools/list")
-    async def playground_tools_list(request: Request) -> Response:
-        if not verify_admin_request(request):
-            return unauthorized_response()
-        session_id = request.headers.get("Mcp-Session-Id")
-        try:
-            result = await _refresh_tools(
-                request.app,
-                request_id="playground-tools-list",
-                protocol_version=request.headers.get("MCP-Protocol-Version"),
-                session_id=session_id,
-                correlation_id_value=correlation_id(request),
-            )
-            return JSONResponse({"items": result.get("tools", []), "next_cursor": result.get("nextCursor")})
-        except DownstreamMcpError:
-            return JSONResponse({"items": [], "next_cursor": None})
-
-    @app.post("/v1/playground/tools/call")
-    async def playground_tools_call(request: Request) -> Response:
-        if not verify_admin_request(request):
-            return unauthorized_response()
-        body = await _json_body(request)
-        if isinstance(body, JSONResponse):
-            return body
-        exposed_name = body.get("exposed_name") or body.get("name")
-        if not isinstance(exposed_name, str):
-            return api_error("validation_failed", "exposed_name is required", status_code=422)
-        payload = {
-            "jsonrpc": "2.0",
-            "id": body.get("request_id") or "playground-call",
-            "method": "tools/call",
-            "params": {"name": exposed_name, "arguments": body.get("arguments") if isinstance(body.get("arguments"), dict) else {}},
-        }
-        return JSONResponse(await _handle_tools_call(request.app, payload, request))
-
-    @app.get("/v1/tool-invocations")
-    async def list_tool_invocations(request: Request, limit: int = 20) -> Response:
-        if not verify_admin_request(request):
-            return unauthorized_response()
-        items = await request.app.state.repository.recent_invocations(limit=max(1, min(limit, 100)))
-        return JSONResponse({"items": items, "next_cursor": None})
-
-    @app.get("/v1/audit-logs")
-    async def list_audit_logs(
-        request: Request,
-        limit: int = 20,
-        action: str | None = None,
-        resource_type: str | None = None,
-    ) -> Response:
-        if not verify_admin_request(request):
-            return unauthorized_response()
-        items = await request.app.state.repository.recent_audit_logs(
-            limit=max(1, min(limit, 100)),
-            action=action,
-            resource_type=resource_type,
-        )
-        return JSONResponse({"items": items, "next_cursor": None})
-
-    @app.get("/v1/jobs/{job_id}")
-    async def get_job(request: Request, job_id: str) -> Response:
-        if not verify_admin_request(request):
-            return unauthorized_response()
-        job = await request.app.state.repository.get_job(job_id)
-        if job is None:
-            return not_found("job")
-        return JSONResponse(job)
+    register_admin_meta_routes(
+        app,
+        verify_admin_request=verify_admin_request,
+        unauthorized_response=unauthorized_response,
+        api_error=api_error,
+        not_found=not_found,
+        request_ip=request_ip,
+        correlation_id=correlation_id,
+    )
 
     return app
 

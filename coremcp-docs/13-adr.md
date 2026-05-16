@@ -124,7 +124,7 @@ Consequences:
 
 ## ADR-008: No Stdio Hosting
 
-Status: Accepted
+Status: Superseded by ADR-039
 
 Decision:
 stdio MCP 직접 호스팅 안 함. Remote HTTP만 등록 가능.
@@ -705,6 +705,97 @@ Consequences:
 - service registration/capability scan은 관련 capability를 발견하면 경고하되, 자동으로 활성화하지 않는다.
 - 외부 LLM API dependency를 추가하지 않는다. CoreMCP는 gateway이며 LLM service가 아니다.
 - 구현자가 bidirectional RPC를 추가하려면 본 ADR을 Amended/Superseded로 바꾸고 위 opt-in 조건을 먼저 충족해야 한다.
+
+---
+
+## ADR-039: STDIO Transport with Command Allowlist
+
+Status: Accepted
+
+Decision:
+CoreMCP는 personal gateway scope에서 STDIO downstream MCP를 지원하되, `stdio_command`는 basename allowlist를 통과해야 한다. 기본 allowlist는 `npx,uvx,python,python3,node,docker,deno`이며 `COREMCP_STDIO_ALLOWED_COMMANDS`로 운영자가 확장할 수 있다.
+
+적용 지점:
+- `/v1/mcp-services` create/update validation
+- runtime STDIO client construction
+- audit action `service.stdio_command_rejected`
+
+Rationale:
+초기 ADR-008은 stdio 직접 호스팅을 금지했지만, CoreMCP가 multi-MCP personal gateway로 발전하면서 community MCP 흡수를 위해 STDIO transport가 필요해졌다. 다만 STDIO는 host process 실행면을 만들기 때문에 absolute path 검증만으로는 부족하다. LiteLLM MCP management endpoint의 command injection 계열 취약 사례처럼 attacker-controlled command/args가 preview 또는 management path로 들어오는 위험을 줄이려면 command allowlist가 defense-in-depth로 필요하다.
+
+Consequences:
+- 기본 설정에서 `/bin/sh`, `bash`, `zsh`, `curl` 같은 shell/downloader command는 차단된다.
+- 운영자가 필요한 runtime을 추가하려면 command basename만 `COREMCP_STDIO_ALLOWED_COMMANDS`에 명시한다.
+- 거부 응답과 audit에는 full path/args/env를 남기지 않고 basename과 reason만 기록한다.
+- STDIO는 여전히 admin-controlled 기능이며, env sanitize, process cap, idle timeout, crash-state persistence와 함께 사용한다.
+- macOS sandbox/container isolation은 별도 ADR 전까지 장기 backlog다.
+
+---
+
+## ADR-040: Plugin Hook Failure Policy = Fail Closed
+
+Status: Accepted
+
+Decision:
+CoreMCP의 in-process Plugin Framework는 기본 empty registry로 동작하며, plugin hook 예외가 발생하면 해당 `tools/call`을 fail-closed 처리한다.
+
+정책:
+- `before_tool_call` 실패: downstream 호출 전에 차단한다.
+- `after_tool_response` 실패: downstream 결과를 client에 전달하지 않고 차단한다.
+- client 응답은 JSON-RPC protocol error가 아니라 tool-level `isError=true` 결과로 반환한다.
+- audit action은 `plugin.error`를 사용한다.
+- audit metadata에는 `tool`, `plugin_name`, `stage`, `error_type`만 남긴다.
+- raw tool arguments/result는 audit/log에 저장하지 않는다.
+
+Rationale:
+Plugin은 redaction, deny-list, policy enforcement처럼 trust boundary에 가까운 위치에서 실행될 수 있다. Plugin 실패 시 fail-open으로 downstream 호출이나 미검증 결과 전달을 계속하면 redaction 우회 또는 policy bypass가 될 수 있다. 반대로 unhandled exception으로 500을 내면 MCP client 경험과 invocation audit가 불안정해진다. 따라서 fail-closed tool error + sanitized audit를 기본 정책으로 고정한다.
+
+Consequences:
+- 잘못된 plugin은 해당 tool call을 차단하므로 운영자는 audit에서 `plugin.error`를 확인하고 plugin을 수정/비활성화해야 한다.
+- Plugin failure는 downstream failure가 아니므로 circuit breaker failure로 기록하지 않는다.
+- `after_tool_response` 실패는 downstream 호출 자체는 성공한 것으로 간주하지만, client에는 결과를 반환하지 않는다.
+- 외부 plugin loading과 built-in plugin 도입은 별도 dev-plan과 보안 검토 전까지 추가하지 않는다.
+
+---
+
+## ADR-041: Plugin Built-in Adoption Guardrails
+
+Status: Accepted
+
+Decision:
+CoreMCP는 Plugin Framework를 closed-by-default boundary로 유지한다. Built-in plugin을 도입하기 전에는 plugin별 ADR 또는 dev-plan phase에서 다음 조건을 먼저 만족해야 한다.
+
+선행 조건:
+- **default-off**: built-in plugin은 기본 비활성 상태로 추가한다.
+- **allowlist activation**: 활성화 가능한 plugin 이름과 hook stage를 명시적으로 allowlist한다.
+- **fail-closed inheritance**: ADR-040의 `PluginExecutionError` + tool-level `isError=true` 정책을 그대로 따른다.
+- **no raw payload persistence**: raw tool arguments/result, resource contents, prompt messages를 audit/log/debug trace에 저장하지 않는다.
+- **redaction-first audit**: audit metadata는 plugin name, stage, decision, reason code, error type 같은 구조화된 최소 정보만 포함한다.
+- **deterministic order**: 여러 plugin이 활성화될 경우 실행 순서와 short-circuit 규칙을 테스트로 고정한다.
+- **scope boundary**: 외부 plugin loading, dynamic Python import, network fetch, marketplace/plugin registry는 별도 ADR 전까지 금지한다.
+
+예외 처리 정책:
+- built-in plugin은 직접 임의 exception을 밖으로 노출하지 않고 `PluginExecutionError`로 감싼다.
+- client 응답의 reason은 stable code만 사용하고 Python exception message, stack trace, raw payload fragment는 노출하지 않는다.
+- audit에는 `plugin_name`, `stage`, `decision`, `reason_code`, `error_type`만 남긴다.
+- plugin error는 downstream health/circuit breaker 실패로 기록하지 않는다.
+- plugin이 redaction/policy 판단을 완료하지 못하면 fail-closed가 기본이다.
+
+Hook 범위 정책:
+- 현재 안정화 단계의 hook 적용 범위는 `tools/call`로 제한한다.
+- `resources/read`, `prompts/get`은 raw content와 prompt message를 직접 다루므로 built-in plugin별 보안 ADR과 전용 테스트가 생기기 전까지 hook 확장을 보류한다.
+- hook 범위를 넓히는 경우 content size limit, redaction ordering, audit minimization, idempotency/cache 상호작용을 먼저 테스트로 고정한다.
+- Plugin Framework는 personal gateway 내부 확장점이지 SaaS plugin marketplace가 아니다.
+
+Rationale:
+Plugin은 도구 호출 경계에서 request/response를 관찰하거나 수정할 수 있으므로 작은 built-in이라도 policy bypass, data retention, prompt injection, credential exposure 위험을 만든다. 현재 CoreMCP는 personal gateway이며 SaaS plugin ecosystem이 아니므로, built-in plugin은 기능 확장보다 안정성과 명시적 운영 제어를 우선해야 한다.
+
+Consequences:
+- 첫 built-in plugin을 추가하려면 본 ADR의 선행 조건을 dev-plan 체크리스트에 포함한다.
+- Plugin hook 범위를 `resources/read`, `prompts/get` 등으로 넓힐 경우 raw content 보존 금지와 fail-closed 동작을 먼저 테스트한다.
+- built-in plugin 도입 전까지 resources/prompts hook은 의도적으로 비활성 상태를 유지한다.
+- 외부 plugin loading은 personal scope 안정화 이후에도 기본 제외 범위로 유지한다.
+- Plugin 관련 보안 회귀 테스트는 `tests/test_plugins.py` 또는 해당 hook 통합 테스트에 추가한다.
 
 ---
 ## Superseded / Future Migration

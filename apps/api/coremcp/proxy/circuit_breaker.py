@@ -4,10 +4,12 @@ import time
 from dataclasses import dataclass
 from typing import Literal
 
+from coremcp.errors import CoreMcpRuntimeError
+
 CircuitBreakerState = Literal["closed", "open", "half-open"]
 
 
-class CircuitOpenError(RuntimeError):
+class CircuitOpenError(CoreMcpRuntimeError):
     """Raised when a downstream service circuit is open."""
 
     def __init__(self, service_id: str, retry_after_seconds: float | None = None) -> None:

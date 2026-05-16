@@ -1,8 +1,9 @@
-"""Public FastAPI application factory boundary.
+"""Public FastAPI application factory import boundary.
 
-`coremcp.main` still owns route registration during the transition, but new
-callers should import from this module so route modules can be split without
-changing external imports again.
+CoreMCP keeps the concrete factory in ``coremcp.main`` while route and MCP
+handler implementations live in ``coremcp.api`` / ``coremcp.mcp`` modules.
+External callers should import from this module so future internal moves do not
+change the public application factory path again.
 """
 
 from __future__ import annotations

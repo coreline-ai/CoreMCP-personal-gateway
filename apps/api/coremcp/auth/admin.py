@@ -4,12 +4,13 @@ import secrets
 import tempfile
 from pathlib import Path
 
+from coremcp.errors import CoreMcpRuntimeError
 from coremcp.settings import Settings
 
 ADMIN_TOKEN_PREFIX = "cmcp_admin_"
 
 
-class AdminTokenFileError(RuntimeError):
+class AdminTokenFileError(CoreMcpRuntimeError):
     pass
 
 

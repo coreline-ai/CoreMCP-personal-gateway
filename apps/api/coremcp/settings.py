@@ -11,6 +11,7 @@ DEFAULT_CORS_ALLOWED_ORIGINS = (
     "http://127.0.0.1:3000,"
     "http://127.0.0.1:3003"
 )
+DEFAULT_STDIO_ALLOWED_COMMANDS = "npx,uvx,python,python3,node,docker,deno"
 
 
 class Settings(BaseSettings):
@@ -54,6 +55,10 @@ class Settings(BaseSettings):
     )
     stdio_default_idle_timeout_seconds: int = Field(
         default=300, alias="COREMCP_STDIO_DEFAULT_IDLE_TIMEOUT_SECONDS"
+    )
+    stdio_allowed_commands: str = Field(
+        default=DEFAULT_STDIO_ALLOWED_COMMANDS,
+        alias="COREMCP_STDIO_ALLOWED_COMMANDS",
     )
     auth_rate_limit_per_minute: int = Field(default=60, alias="COREMCP_AUTH_RATE_LIMIT_PER_MINUTE")
     mcp_rate_limit_per_minute: int = Field(default=120, alias="COREMCP_MCP_RATE_LIMIT_PER_MINUTE")
@@ -105,6 +110,14 @@ class Settings(BaseSettings):
     @property
     def cors_allowed_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_allowed_origins.split(",") if origin.strip()]
+
+    @property
+    def stdio_allowed_command_set(self) -> set[str]:
+        return {
+            Path(command.strip()).name
+            for command in self.stdio_allowed_commands.split(",")
+            if command.strip()
+        }
 
 
 @lru_cache

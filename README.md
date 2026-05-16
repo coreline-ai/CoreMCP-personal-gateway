@@ -66,14 +66,14 @@ CoreMCP는 본인 1명이 Mac mini에서 운영하는 protected MCP gateway다. 
 
 **한 줄 가치**: AI 클라이언트마다 MCP를 따로 등록하지 않고, 한 곳에 모아 어디서나 동일한 도구함을 쓴다.
 
-### Implementation Status — 2026-05-15
+### Implementation Status — 2026-05-16
 
 - Root monorepo scaffold, `apps/api`, `apps/fake-mcp`, `apps/web`, `packages/*`, `infra/*`가 생성되었습니다.
 - P1 backend core는 Alembic 단일 schema source, client token DB hash, service registry, toolbox catalog, 실제 Fernet/Keychain credential vault, SSRF guard, validation, DB 기반 `/mcp tools/list/call`까지 구현되었습니다.
 - OAuth optional flow는 `AUTH_MODE=oauth`에서 DCR/CIMD, authorize/code, token, JWKS, refresh rotation, revoke/introspect까지 로컬 테스트로 고정했습니다. RSA signing key는 vault reference로 보관하고, DCR client, authorization code hash, refresh token hash/family, revoked access JTI, CIMD cache는 SQLite에 영속화됩니다.
 - OAuth 미지원 client용 one-time connection token issue/exchange와 기본 off Prometheus `/metrics` endpoint를 구현하고 API 회귀 테스트로 고정했습니다.
 - 개인 도구함 tool-level override(`hidden`, `visible_only`, `callable`)와 preset(`readonly`, `dangerous_off`, `full_access`), client/OAuth scope enforcement, schema drift detail, `X-Request-ID` 전파, policy deny/audit/invocation 관측성을 구현하고 API 회귀 테스트로 고정했습니다.
-- HTTP/STDIO service transport foundation을 추가했습니다. `transport_type=stdio` service는 command/args/env/cwd metadata로 등록·검증·호출 가능하며, CoreMCP admin/client/Authorization 계열 env는 저장/전달하지 않습니다. STDIO runtime/crash snapshot은 `mcp_services` 컬럼에 영속화합니다.
+- HTTP/STDIO service transport foundation을 추가했습니다. `transport_type=stdio` service는 command/args/env/cwd metadata로 등록·검증·호출 가능하며, `COREMCP_STDIO_ALLOWED_COMMANDS` command allowlist와 CoreMCP admin/client/Authorization 계열 env 차단을 적용합니다. STDIO runtime/crash snapshot은 `mcp_services` 컬럼에 영속화합니다.
 - MCP `resources/list`, `resources/read`, `resources/templates/list`, `prompts/list`, `prompts/get` live proxy를 추가해 tools-only gateway 한계를 줄였습니다. `resources/read` 대형 text/blob는 client context 보호를 위해 CoreMCP metadata와 함께 truncate하며, active service가 있을 때는 catalog에 등록된 URI만 라우팅해 cross-service first-hit 충돌을 막습니다.
 - Multi-MCP 안정화를 위해 downstream tool 이름은 항상 `<service_slug>.<tool>` namespace로 노출하고, HTTP downstream이 발급한 `Mcp-Session-Id`는 service별로 TTL 관리하며 client session id를 downstream에 그대로 전달하지 않습니다. Service update/delete, TTL 만료, circuit-open 전환 시 downstream session cache를 무효화합니다. Downstream `notifications/{tools,resources,prompts}/list_changed`는 CoreMCP SSE로 fan-in/fan-out됩니다.
 - 동일 resource URI를 여러 service가 노출하면 가장 최근 validation service의 resource만 active로 유지하고 이전 active row는 `deprecated` shadow 처리 및 `resource.shadow` audit로 기록합니다.
@@ -99,10 +99,17 @@ CoreMCP는 본인 1명이 Mac mini에서 운영하는 protected MCP gateway다. 
 | 외부환경 검증 필요 | actual macOS reboot recovery, Tailscale CLI install/login/Serve/ACL smoke, real external OAuth client compatibility, 실제 모바일 visual QA, long soak — `make external-env-validate`, `make mobile-qa-checklist`, `make soak-check`로 운영 host에서 결과 기록 |
 | 선택 Polish | Web Admin UX polish, 관측 dashboard/metric tuning, proactive health probe tuning은 지속 개선 대상 |
 
-### Stabilization Batch Notes — 2026-05-14
+### Stabilization Batch Notes — 2026-05-16
 
-- 권장 commit split은 `dev-plan/implement_20260514_224500.md`에 기록되어 있습니다. 이 문서/code patch는 commit split을 **계획만** 하며, 사용자가 `commit/push`를 명시 요청하기 전에는 commit을 만들지 않습니다.
-- STDIO resource limits, admin/MCP rate limit, CLI import hardening, Multi-MCP namespace/session/resource routing/P1 운영성 hardening은 통합 완료했습니다. 최신 API 검증: `cd apps/api && uv run pytest -q` **PASS** (144 passed). 이전 전체 smoke 기준: `make test` **PASS** (API 144 + fake-mcp 12 + demo-mcp-suite 21), `pnpm lint && pnpm build && pnpm test`, `make ui-smoke`, `git diff --check` **PASS**.
+- 권장 commit split은 `dev-plan/implement_20260514_224500.md` 및 후속 dev-plan에 기록되어 있습니다. 이 문서/code patch는 commit split을 **계획만** 하며, 사용자가 `commit/push`를 명시 요청하기 전에는 commit을 만들지 않습니다.
+- 2026-05-15/16 코드 레벨 안정화 사이클에서 다음 항목이 추가 통합되었습니다.
+  - `coremcp.main` 의 라우트 등록을 `coremcp.api.{admin_meta,connections,mcp_endpoint,meta,oauth,playground,services,toolboxes}` 와 `coremcp.mcp.{dispatcher,tools_handlers,resources_handlers,prompts_handlers,catalog,rpc,session_proxy,capabilities,notifications,args_validator}` 로 분리해 main.py 의 god-file 패턴을 해소했습니다 (main.py 라우트 정의 0건).
+  - `handle_tools_call` 단일 함수를 `_check_tool_service_resilience` / `_execute_downstream_tool_call` orchestrator 패턴으로 분해해 plugin / circuit breaker / idempotency / record 흐름의 가독성과 단위 테스트성을 확보했습니다.
+  - `Repository` 를 `ConnectionsRepositoryMixin` / `AuditRepositoryMixin` / `JobsRepositoryMixin` 분리로 mixin 화하고, 도메인별 facade(`db.repos.{services,catalog,credentials,connections,toolbox,audit,jobs}`) 를 새 라우트에서 점진 채택했습니다.
+  - `coremcp.errors` 의 `CoreMcpError` / `CoreMcpValueError` / `CoreMcpRuntimeError` 공통 base 계층에 9개 도메인 예외를 모두 상속시켜 일관 catch 와 builtin 호환성을 양립시켰습니다.
+  - `OAuthService.shutdown()` 을 lifespan teardown 에 연결하고, service mutation / circuit-open 시 `forget_downstream_session` 으로 downstream session cache 를 즉시 무효화합니다. TTL 만료는 reaper 가 별도 청소합니다.
+  - `app_factory.create_app` 을 공개 import 경계로 명시하고 transition docstring 을 갱신했습니다.
+- 최신 API 검증: `cd apps/api && uv run pytest -q` **PASS** (159 passed). 최신 전체 smoke 기준: `make test` **PASS** (API 159 + fake-mcp 12 + demo-mcp-suite 21), 이전 검증 기준 `pnpm lint && pnpm build && pnpm test`, `make ui-smoke`, `git diff --check` **PASS**.
 - 외부환경 검증 대표 명령:
   - `make external-env-validate`
   - `COREMCP_EXTERNAL_API_URL=https://<host> COREMCP_EXTERNAL_WEB_URL=https://<host> make external-env-validate`
@@ -267,30 +274,71 @@ Codex CLI exec ──▶  /mcp tools/call
 CoreMCP/
 ├── README.md                       # 본 문서
 ├── CLAUDE.md                       # LLM coding agent 가이드
+├── AGENTS.md                       # 프로젝트별 agent 작업 규칙
 ├── apps/
-│   ├── api/                        # FastAPI backend (Phase P0~)
+│   ├── api/                        # FastAPI backend
 │   │   ├── coremcp/
-│   │   │   ├── main.py             # FastAPI entry
-│   │   │   ├── auth/               # admin / client / oauth
-│   │   │   ├── mcp_gateway/        # /mcp dispatcher + SSE
-│   │   │   ├── registry/           # catalog normalizer + scanner
-│   │   │   ├── credentials/        # vault backends
-│   │   │   ├── db/                 # SQLite repository + SQLAlchemy session
-│   │   │   ├── proxy/              # downstream executor
-│   │   │   └── smoke.py            # in-process smoke test
-│   │   └── alembic/                # migration
-│   ├── web/                        # Next.js admin (Phase P2~)
-│   │   └── app/                    # Dashboard / Services / Logs
-│   └── fake-mcp/                   # 테스트용 downstream
+│   │   │   ├── app_factory.py      # 공개 create_app 경계 (외부 import 진입점)
+│   │   │   ├── main.py             # lifespan + middleware + helper 보유 (라우트 정의 0)
+│   │   │   ├── cli.py              # coremcp CLI (doctor / service / tool / token / export)
+│   │   │   ├── errors.py           # CoreMcpError / *ValueError / *RuntimeError 공통 계층
+│   │   │   ├── settings.py         # Pydantic Settings (환경변수 정의)
+│   │   │   ├── logging.py          # structlog 설정 + redact processor
+│   │   │   ├── refresh.py          # launchd 주기 catalog refresh entry
+│   │   │   ├── smoke.py            # in-process smoke test
+│   │   │   ├── api/                # FastAPI 라우트 (도메인별 분리)
+│   │   │   │   ├── meta.py             # /health, /live, /ready, /metrics
+│   │   │   │   ├── admin_meta.py       # /v1/me, /settings, audit-logs, invocations
+│   │   │   │   ├── mcp_endpoint.py     # /mcp POST / GET (SSE) / DELETE
+│   │   │   │   ├── services.py         # /v1/mcp-services CRUD + validate + tools/creds
+│   │   │   │   ├── toolboxes.py        # /v1/toolboxes 및 items / overrides
+│   │   │   │   ├── connections.py      # external-connections + client-tokens + one-time
+│   │   │   │   ├── playground.py       # /v1/playground/*
+│   │   │   │   └── oauth.py            # /.well-known/* + /oauth/*
+│   │   │   ├── mcp/                # MCP method 처리 (라우트와 분리)
+│   │   │   │   ├── dispatcher.py       # JSON-RPC method 분기
+│   │   │   │   ├── rpc.py              # downstream JSON-RPC 공통 helper
+│   │   │   │   ├── tools_handlers.py   # tools/list, tools/call orchestrator
+│   │   │   │   ├── resources_handlers.py # resources/list/templates/list/read
+│   │   │   │   ├── prompts_handlers.py # prompts/list, prompts/get
+│   │   │   │   ├── catalog.py          # 통합 카탈로그 helper
+│   │   │   │   ├── args_validator.py   # JSON Schema 인자 검증
+│   │   │   │   ├── capabilities.py     # 서비스 capability union → initialize 응답
+│   │   │   │   ├── notifications.py    # downstream notification fan-in/out
+│   │   │   │   └── session_proxy.py    # downstream session cache + TTL/forget
+│   │   │   ├── mcp_gateway/        # SessionStore / ListChangedEventBus / Idempotency / Reaper / Protocol
+│   │   │   ├── plugins/            # 닫힌 기본의 plugin framework (before/after tool call hook)
+│   │   │   ├── auth/               # admin / client_tokens / oauth / rate_limit
+│   │   │   ├── registry/           # catalog normalizer + tool poisoning scanner
+│   │   │   ├── credentials/        # macOS Keychain + Fernet vault backend
+│   │   │   ├── proxy/              # downstream HTTP/STDIO client + circuit breaker + SSRF
+│   │   │   └── db/                 # Repository mixin + repos/* 도메인 facade + migrations
+│   │   │       ├── repository.py             # 베이스 + mixin 결합 (Connections / Audit / Jobs)
+│   │   │       ├── repository_connections.py # 연결/토큰 도메인 mixin
+│   │   │       ├── repository_audit.py       # audit/invocation mixin
+│   │   │       ├── repository_jobs.py        # 잡 mixin
+│   │   │       ├── repository_facade.py      # 도메인 facade 묶음
+│   │   │       ├── repository_constants.py   # LOCAL_USER_ID / DEFAULT_TOOLBOX_ID
+│   │   │       ├── repository_ids.py         # new_id prefix helper
+│   │   │       ├── migrations.py             # Alembic upgrade("head") 단일 진입점
+│   │   │       └── repos/                    # services / catalog / credentials / connections / toolbox / audit / jobs
+│   │   └── alembic/                # 마이그레이션 (0001 ~ 0008)
+│   ├── web/                        # Next.js 15 admin (App Router)
+│   │   ├── app/                    # Dashboard / Services / Toolbox / Clients / Playground / Logs / Settings
+│   │   ├── components/admin/       # admin-shell, sections/*, icons, tool-icon
+│   │   └── middleware.ts           # CSP / nonce / 보안 헤더
+│   ├── fake-mcp/                   # 테스트용 downstream MCP (단일 server)
+│   └── demo-mcp-suite/             # 8개 가상 demo MCP endpoint
 ├── packages/
 │   ├── shared-types/
 │   └── client-profiles/
 ├── infra/
 │   ├── launchd/                    # api/web/backup/logrotate/refresh plists
 │   ├── docker/                     # 옵션 Postgres/Redis
-│   └── scripts/                    # backup, restore, launchctl, log rotation, ops smoke
+│   └── scripts/                    # backup, restore, launchctl, log rotation, ops/web/ui-smoke
 ├── docs/
 │   └── design/                     # Web Admin design system + token assets
+├── dev-plan/                       # 단계별 개발 계획 (implement_YYYYMMDD_HHMMSS.md)
 ├── coremcp-docs/                   # 본 문서팩 (17 files, 정본)
 └── production_docs_donotuse/       # SaaS 청사진 (참고용 only)
 ```
@@ -408,14 +456,32 @@ SECRET_BACKEND=keychain                  # keychain | fernet
 # fernet:   headless 무인 운영 (FERNET_KEY_FILE 필요)
 FERNET_KEY_FILE=~/.coremcp/data/secrets.key
 
-# Downstream
-DOWNSTREAM_CONNECT_TIMEOUT_MS=3000
-DOWNSTREAM_READ_TIMEOUT_MS=30000
-DOWNSTREAM_MAX_BODY_MB=5
-DOWNSTREAM_MAX_REDIRECTS=0
+# Downstream HTTP
+COREMCP_DOWNSTREAM_TIMEOUT_SECONDS=35
+COREMCP_DOWNSTREAM_CONNECT_TIMEOUT_SECONDS=3
+COREMCP_DOWNSTREAM_READ_TIMEOUT_SECONDS=30
+COREMCP_DOWNSTREAM_MAX_RESPONSE_BYTES=1048576    # 1MB downstream 응답 cap
+COREMCP_MAX_REQUEST_BODY_BYTES=1048576           # 1MB inbound /mcp body cap
+COREMCP_INITIALIZE_DOWNSTREAM_TIMEOUT_SECONDS=2  # init 단계 별도 짧은 timeout
+COREMCP_DOWNSTREAM_SESSION_TTL_SECONDS=3600      # downstream Mcp-Session-Id 캐시 TTL
+
+# Service health probe
 COREMCP_SERVICE_HEALTH_PROBE_ENABLED=true
 COREMCP_SERVICE_HEALTH_PROBE_INTERVAL_SECONDS=60
 COREMCP_SERVICE_HEALTH_PROBE_TIMEOUT_SECONDS=2
+
+# Downstream STDIO transport (CVE-2026-30623 defense-in-depth)
+COREMCP_STDIO_ALLOWED_COMMANDS=npx,uvx,python,python3,node,docker,deno
+COREMCP_STDIO_MAX_CONCURRENT_PROCESSES=8
+COREMCP_STDIO_DEFAULT_IDLE_TIMEOUT_SECONDS=300
+
+# Rate limit (fixed-window, in-process)
+COREMCP_AUTH_RATE_LIMIT_PER_MINUTE=60      # OAuth /authorize/token/register/revoke
+COREMCP_MCP_RATE_LIMIT_PER_MINUTE=120      # /mcp 엔드포인트
+COREMCP_SERVICE_RATE_LIMIT_PER_MINUTE=120  # per-service (service_id 키)
+
+# Web Admin ↔ API (cross-origin)
+COREMCP_CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:3003,http://127.0.0.1:3000,http://127.0.0.1:3003
 
 # SSRF (ADR-033)
 COREMCP_SSRF_ALLOW_HOSTS=127.0.0.1,localhost  # fake-mcp/local MCP 개발용
@@ -424,6 +490,9 @@ COREMCP_SSRF_ALLOW_CIDRS=
 
 # Icons (06 §6.2)
 ICON_SVG_ENABLED=false                   # SVG XSS 방어 default
+
+# Observability (옵션)
+METRICS_ENABLED=false                    # true 시 Prometheus /metrics 노출
 ```
 
 전체 환경 변수는 [`coremcp-docs/02-trd.md`](./coremcp-docs/02-trd.md) §11 참조.

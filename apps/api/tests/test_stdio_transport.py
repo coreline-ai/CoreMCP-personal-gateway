@@ -9,7 +9,13 @@ from typing import Any
 
 import pytest
 
-from coremcp.proxy import DownstreamMcpError, DownstreamTimeoutError, DownstreamToolError, StdioMcpTransport
+from coremcp.proxy import (
+    DownstreamMcpError,
+    DownstreamTimeoutError,
+    DownstreamToolError,
+    StdioCommandNotAllowedError,
+    StdioMcpTransport,
+)
 
 
 SCRIPT = r'''
@@ -110,6 +116,18 @@ def stdio_script(tmp_path: Path) -> Path:
 
 async def _new_client(stdio_script: Path, **kwargs: Any) -> StdioMcpTransport:
     return StdioMcpTransport([sys.executable, str(stdio_script)], timeout=2.0, **kwargs)
+
+
+def test_stdio_transport_rejects_command_outside_allowlist(stdio_script: Path) -> None:
+    with pytest.raises(StdioCommandNotAllowedError) as exc_info:
+        StdioMcpTransport(
+            [sys.executable, str(stdio_script)],
+            timeout=2.0,
+            allowed_basenames={"npx"},
+        )
+
+    assert exc_info.value.basename == Path(sys.executable).name
+    assert "not allowed" in str(exc_info.value)
 
 
 @pytest.mark.asyncio

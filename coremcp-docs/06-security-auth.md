@@ -14,7 +14,8 @@
 5. 등록되는 downstream endpoint URL은 SSRF guard를 통과해야 한다.
 6. tool description은 prompt injection / tool poisoning 공격면이므로 scan한다.
 7. credential / token / Authorization 헤더는 로그에 redact한다.
-8. 단일 사용자라도 위 7개 원칙은 그대로 적용한다.
+8. STDIO downstream command는 allowlist를 통과해야 한다.
+9. 단일 사용자라도 위 원칙은 그대로 적용한다.
 
 ## 2. Auth Model
 
@@ -558,6 +559,35 @@ Error mapping 정책은 ADR-034 (Error Mapping = Protocol vs Tool Result Separat
 
 ---
 
+### 10.1 STDIO Command Allowlist
+
+STDIO transport는 host process 실행면을 만들기 때문에 다음 방어를 적용한다.
+
+| 방어 | 정책 |
+|---|---|
+| command path | absolute path만 허용 |
+| command basename | `COREMCP_STDIO_ALLOWED_COMMANDS` allowlist 통과 필요 |
+| 기본 allowlist | `npx,uvx,python,python3,node,docker,deno` |
+| env | CoreMCP admin/client token, Authorization 계열 key 저장/전달 금지 |
+| process 수 | `COREMCP_STDIO_MAX_CONCURRENT_PROCESSES` 기본 8 |
+| idle timeout | `COREMCP_STDIO_DEFAULT_IDLE_TIMEOUT_SECONDS` 기본 300초 |
+| audit | 거부 시 `service.stdio_command_rejected`, full path/args/env 기록 금지 |
+
+거부 예시:
+```text
+stdio_command=/bin/sh
+→ 422 validation_failed
+→ audit metadata: { command_basename: "sh", reason: "stdio_command basename is not allowed: sh (...)" }
+```
+
+운영자가 추가 runtime을 써야 하면 basename만 명시한다.
+
+```bash
+COREMCP_STDIO_ALLOWED_COMMANDS=npx,uvx,python,python3,node,docker,deno,custom-mcp
+```
+
+---
+
 ## 11. Audit Events
 
 다음 액션을 audit_logs에 기록:
@@ -567,6 +597,7 @@ user.token_rotate
 service.create
 service.update
 service.delete
+service.stdio_command_rejected
 service.validate
 service.refresh_tools
 credential.create

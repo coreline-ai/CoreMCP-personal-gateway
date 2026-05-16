@@ -18,6 +18,7 @@ from jwt.algorithms import RSAAlgorithm
 from coremcp.auth.rate_limit import FixedWindowRateLimiter
 from coremcp.credentials import CredentialVault
 from coremcp.db import Repository, new_id
+from coremcp.errors import CoreMcpValueError
 from coremcp.proxy import UrlSafetyChecker, UrlSafetyError
 from coremcp.settings import Settings
 
@@ -30,7 +31,7 @@ CIMD_RATE_LIMIT_WINDOW_SECONDS = 3600
 REFRESH_TOKEN_TTL_SECONDS = 90 * 24 * 3600
 
 
-class OAuthError(ValueError):
+class OAuthError(CoreMcpValueError):
     def __init__(
         self,
         code: str,
@@ -114,6 +115,17 @@ class OAuthService:
             raise RuntimeError("OAuth signing key must be an RSA private key")
         self._private_key = loaded_key
         self.kid = kid
+
+    async def shutdown(self) -> None:
+        """Drop in-memory signing material on API shutdown.
+
+        Persisted OAuth keys and token records remain in SQLite/vault. This
+        method only clears process-local cryptographic state so restart and
+        test lifecycles have an explicit teardown contract.
+        """
+
+        self._private_key = None
+        self.kid = None
 
     async def _store_private_key_pem(self, *, kid: str, pem: str) -> str:
         if self.vault is None:
