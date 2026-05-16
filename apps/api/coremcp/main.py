@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 
 from coremcp.auth import (
@@ -1656,6 +1657,8 @@ def create_app(settings: Settings | None = None, http_client: httpx.AsyncClient 
         expose_headers=["Mcp-Session-Id", "X-Request-ID"],
         max_age=600,
     )
+    # OAuth metadata derives issuer/resource from request host; reject untrusted hosts early.
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_host_list)
 
     @app.middleware("http")
     async def request_id_middleware(request: Request, call_next):

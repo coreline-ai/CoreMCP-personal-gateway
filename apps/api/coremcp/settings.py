@@ -12,6 +12,7 @@ DEFAULT_CORS_ALLOWED_ORIGINS = (
     "http://127.0.0.1:3003"
 )
 DEFAULT_STDIO_ALLOWED_COMMANDS = "npx,uvx,python,python3,node,docker,deno"
+DEFAULT_ALLOWED_HOSTS = "localhost,127.0.0.1,::1,testserver"
 
 
 class Settings(BaseSettings):
@@ -68,6 +69,7 @@ class Settings(BaseSettings):
         default=DEFAULT_CORS_ALLOWED_ORIGINS,
         alias="COREMCP_CORS_ALLOWED_ORIGINS",
     )
+    allowed_hosts: str = Field(default=DEFAULT_ALLOWED_HOSTS, alias="COREMCP_ALLOWED_HOSTS")
     auth_mode: str = Field(default="static_bearer", alias="AUTH_MODE")
     expose_resource_metadata_in_static_mode: bool = Field(
         default=False, alias="EXPOSE_RESOURCE_METADATA_IN_STATIC_MODE"
@@ -110,6 +112,10 @@ class Settings(BaseSettings):
     @property
     def cors_allowed_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_allowed_origins.split(",") if origin.strip()]
+
+    @property
+    def allowed_host_list(self) -> list[str]:
+        return [host.strip() for host in self.allowed_hosts.split(",") if host.strip()]
 
     @property
     def stdio_allowed_command_set(self) -> set[str]:
