@@ -91,7 +91,7 @@ COREMCP_UI_SMOKE_WEB_URL ?= http://localhost:3003
 COREMCP_UI_SMOKE_API_URL ?= $(API_URL)
 COREMCP_UI_SMOKE_OUT_DIR ?= dev-plan/.artifacts/ui-smoke
 
-.PHONY: ui-smoke-install ui-smoke
+.PHONY: ui-smoke-install ui-smoke ui-smoke-p0
 
 ui-smoke-install:
 	cd apps/api && uv run python -m playwright install chromium
@@ -101,3 +101,10 @@ ui-smoke:
 	@curl -fsS "$(COREMCP_UI_SMOKE_API_URL)/ready" | grep -Eq '"status"[[:space:]]*:[[:space:]]*"ready"'
 	@curl -fsSL -o /dev/null "$(COREMCP_UI_SMOKE_WEB_URL)"
 	@cd apps/api && COREMCP_UI_SMOKE_WEB_URL="$(COREMCP_UI_SMOKE_WEB_URL)" COREMCP_UI_SMOKE_API_URL="$(COREMCP_UI_SMOKE_API_URL)" COREMCP_ADMIN_TOKEN_FILE="$(ADMIN_TOKEN_FILE)" COREMCP_UI_SMOKE_OUT_DIR="$(COREMCP_UI_SMOKE_OUT_DIR)" uv run python ../../infra/scripts/ui-smoke.py
+
+# Extended P0 verification — coremcp-docs/test-checklist.md §13 자동화 가능 항목 일괄 실행
+# (Health, Services S-01/02/04/05, Playground P-01 + read-only batch, Clients C-01,
+#  Settings ST-01, Logs L-01/02, NF-01/02/04/06/09, Web UI D-01/02/04/06/07, E2E-D)
+ui-smoke-p0:
+	@curl -fsS "$(COREMCP_UI_SMOKE_API_URL)/health" | grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"'
+	@cd apps/api && COREMCP_UI_SMOKE_WEB_URL="$(COREMCP_UI_SMOKE_WEB_URL)" COREMCP_UI_SMOKE_API_URL="$(COREMCP_UI_SMOKE_API_URL)" COREMCP_ADMIN_TOKEN_FILE="$(ADMIN_TOKEN_FILE)" COREMCP_UI_SMOKE_OUT_DIR="$(COREMCP_UI_SMOKE_OUT_DIR)" uv run python ../../infra/scripts/ui-smoke-p0.py
