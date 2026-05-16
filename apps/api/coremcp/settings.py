@@ -61,7 +61,7 @@ class Settings(BaseSettings):
         default=DEFAULT_STDIO_ALLOWED_COMMANDS,
         alias="COREMCP_STDIO_ALLOWED_COMMANDS",
     )
-    auth_rate_limit_per_minute: int = Field(default=60, alias="COREMCP_AUTH_RATE_LIMIT_PER_MINUTE")
+    auth_rate_limit_per_minute: int = Field(default=240, alias="COREMCP_AUTH_RATE_LIMIT_PER_MINUTE")
     mcp_rate_limit_per_minute: int = Field(default=120, alias="COREMCP_MCP_RATE_LIMIT_PER_MINUTE")
     service_rate_limit_per_minute: int = Field(default=120, alias="COREMCP_SERVICE_RATE_LIMIT_PER_MINUTE")
     downstream_session_ttl_seconds: int = Field(default=3600, alias="COREMCP_DOWNSTREAM_SESSION_TTL_SECONDS")
@@ -71,6 +71,8 @@ class Settings(BaseSettings):
     )
     allowed_hosts: str = Field(default=DEFAULT_ALLOWED_HOSTS, alias="COREMCP_ALLOWED_HOSTS")
     auth_mode: str = Field(default="static_bearer", alias="AUTH_MODE")
+    oauth_dcr_enabled: bool = Field(default=True, alias="COREMCP_OAUTH_DCR_ENABLED")
+    oauth_allowed_client_ids: str = Field(default="", alias="COREMCP_OAUTH_ALLOWED_CLIENT_IDS")
     expose_resource_metadata_in_static_mode: bool = Field(
         default=False, alias="EXPOSE_RESOURCE_METADATA_IN_STATIC_MODE"
     )
@@ -79,6 +81,7 @@ class Settings(BaseSettings):
     ssrf_allow_cidrs: str = Field(default="", alias="COREMCP_SSRF_ALLOW_CIDRS")
     allow_tailscale_downstream: bool = Field(default=False, alias="ALLOW_TAILSCALE_DOWNSTREAM")
     icon_svg_enabled: bool = Field(default=False, alias="ICON_SVG_ENABLED")
+    remote_tool_icons_enabled: bool = Field(default=False, alias="COREMCP_REMOTE_TOOL_ICONS_ENABLED")
     secret_backend: str = Field(default="keychain", alias="COREMCP_SECRET_BACKEND")
     secrets_file: Path = Field(default=Path("~/.coremcp/data/secrets.json"), alias="COREMCP_SECRETS_FILE")
     fernet_key_file: Path | None = Field(default=None, alias="FERNET_KEY_FILE")
@@ -123,6 +126,14 @@ class Settings(BaseSettings):
             Path(command.strip()).name
             for command in self.stdio_allowed_commands.split(",")
             if command.strip()
+        }
+
+    @property
+    def oauth_allowed_client_id_set(self) -> set[str]:
+        return {
+            client_id.strip()
+            for client_id in self.oauth_allowed_client_ids.split(",")
+            if client_id.strip()
         }
 
 

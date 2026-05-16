@@ -16,6 +16,7 @@ from coremcp.proxy import (
     StdioCommandNotAllowedError,
     StdioMcpTransport,
 )
+from coremcp.proxy.stdio import StdioArgvProfileNotAllowedError
 
 
 SCRIPT = r'''
@@ -128,6 +129,52 @@ def test_stdio_transport_rejects_command_outside_allowlist(stdio_script: Path) -
 
     assert exc_info.value.basename == Path(sys.executable).name
     assert "not allowed" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["npx", "@modelcontextprotocol/server-filesystem", "/tmp"],
+        ["uvx", "mcp-server-time"],
+        ["python", "server.py"],
+        ["python3", "-m", "mcp_server"],
+        ["node", "server.js"],
+        ["deno", "run", "--allow-read", "server.ts"],
+        ["docker", "run", "--rm", "example/mcp-server:latest"],
+    ],
+)
+def test_stdio_argv_profile_allows_common_server_commands(command: list[str]) -> None:
+    StdioMcpTransport(command, timeout=2.0, allowed_basenames={Path(command[0]).name})
+
+
+@pytest.mark.parametrize(
+    ("command", "expected_reason"),
+    [
+        (["python", "-c", "print('owned')"], "python inline code execution"),
+        (["python3", "-c", "print('owned')"], "python inline code execution"),
+        (["node", "-e", "console.log('owned')"], "node inline evaluation"),
+        (["node", "--eval=console.log('owned')"], "node inline evaluation"),
+        (["node", "-p", "process.env"], "node inline evaluation"),
+        (["deno", "eval", "console.log('owned')"], "deno eval"),
+        (["docker", "run", "--privileged", "example/mcp-server:latest"], "privileged mode"),
+        (["docker", "run", "--pid=host", "example/mcp-server:latest"], "host PID namespace"),
+        (["docker", "run", "--network=host", "example/mcp-server:latest"], "host network mode"),
+        (["docker", "run", "-v", "/tmp:/tmp", "example/mcp-server:latest"], "volume mounts"),
+        (["docker", "run", "--volume=/tmp:/tmp", "example/mcp-server:latest"], "volume mounts"),
+        (
+            ["docker", "run", "--mount", "type=bind,src=/var/run/docker.sock,target=/var/run/docker.sock", "image"],
+            "docker socket mounts",
+        ),
+    ],
+)
+def test_stdio_argv_profile_rejects_dangerous_command_specific_args(
+    command: list[str],
+    expected_reason: str,
+) -> None:
+    with pytest.raises(StdioArgvProfileNotAllowedError) as exc_info:
+        StdioMcpTransport(command, timeout=2.0, allowed_basenames={Path(command[0]).name})
+
+    assert expected_reason in str(exc_info.value)
 
 
 @pytest.mark.asyncio

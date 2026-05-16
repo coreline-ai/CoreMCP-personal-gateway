@@ -587,6 +587,10 @@ def _rate_limit_response(request: Request, *, route_kind: str, retry_after_secon
             details={"retry_after_seconds": int(retry_after)},
         )
     response.headers["Retry-After"] = retry_after
+    origin = request.headers.get("origin")
+    if origin and origin in request.app.state.settings.cors_allowed_origin_list:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
     return response
 
 

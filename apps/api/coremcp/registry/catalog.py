@@ -65,8 +65,12 @@ def normalize_icons(tool: dict[str, Any], settings: Settings) -> tuple[list[dict
         if not isinstance(src, str) or not src:
             warnings.append({"code": "icon_src_missing", "message": "icon.src is required"})
             continue
-        if not (src.startswith("https://") or src.startswith("data:image/")):
+        is_remote_https = src.startswith("https://")
+        if not (is_remote_https or src.startswith("data:image/")):
             warnings.append({"code": "icon_src_blocked", "message": "icon src must be https or data:image"})
+            continue
+        if is_remote_https and not settings.remote_tool_icons_enabled:
+            warnings.append({"code": "icon_remote_blocked", "message": "remote HTTPS icons are disabled"})
             continue
         if not isinstance(mime_type, str):
             if src.startswith("data:image/png"):

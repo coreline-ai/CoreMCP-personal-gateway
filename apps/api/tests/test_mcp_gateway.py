@@ -2839,6 +2839,34 @@ def test_svg_icons_are_blocked_by_default_but_png_icons_survive(tmp_path: Path):
     assert any(warning["code"] == "icon_svg_blocked" for warning in warnings)
 
 
+def test_remote_https_icons_require_explicit_opt_in(tmp_path: Path):
+    raw_tool = {
+        "name": "remote-icon",
+        "inputSchema": {"type": "object"},
+        "icons": [{"src": "https://example.test/icons/tool.png", "mimeType": "image/png"}],
+    }
+    tools, warnings = normalize_downstream_tools(
+        [raw_tool],
+        service_slug="icons",
+        settings=Settings(COREMCP_ADMIN_TOKEN_FILE=tmp_path / "missing-admin-token"),
+    )
+
+    assert tools[0]["icons_json"] == []
+    assert any(warning["code"] == "icon_remote_blocked" for warning in warnings)
+
+    allowed_tools, allowed_warnings = normalize_downstream_tools(
+        [raw_tool],
+        service_slug="icons",
+        settings=Settings(
+            COREMCP_ADMIN_TOKEN_FILE=tmp_path / "missing-admin-token",
+            COREMCP_REMOTE_TOOL_ICONS_ENABLED=True,
+        ),
+    )
+
+    assert allowed_tools[0]["icons_json"] == [{"src": "https://example.test/icons/tool.png", "mimeType": "image/png"}]
+    assert not any(warning["code"] == "icon_remote_blocked" for warning in allowed_warnings)
+
+
 def test_downstream_tool_names_with_dots_are_still_service_namespaced(tmp_path: Path):
     tools, warnings = normalize_downstream_tools(
         [{"name": "admin.echo", "inputSchema": {"type": "object"}}],
@@ -3450,13 +3478,17 @@ async def test_admin_rate_limit_rejects_without_token_leak(tmp_path: Path):
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
             first = await client.get("/v1/me", headers=auth_headers(leaked_token))
-            limited = await client.get("/v1/me", headers=auth_headers(leaked_token))
+            limited = await client.get(
+                "/v1/me",
+                headers={**auth_headers(leaked_token), "Origin": "http://localhost:3003"},
+            )
 
     assert first.status_code == 401
     assert limited.status_code == 429
     assert limited.json()["error"]["code"] == "rate_limited"
     assert leaked_token not in limited.text
     assert "Retry-After" in limited.headers
+    assert limited.headers["Access-Control-Allow-Origin"] == "http://localhost:3003"
 
 
 @pytest.mark.asyncio

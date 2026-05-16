@@ -52,6 +52,31 @@ def oauth_error_response(exc: OAuthError) -> JSONResponse:
     )
 
 
+def oauth_dcr_policy_error(settings_obj: Settings) -> OAuthError | None:
+    if settings_obj.oauth_dcr_enabled:
+        return None
+    return OAuthError(
+        "access_denied",
+        "OAuth dynamic client registration is disabled by CoreMCP policy",
+        status_code=403,
+    )
+
+
+def oauth_allowed_client_ids(settings_obj: Settings) -> set[str]:
+    return settings_obj.oauth_allowed_client_id_set
+
+
+def oauth_client_allowlist_policy_error(settings_obj: Settings, client_id: str) -> OAuthError | None:
+    allowed_client_ids = oauth_allowed_client_ids(settings_obj)
+    if not allowed_client_ids or client_id in allowed_client_ids:
+        return None
+    return OAuthError(
+        "unauthorized_client",
+        "OAuth client_id is not allowed by CoreMCP policy",
+        status_code=403,
+    )
+
+
 def check_oauth_dcr_rate_limit(
     request: Request,
     *,
@@ -146,6 +171,8 @@ def register_oauth_routes(
         if settings_obj.auth_mode != "oauth":
             return Response(status_code=404)
         try:
+            if policy_error := oauth_dcr_policy_error(settings_obj):
+                return oauth_error_response(policy_error)
             if limited := check_oauth_dcr_rate_limit(
                 request,
                 limiter=dcr_limiter,
@@ -182,14 +209,17 @@ def register_oauth_routes(
         if settings_obj.auth_mode != "oauth":
             return Response(status_code=404)
         query = request.query_params
-        if query.get("response_type") != "code":
-            return oauth_error_response(OAuthError("unsupported_response_type", "only response_type=code is supported"))
-        resource = query.get("resource") or oauth_resource(request)
-        if resource != oauth_resource(request):
-            return oauth_error_response(OAuthError("invalid_target", "resource must match CoreMCP /mcp"))
         try:
+            client_id = str(query.get("client_id") or "")
+            if policy_error := oauth_client_allowlist_policy_error(settings_obj, client_id):
+                return oauth_error_response(policy_error)
+            if query.get("response_type") != "code":
+                raise OAuthError("unsupported_response_type", "only response_type=code is supported")
+            resource = query.get("resource") or oauth_resource(request)
+            if resource != oauth_resource(request):
+                raise OAuthError("invalid_target", "resource must match CoreMCP /mcp")
             code = await oauth_service.create_authorization_code(
-                client_id=str(query.get("client_id") or ""),
+                client_id=client_id,
                 redirect_uri=str(query.get("redirect_uri") or ""),
                 resource=resource,
                 scope=str(query.get("scope") or "mcp:tools.read mcp:tools.call"),
@@ -216,6 +246,9 @@ def register_oauth_routes(
             return Response(status_code=404)
         try:
             body = await form_or_json_body(request)
+            client_id = str(body.get("client_id") or "")
+            if policy_error := oauth_client_allowlist_policy_error(settings_obj, client_id):
+                return oauth_error_response(policy_error)
             grant_type = body.get("grant_type")
             resource = str(body.get("resource") or oauth_resource(request))
             if resource != oauth_resource(request):
@@ -223,7 +256,7 @@ def register_oauth_routes(
             if grant_type == "authorization_code":
                 payload = await oauth_service.exchange_authorization_code(
                     code=str(body.get("code") or ""),
-                    client_id=str(body.get("client_id") or ""),
+                    client_id=client_id,
                     redirect_uri=str(body.get("redirect_uri") or ""),
                     code_verifier=str(body.get("code_verifier") or ""),
                     resource=resource,
@@ -233,7 +266,7 @@ def register_oauth_routes(
             elif grant_type == "refresh_token":
                 payload = await oauth_service.refresh(
                     refresh_token=str(body.get("refresh_token") or ""),
-                    client_id=str(body.get("client_id") or ""),
+                    client_id=client_id,
                     resource=resource,
                     issuer=oauth_issuer(request),
                     client_ip=request_ip(request),

@@ -274,7 +274,7 @@ class DownstreamMcpClient:
         hostname via httpcore's request extension.
         """
 
-        if safety_result.allowed_by == "host_allowlist" or not safety_result.resolved_ips:
+        if not safety_result.resolved_ips:
             return request_url, None, None
 
         original = urlparse(request_url)

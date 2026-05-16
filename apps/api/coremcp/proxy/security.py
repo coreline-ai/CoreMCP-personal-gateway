@@ -29,6 +29,7 @@ class UrlSafetyResult:
 class UrlSafetyChecker:
     """SSRF guard for user-registered downstream MCP endpoints."""
 
+    METADATA_IP = ipaddress.ip_address("169.254.169.254")
     UNSAFE_NETWORKS = tuple(
         ipaddress.ip_network(cidr)
         for cidr in (
@@ -56,14 +57,40 @@ class UrlSafetyChecker:
             self.allow_networks.append(ipaddress.ip_network("100.64.0.0/10"))
 
     def assert_safe(self, url: str) -> UrlSafetyResult:
-        parsed, scheme, host, port, path, normalized_url, fingerprint = self._parse_destination(url)
-        if host == "169.254.169.254":
+        _, scheme, host, port, path, normalized_url, fingerprint = self._parse_destination(url)
+        if self._is_metadata_host(host):
             raise UrlSafetyError("AWS/GCP metadata endpoint is blocked")
+        allowed_by = "host_allowlist" if host in self.allow_hosts else "public_dns"
+
+        try:
+            ips = self._resolve(host)
+        except UrlSafetyError:
+            if allowed_by != "host_allowlist":
+                raise
+            # Keep explicit host allowlist entries usable for dev/mock names
+            # that are only resolvable in the eventual transport environment.
+            # Resolvable allowlisted hosts are still resolved and rechecked below.
+            ips = []
+        if not ips:
+            if allowed_by != "host_allowlist":
+                raise UrlSafetyError("Endpoint hostname could not be resolved")
+
+        for ip in ips:
+            if self._is_metadata_ip(ip):
+                raise UrlSafetyError("AWS/GCP metadata endpoint is blocked")
+            if allowed_by == "host_allowlist":
+                continue
+            if self._ip_allowed_by_cidr(ip):
+                continue
+            if self._is_private_like(ip):
+                raise UrlSafetyError(f"Private or unsafe address is blocked: {ip}")
+
+        resolved_ips = [str(ip) for ip in ips]
         if host in self.allow_hosts:
             return UrlSafetyResult(
                 url=url,
                 host=host,
-                resolved_ips=[],
+                resolved_ips=resolved_ips,
                 allowed_by="host_allowlist",
                 scheme=scheme,
                 port=port,
@@ -71,23 +98,12 @@ class UrlSafetyChecker:
                 normalized_url=normalized_url,
                 destination_fingerprint=fingerprint,
             )
-
-        ips = self._resolve(host)
-        if not ips:
-            raise UrlSafetyError("Endpoint hostname could not be resolved")
-        for ip in ips:
-            if str(ip) == "169.254.169.254":
-                raise UrlSafetyError("AWS/GCP metadata endpoint is blocked")
-            if self._ip_allowed_by_cidr(ip):
-                continue
-            if self._is_private_like(ip):
-                raise UrlSafetyError(f"Private or unsafe address is blocked: {ip}")
         return UrlSafetyResult(
             url=url,
             host=host,
-            resolved_ips=[str(ip) for ip in ips],
-            allowed_by="public_dns",
-            scheme=parsed.scheme,
+            resolved_ips=resolved_ips,
+            allowed_by=allowed_by,
+            scheme=scheme,
             port=port,
             path=path,
             normalized_url=normalized_url,
@@ -110,8 +126,6 @@ class UrlSafetyChecker:
             raise UrlSafetyError("Endpoint destination changed before downstream request")
 
         after = self.assert_safe(url)
-        if before.allowed_by == "host_allowlist" or after.allowed_by == "host_allowlist":
-            return after
         if set(before.resolved_ips) != set(after.resolved_ips):
             raise UrlSafetyError("Endpoint DNS changed before downstream request")
         return after
@@ -138,6 +152,21 @@ class UrlSafetyChecker:
 
     def _ip_allowed_by_cidr(self, ip: ipaddress._BaseAddress) -> bool:
         return any(ip in network for network in self.allow_networks)
+
+    @classmethod
+    def _is_metadata_host(cls, host: str) -> bool:
+        try:
+            return cls._is_metadata_ip(ipaddress.ip_address(host))
+        except ValueError:
+            return False
+
+    @classmethod
+    def _is_metadata_ip(cls, ip: ipaddress._BaseAddress) -> bool:
+        if ip == cls.METADATA_IP:
+            return True
+        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped == cls.METADATA_IP:
+            return True
+        return False
 
     def _parse_destination(self, url: str):
         parsed = urlparse(url)

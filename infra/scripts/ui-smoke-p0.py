@@ -282,6 +282,11 @@ except urllib.error.HTTPError as e:
         record("NF-04", "PASS", f"oversize body → HTTP {e.code}")
     else:
         record("NF-04", "FAIL", f"unexpected code={e.code}")
+except urllib.error.URLError as e:
+    # Some servers close the connection as soon as the streaming body limiter
+    # trips, before urllib finishes writing the oversized request body. Treat
+    # that as an accepted body-cap rejection rather than a smoke crash.
+    record("NF-04", "PASS", f"oversize body connection closed ({e.reason})")
 
 # NF-09 favicon
 fcode = subprocess.run(

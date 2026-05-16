@@ -22,6 +22,92 @@ class StdioCommandNotAllowedError(CoreMcpValueError):
         self.allowed_basenames = set(allowed_basenames)
 
 
+class StdioArgvProfileNotAllowedError(StdioCommandNotAllowedError):
+    """Raised when a stdio command argv matches a command-specific dangerous profile."""
+
+    def __init__(self, basename: str, reason: str) -> None:
+        CoreMcpValueError.__init__(self, f"stdio command argv is not allowed for {basename}: {reason}")
+        self.basename = basename
+        self.reason = reason
+        # Keep the attribute available for callers that catch the historical
+        # StdioCommandNotAllowedError boundary.
+        self.allowed_basenames: set[str] = set()
+
+
+def validate_stdio_argv_profile(command: Sequence[str]) -> None:
+    """Reject dangerous command-specific argv profiles before launching stdio subprocesses.
+
+    The basename allowlist remains the first coarse-grained control. This
+    profile check is a second, command-aware denylist for argv shapes that
+    commonly turn otherwise allowed runtimes into arbitrary shell/code or host
+    escape primitives. It intentionally does not reject common MCP launches
+    such as ``npx ...``, ``uvx ...``, ``python server.py``, or ``node server.js``.
+    """
+
+    if not command:
+        raise ValueError("stdio command must not be empty")
+    basename = _normalized_command_basename(str(command[0]))
+    reason = _stdio_argv_profile_violation(basename, [str(part) for part in command[1:]])
+    if reason is not None:
+        raise StdioArgvProfileNotAllowedError(basename, reason)
+
+
+def _stdio_argv_profile_violation(basename: str, args: Sequence[str]) -> str | None:
+    if _is_python_basename(basename):
+        if any(_is_short_option(arg, "-c") for arg in args):
+            return "python inline code execution (-c) is not allowed"
+        return None
+
+    if basename == "node":
+        for arg in args:
+            if _is_short_option(arg, "-e") or _is_short_option(arg, "-p"):
+                return "node inline evaluation/printing (-e/-p) is not allowed"
+            if arg in {"--eval", "--print"} or arg.startswith("--eval=") or arg.startswith("--print="):
+                return "node inline evaluation/printing (--eval/--print) is not allowed"
+        return None
+
+    if basename == "deno":
+        if any(arg == "eval" for arg in args):
+            return "deno eval is not allowed"
+        return None
+
+    if basename == "docker":
+        for index, arg in enumerate(args):
+            lower_arg = arg.lower()
+            next_arg = args[index + 1].lower() if index + 1 < len(args) else None
+            if "/var/run/docker.sock" in lower_arg:
+                return "docker socket mounts are not allowed"
+            if lower_arg == "--privileged" or lower_arg.startswith("--privileged="):
+                return "docker privileged mode is not allowed"
+            if lower_arg == "--pid=host" or (lower_arg == "--pid" and next_arg == "host"):
+                return "docker host PID namespace is not allowed"
+            if lower_arg in {"--network=host", "--net=host"} or (
+                lower_arg in {"--network", "--net"} and next_arg == "host"
+            ):
+                return "docker host network mode is not allowed"
+            if _is_short_option(arg, "-v") or lower_arg == "--volume" or lower_arg.startswith("--volume="):
+                return "docker volume mounts (-v/--volume) are not allowed"
+        return None
+
+    return None
+
+
+def _normalized_command_basename(command: str) -> str:
+    basename = Path(command).name.lower()
+    return basename[:-4] if basename.endswith(".exe") else basename
+
+
+def _is_python_basename(basename: str) -> bool:
+    if basename == "python":
+        return True
+    suffix = basename.removeprefix("python")
+    return suffix != basename and bool(suffix) and all(part.isdigit() for part in suffix.split("."))
+
+
+def _is_short_option(arg: str, option: str) -> bool:
+    return arg == option or (arg.startswith(option) and not arg.startswith("--"))
+
+
 class StdioMcpTransport:
     """JSON-RPC over STDIO client for downstream MCP servers.
 
@@ -48,6 +134,7 @@ class StdioMcpTransport:
         command_basename = Path(str(command[0])).name
         if allowed_basenames is not None and command_basename not in allowed_basenames:
             raise StdioCommandNotAllowedError(command_basename, allowed_basenames)
+        validate_stdio_argv_profile(command)
         if idle_timeout_seconds is not None and idle_timeout_seconds < 0:
             raise ValueError("idle_timeout_seconds must be non-negative")
         self.command = [str(part) for part in command]

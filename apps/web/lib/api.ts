@@ -247,7 +247,7 @@ interface ApiFetchOptions extends Omit<RequestInit, 'body' | 'headers'> {
 }
 
 export function getApiBaseUrl(): string {
-  return process.env.NEXT_PUBLIC_COREMCP_API_BASE_URL ?? 'http://localhost:8787';
+  return process.env.NEXT_PUBLIC_COREMCP_API_BASE_URL ?? 'http://127.0.0.1:8787';
 }
 
 export function getStoredAdminToken(): string | null {
