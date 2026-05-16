@@ -196,12 +196,20 @@ class ServicesRepositoryMixin:
         failure_threshold: int = 3,
     ) -> None:
         if ok:
+            # Probe success also clears stale 'error'/'auth_required' status so
+            # services recover automatically once the downstream becomes healthy
+            # again. Admin-imposed states ('disabled', 'draft', 'validating',
+            # 'deleted') are left untouched.
             await self.db.execute(
                 """
                 UPDATE mcp_services
                 SET last_health_check_at = CURRENT_TIMESTAMP,
                     consecutive_failures = 0,
                     circuit_open_until = NULL,
+                    status = CASE
+                        WHEN status IN ('error', 'auth_required') THEN 'active'
+                        ELSE status
+                    END,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ? AND deleted_at IS NULL
                 """,
