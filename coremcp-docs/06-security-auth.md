@@ -387,6 +387,24 @@ X-API-Key ••••1234
 - secret_ref
 - error_code
 
+#### 6.6.1 Value-based Redaction (S-07)
+
+2026-05-16 보안 안정화 배치에서 value-based redaction을 적용했다. 목표는 key 이름이 `token`, `secret`, `authorization` 등이 아니더라도 값 자체가 token/secret 패턴이면 로그와 audit metadata에 저장되기 전에 마스킹하는 것이다.
+
+최소 redaction 대상:
+- `cmcp_admin_*`
+- `cmcp_client_*`
+- `cmcp_refresh_*`
+- OpenAI/API key류 `sk-*`
+- GitHub token류 `ghp_*`
+- JWT 형태의 `eyJ...` token-like 값
+
+정책:
+- structlog event와 DB audit metadata 양쪽에 동일 원칙을 적용한다.
+- nested dict/list metadata도 재귀적으로 redaction한다.
+- raw tool arguments/results는 debug trace opt-in이 아닌 한 저장하지 않는 기존 원칙을 유지한다.
+- redaction은 best-effort 방어층이며, secret을 로그 호출부에 넘기지 않는 원칙을 대체하지 않는다.
+
 ---
 
 ## 7. SSRF Protection
@@ -660,6 +678,21 @@ CORS allowlist에 없는 Origin에서 온 request:
 
 `Referer` 헤더 기반 추가 검증은 미적용 (신뢰할 수 없음).
 
+### 12.5 Trusted Host / Host Header (S-02)
+
+2026-05-16 보안 안정화 배치에서 `TrustedHostMiddleware`를 적용했다. OAuth metadata와 issuer/resource 계산이 request host를 참조하므로, API가 localhost 외부(Tailscale/custom domain 포함)로 노출될 때 Host header를 명시적으로 제한해야 한다.
+
+정책:
+- `COREMCP_ALLOWED_HOSTS` 환경 변수로 허용 host를 명시한다.
+- 개인 게이트웨이 기본값은 localhost/test 계열(`localhost`, `127.0.0.1`, `::1`, `testserver`)만 허용한다. Tailscale/custom hostname은 명시 설정한다.
+- `Mcp-Session-Id`나 Host header는 인증 수단이 아니다. `/mcp` bearer auth 재검증 원칙은 그대로 유지한다.
+- reverse proxy를 쓰더라도 proxy가 Host/Forwarded header를 통제한다는 전제만으로 앱 레벨 방어를 생략하지 않는다.
+
+검증 기준:
+- 허용되지 않은 Host는 차단된다.
+- 허용 Host에서는 `/health`, `/mcp`, OAuth metadata(`AUTH_MODE=oauth`일 때) 동작이 유지된다.
+- static bearer default와 OAuth optional 정책은 변경하지 않는다.
+
 ---
 
 ## 13. TLS / Transport
@@ -738,3 +771,31 @@ production_docs_donotuse/06-security-auth.md에 있지만 본 프로젝트에 �
 - error mapping 분류는 ADR-034 참조 (07-mcp-proxy-spec.md §8.3 매핑 표)
 
 원래 SaaS 단계로 확장하면 `15-future-saas-migration.md` 참조.
+
+## 16. 2026-05-16 Security Hardening Review Status
+
+이 섹션은 `security_best_practices_report.md`의 S-01~S-07 결과를 개인 CoreMCP gateway 범위로 정리한다. SaaS/team/workspace/marketplace/publisher/billing 기능은 이 배치와 다음 작업 모두에서 제외한다.
+
+### 16.1 이번 배치 패치 완료
+
+| ID | 항목 | 상태 | 완료 기준 |
+|---|---|---|---|
+| S-02 | TrustedHostMiddleware / allowed hosts | 패치 완료 | invalid Host 차단, localhost/custom allowed host 회귀 테스트 |
+| S-07 | value-based redaction | 패치 완료 | neutral key/nested metadata의 token-like 값 redaction 테스트 |
+
+### 16.2 다음 작업으로 남기는 항목
+
+| ID | 항목 | 다음 작업 범위 |
+|---|---|---|
+| S-01 | OAuth consent / allowlist policy | `AUTH_MODE=oauth` 외부 노출 전에 admin consent, pre-registered client allowlist, 또는 Tailscale-only 문서화 중 하나를 선택 |
+| S-04 | STDIO argv profile | basename allowlist에 더해 `python -c`, `node -e`, 위험한 `docker run -v` 같은 argument profile 제한 검토 |
+| S-05 | remote icon proxy / opt-in | remote HTTPS icon을 same-origin proxy/cache로 받거나 opt-in으로 전환. SVG inline 금지와 `<img src>` 원칙 유지 |
+| S-06 | allowlist DNS pinning | allowlisted host도 resolve/pin하되 명시 allowlist이므로 private/Tailscale IP 허용 여부만 별도 정책화 |
+
+### 16.3 범위 제한
+
+- 개인 게이트웨이 보안 안정화만 다룬다.
+- OAuth/CIMD/DCR은 optional이며 `AUTH_MODE=static_bearer` default를 유지한다.
+- raw tool arguments/results는 기본 저장하지 않는다.
+- CoreMCP admin/client token은 downstream으로 전달하지 않는다.
+- SaaS/team/workspace/marketplace/publisher/billing 기능은 구현하지 않는다.
