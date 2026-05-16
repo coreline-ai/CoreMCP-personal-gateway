@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import inspect
+from collections import defaultdict
+
 import pytest
 
 from coremcp.api import (
@@ -30,6 +33,13 @@ from coremcp.db.repository_facade import (
     ToolboxRepository,
     new_id,
 )
+from coremcp.db.repository_audit import AuditRepositoryMixin
+from coremcp.db.repository_catalog import CatalogRepositoryMixin
+from coremcp.db.repository_connections import ConnectionsRepositoryMixin
+from coremcp.db.repository_credentials import CredentialsRepositoryMixin
+from coremcp.db.repository_jobs import JobsRepositoryMixin
+from coremcp.db.repository_services import ServicesRepositoryMixin
+from coremcp.db.repository_toolbox import ToolboxRepositoryMixin
 from coremcp.errors import CoreMcpError, CoreMcpRuntimeError, CoreMcpValueError
 from coremcp.mcp import (
     PromptsHandlerDeps,
@@ -57,6 +67,29 @@ from coremcp.mcp import (
 )
 from coremcp.proxy import CircuitOpenError, DownstreamMcpError, StdioCommandNotAllowedError, UrlSafetyError
 from coremcp.settings import Settings
+
+
+REPOSITORY_DOMAIN_MIXINS = (
+    ServicesRepositoryMixin,
+    CatalogRepositoryMixin,
+    ToolboxRepositoryMixin,
+    CredentialsRepositoryMixin,
+    ConnectionsRepositoryMixin,
+    AuditRepositoryMixin,
+    JobsRepositoryMixin,
+)
+
+
+def _declared_public_callable_names(cls: type) -> list[str]:
+    names: list[str] = []
+    for name, member in cls.__dict__.items():
+        if name.startswith("_"):
+            continue
+        if isinstance(member, (classmethod, staticmethod)):
+            member = member.__func__
+        if inspect.isfunction(member) or inspect.ismethod(member):
+            names.append(name)
+    return sorted(names)
 
 
 def test_app_factory_facade_imports_create_app(tmp_path):
@@ -176,6 +209,27 @@ def test_repository_facade_keeps_public_contract(tmp_path):
     assert DEFAULT_TOOLBOX_ID == "tbx_default"
     assert new_id("test").startswith("test_")
     assert repository.database_path.name == "repo.sqlite3"
+
+
+def test_repository_keeps_w1_domain_mixin_split():
+    assert Repository.__bases__ == REPOSITORY_DOMAIN_MIXINS
+
+
+def test_repository_mro_has_no_unintended_public_callable_collisions():
+    owners_by_name: dict[str, list[str]] = defaultdict(list)
+
+    for cls in Repository.__mro__:
+        if cls is object:
+            continue
+        for name in _declared_public_callable_names(cls):
+            owners_by_name[name].append(cls.__name__)
+
+    duplicates = {
+        name: owners
+        for name, owners in sorted(owners_by_name.items())
+        if len(owners) > 1
+    }
+    assert duplicates == {}
 
 
 class _RecordingRepository:

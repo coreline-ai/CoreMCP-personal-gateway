@@ -2397,6 +2397,32 @@ async def test_idempotency_key_reuses_tools_call_result(app_client):
 
 
 @pytest.mark.asyncio
+async def test_list_changed_publish_clears_idempotency_cache(app_client):
+    client, _, app = app_client
+    created = await client.post(
+        "/v1/mcp-services",
+        headers=auth_headers(),
+        json={"name": "List Changed Invalidates", "slug": "idem-invalidates", "endpoint_url": "http://fake.local/mcp"},
+    )
+    service_id = created.json()["id"]
+
+    app.state.idempotency_cache.set(
+        "q5-regression-key",
+        {"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text": "cached"}]}},
+    )
+    assert app.state.idempotency_cache.get("q5-regression-key") is not None
+
+    added = await client.post(
+        "/v1/toolboxes/tbx_default/items",
+        headers=auth_headers(),
+        json={"service_id": service_id},
+    )
+
+    assert added.status_code == 201
+    assert app.state.idempotency_cache.get("q5-regression-key") is None
+
+
+@pytest.mark.asyncio
 async def test_idempotency_cache_is_invalidated_by_tool_policy_change(app_client):
     client, _, _ = app_client
     created = await client.post(

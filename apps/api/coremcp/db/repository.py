@@ -9,17 +9,25 @@ import aiosqlite
 
 from coremcp.db.migrations import run_migrations
 from coremcp.db.repository_audit import AuditRepositoryMixin
+from coremcp.db.repository_catalog import CatalogRepositoryMixin
 from coremcp.db.repository_connections import ConnectionsRepositoryMixin
 from coremcp.db.repository_constants import DEFAULT_TOOLBOX_ID, LOCAL_USER_ID
 from coremcp.db.repository_credentials import CredentialsRepositoryMixin
 from coremcp.db.repository_ids import new_id as new_id
 from coremcp.db.repository_jobs import JobsRepositoryMixin
-from coremcp.db.repository_catalog import CatalogRepositoryMixin
 from coremcp.db.repository_services import ServicesRepositoryMixin
 from coremcp.db.repository_toolbox import ToolboxRepositoryMixin
 
 
-class Repository(ServicesRepositoryMixin, CatalogRepositoryMixin, ToolboxRepositoryMixin, CredentialsRepositoryMixin, ConnectionsRepositoryMixin, AuditRepositoryMixin, JobsRepositoryMixin):
+class Repository(
+    ServicesRepositoryMixin,
+    CatalogRepositoryMixin,
+    ToolboxRepositoryMixin,
+    CredentialsRepositoryMixin,
+    ConnectionsRepositoryMixin,
+    AuditRepositoryMixin,
+    JobsRepositoryMixin,
+):
     """SQLite repository for the personal CoreMCP gateway.
 
     The repository intentionally keeps a small aiosqlite surface for the P1
