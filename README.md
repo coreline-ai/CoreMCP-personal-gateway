@@ -18,13 +18,13 @@
 
 내 Mac mini에서 모든 MCP를 한 곳에 모아 어디서든 쓴다.
 
-[Overview](#overview) · [Quick Start](#-quick-start) · [Architecture](#%EF%B8%8F-architecture) · [Documentation](#-documentation) · [Phase Plan](#-phase-plan)
+[Overview](#-overview) · [Quick Start](#-quick-start) · [Architecture](#%EF%B8%8F-architecture) · [Documentation](#-documentation) · [Phase Plan](#-phase-plan)
 
 </div>
 
 ---
 
-## Overview
+## 🧭 Overview
 
 CoreMCP는 본인 1명이 Mac mini에서 운영하는 protected MCP gateway다. 여러 MCP 서버를 등록해 자신의 도구함(toolbox)에 담고, Codex CLI `exec` 등 외부 AI 클라이언트에는 CoreMCP 하나만 연결한다.
 
@@ -68,7 +68,7 @@ CoreMCP는 본인 1명이 Mac mini에서 운영하는 protected MCP gateway다. 
 
 **한 줄 가치**: AI 클라이언트마다 MCP를 따로 등록하지 않고, 한 곳에 모아 어디서나 동일한 도구함을 쓴다.
 
-### Implementation Status — 2026-05-16
+### ✅ Implementation Status — 2026-05-16
 
 - Root monorepo scaffold, `apps/api`, `apps/fake-mcp`, `apps/web`, `packages/*`, `infra/*`가 생성되었습니다.
 - P1 backend core는 Alembic 단일 schema source, client token DB hash, service registry, toolbox catalog, 실제 Fernet/Keychain credential vault, SSRF guard, validation, DB 기반 `/mcp tools/list/call`까지 구현되었습니다.
@@ -92,7 +92,7 @@ CoreMCP는 본인 1명이 Mac mini에서 운영하는 protected MCP gateway다. 
 ---
 
 
-### Remaining Work Classification — 2026-05-14
+### 📌 Remaining Work Classification — 2026-05-14
 
 | 구분 | 남은 항목 |
 |---|---|
@@ -101,7 +101,7 @@ CoreMCP는 본인 1명이 Mac mini에서 운영하는 protected MCP gateway다. 
 | 외부환경 검증 필요 | actual macOS reboot recovery, Tailscale CLI install/login/Serve/ACL smoke, real external OAuth client compatibility, 실제 모바일 visual QA, long soak — `make external-env-validate`, `make mobile-qa-checklist`, `make soak-check`로 운영 host에서 결과 기록 |
 | 선택 Polish | Web Admin UX polish, 관측 dashboard/metric tuning, proactive health probe tuning은 지속 개선 대상 |
 
-### Stabilization Batch Notes — 2026-05-16
+### 🛠️ Stabilization Batch Notes — 2026-05-16
 
 - 권장 commit split은 `dev-plan/implement_20260514_224500.md` 및 후속 dev-plan에 기록되어 있습니다. 이 문서/code patch는 commit split을 **계획만** 하며, 사용자가 `commit/push`를 명시 요청하기 전에는 commit을 만들지 않습니다.
 - 2026-05-15/16 코드 레벨 안정화 사이클에서 다음 항목이 추가 통합되었습니다.
