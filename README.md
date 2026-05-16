@@ -1,5 +1,7 @@
 <div align="center">
 
+<img width="2752" height="1536" alt="나만의 똑똑한 AI 도구함 CoreMCP" src="https://github.com/user-attachments/assets/3a401cf5-af21-4054-a705-9f1a64b87453" />
+
 # CoreMCP
 
 **개인용 MCP 도구함·인증 게이트웨이 | Personal MCP toolbox and authenticated gateway**
