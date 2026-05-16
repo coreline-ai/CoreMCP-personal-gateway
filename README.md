@@ -148,7 +148,7 @@ Default 도구함의 가시 상태 — 등록된 서비스마다 service-level e
 
 ![Playground](coremcp-docs/screenshots/web-admin/05-playground.png)
 
-도구함의 도구를 admin 권한으로 직접 호출 — dropdown 에서 도구 선택 → Arguments JSON 편집(catalog 캐시된 inputSchema 기반 검증) → `Call tool` → 응답 JSON(jsonrpc.result.content + structuredContent + isError + `_meta.coremcp`) 표시. 캡쳐는 `demo_ops.ops_status` 호출 결과 (`Personal Ops Desk status: warning; 2 checklist items need attention.`) 를 보여줍니다.
+도구함의 도구를 admin 권한으로 직접 호출 — Tool 선택 dropdown(40 tools, `★ Pin` 즐겨찾기), 선택된 도구의 설명·요약 카드, **catalog 캐시된 inputSchema 기반 자동 Schema form** (또는 `JSON 직접 편집` 토글로 raw 모드), 실행 후 응답 JSON 표시, `Replay` 로 동일 args 재호출. 캡쳐는 `demo_ops.ops_status` 를 선택해 `include_services` boolean primitive 가 Schema form 으로 자동 렌더링된 상태입니다.
 
 ### 6. Connected AI client `/clients`
 
