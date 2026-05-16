@@ -28,10 +28,12 @@ import { ServicesSection } from './sections/services-section';
 import { SettingsSection } from './sections/settings-section';
 import { ToolboxSection } from './sections/toolbox-section';
 
+const HEALTH_CHECK_PROMPT = 'Health 버튼을 눌러 API 상태를 확인하세요.';
+
 export function AdminConsole({ initialSection = 'dashboard' }: { initialSection?: string }) {
   const [token, setToken] = useState<string | null>(null);
   const [tokenInput, setTokenInput] = useState('');
-  const [healthMessage, setHealthMessage] = useState('API 상태를 아직 확인하지 않았습니다.');
+  const [healthMessage, setHealthMessage] = useState(HEALTH_CHECK_PROMPT);
   const [statusMessage, setStatusMessage] = useState('Admin token 저장 후 데이터를 불러오세요.');
 
   const [settings, setSettings] = useState<SettingsResponse | null>(null);
@@ -128,7 +130,7 @@ export function AdminConsole({ initialSection = 'dashboard' }: { initialSection?
     if (!nextToken) return;
     saveAdminToken(nextToken);
     setToken(nextToken);
-    setHealthMessage('admin token을 sessionStorage에 저장했습니다. API 호출에 Authorization 헤더가 포함됩니다.');
+    void runHealthCheck('admin token을 저장했습니다. API 상태를 확인하는 중입니다...');
   }
 
   function handleTokenClear() {
@@ -149,14 +151,18 @@ export function AdminConsole({ initialSection = 'dashboard' }: { initialSection?
     setHealthMessage('sessionStorage에 저장된 admin token을 삭제했습니다.');
   }
 
-  async function handleHealthCheck() {
-    setHealthMessage('API 상태를 확인하는 중입니다...');
+  async function runHealthCheck(loadingMessage = 'API 상태를 확인하는 중입니다...') {
+    setHealthMessage(loadingMessage);
     try {
       const health = await coreMcpApi.health();
       setHealthMessage(`API 상태: ${health.status}`);
     } catch (error) {
       setHealthMessage(explainError(error));
     }
+  }
+
+  async function handleHealthCheck() {
+    await runHealthCheck();
   }
 
   async function handleCreateService(event: FormEvent<HTMLFormElement>) {
