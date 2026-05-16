@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -48,6 +49,17 @@ def _context() -> ToolCallContext:
 
 
 @pytest.mark.asyncio
+async def test_empty_plugin_registry_is_noop_boundary() -> None:
+    registry = PluginRegistry()
+    arguments = {"text": "hello"}
+    result = {"content": [{"type": "text", "text": "ok"}]}
+
+    assert registry.plugins == ()
+    assert await registry.before_tool_call(_context(), arguments) is arguments
+    assert await registry.after_tool_response(_context(), result) is result
+
+
+@pytest.mark.asyncio
 async def test_plugin_registry_runs_before_in_order_and_after_in_reverse() -> None:
     events: list[str] = []
     registry = PluginRegistry([_RecorderPlugin("a", events), _RecorderPlugin("b", events)])
@@ -89,3 +101,21 @@ async def test_plugin_registry_wraps_after_hook_failures() -> None:
     assert raised.value.plugin_name == "failing"
     assert raised.value.stage == "after_tool_response"
     assert isinstance(raised.value.cause, RuntimeError)
+
+
+def test_resources_and_prompts_plugin_hooks_remain_inactive_until_security_adr() -> None:
+    api_root = Path(__file__).resolve().parents[1]
+    handler_paths = [
+        api_root / "coremcp" / "mcp" / "resources_handlers.py",
+        api_root / "coremcp" / "mcp" / "prompts_handlers.py",
+    ]
+
+    for handler_path in handler_paths:
+        source = handler_path.read_text()
+        assert "coremcp.plugins" not in source
+        assert "PluginExecutionError" not in source
+        assert ".plugins." not in source
+        assert "before_resource" not in source
+        assert "after_resource" not in source
+        assert "before_prompt" not in source
+        assert "after_prompt" not in source

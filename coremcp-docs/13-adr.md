@@ -794,6 +794,7 @@ Consequences:
 - 첫 built-in plugin을 추가하려면 본 ADR의 선행 조건을 dev-plan 체크리스트에 포함한다.
 - Plugin hook 범위를 `resources/read`, `prompts/get` 등으로 넓힐 경우 raw content 보존 금지와 fail-closed 동작을 먼저 테스트한다.
 - built-in plugin 도입 전까지 resources/prompts hook은 의도적으로 비활성 상태를 유지한다.
+- Q-2 검토 결과(2026-05-16): `resources_handlers.py` / `prompts_handlers.py`에 default empty registry hook만 연결하는 것도 hook 범위 확장이므로, built-in plugin별 보안 ADR 및 raw content/prompt message fail-closed 테스트 전까지 코드 구현을 보류한다.
 - 외부 plugin loading은 personal scope 안정화 이후에도 기본 제외 범위로 유지한다.
 - Plugin 관련 보안 회귀 테스트는 `tests/test_plugins.py` 또는 해당 hook 통합 테스트에 추가한다.
 
