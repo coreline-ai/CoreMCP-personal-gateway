@@ -348,7 +348,7 @@ class CatalogRepositoryMixin:
             WHERE tbi.toolbox_id = ?
               AND tbi.deleted_at IS NULL
               AND tbi.enabled = 1
-              AND s.status = 'active'
+              AND s.status IN ('active', 'validating')
             ORDER BY tbi.position ASC, s.slug ASC, st.original_name ASC
             """,
             (toolbox_id,),
@@ -380,7 +380,7 @@ class CatalogRepositoryMixin:
             SELECT sr.*, s.slug AS service_slug, s.endpoint_url, s.transport_type,
                    s.stdio_command, s.stdio_args, s.stdio_env, s.stdio_cwd, s.stdio_idle_timeout_seconds
             FROM toolbox_items tbi
-            JOIN mcp_services s ON s.id = tbi.service_id AND s.deleted_at IS NULL AND s.status = 'active'
+            JOIN mcp_services s ON s.id = tbi.service_id AND s.deleted_at IS NULL AND s.status IN ('active', 'validating')
             JOIN service_resources sr ON sr.service_id = s.id AND sr.status = 'active'
             WHERE tbi.toolbox_id = ? AND tbi.deleted_at IS NULL AND tbi.enabled = 1
             ORDER BY tbi.position ASC, s.slug ASC, sr.name ASC, sr.uri ASC
@@ -397,7 +397,7 @@ class CatalogRepositoryMixin:
             """
             SELECT srt.*, s.slug AS service_slug
             FROM toolbox_items tbi
-            JOIN mcp_services s ON s.id = tbi.service_id AND s.deleted_at IS NULL AND s.status = 'active'
+            JOIN mcp_services s ON s.id = tbi.service_id AND s.deleted_at IS NULL AND s.status IN ('active', 'validating')
             JOIN service_resource_templates srt ON srt.service_id = s.id AND srt.status = 'active'
             WHERE tbi.toolbox_id = ? AND tbi.deleted_at IS NULL AND tbi.enabled = 1
             ORDER BY tbi.position ASC, s.slug ASC, srt.name ASC, srt.uri_template ASC
@@ -412,7 +412,7 @@ class CatalogRepositoryMixin:
             SELECT sp.*, s.slug AS service_slug, s.endpoint_url, s.transport_type,
                    s.stdio_command, s.stdio_args, s.stdio_env, s.stdio_cwd, s.stdio_idle_timeout_seconds
             FROM toolbox_items tbi
-            JOIN mcp_services s ON s.id = tbi.service_id AND s.deleted_at IS NULL AND s.status = 'active'
+            JOIN mcp_services s ON s.id = tbi.service_id AND s.deleted_at IS NULL AND s.status IN ('active', 'validating')
             JOIN service_prompts sp ON sp.service_id = s.id AND sp.status = 'active'
             WHERE tbi.toolbox_id = ? AND tbi.deleted_at IS NULL AND tbi.enabled = 1
             ORDER BY tbi.position ASC, s.slug ASC, sp.name ASC
@@ -430,7 +430,7 @@ class CatalogRepositoryMixin:
             SELECT sr.*, s.slug AS service_slug, s.endpoint_url, s.transport_type,
                    s.stdio_command, s.stdio_args, s.stdio_env, s.stdio_cwd, s.stdio_idle_timeout_seconds
             FROM toolbox_items tbi
-            JOIN mcp_services s ON s.id = tbi.service_id AND s.deleted_at IS NULL AND s.status = 'active'
+            JOIN mcp_services s ON s.id = tbi.service_id AND s.deleted_at IS NULL AND s.status IN ('active', 'validating')
             JOIN service_resources sr ON sr.service_id = s.id AND sr.status = 'active'
             WHERE tbi.toolbox_id = ? AND tbi.deleted_at IS NULL AND tbi.enabled = 1 AND sr.uri = ?
             ORDER BY tbi.position ASC, s.slug ASC
@@ -452,7 +452,7 @@ class CatalogRepositoryMixin:
             SELECT sp.*, s.slug AS service_slug, s.endpoint_url, s.transport_type,
                    s.stdio_command, s.stdio_args, s.stdio_env, s.stdio_cwd, s.stdio_idle_timeout_seconds
             FROM toolbox_items tbi
-            JOIN mcp_services s ON s.id = tbi.service_id AND s.deleted_at IS NULL AND s.status = 'active'
+            JOIN mcp_services s ON s.id = tbi.service_id AND s.deleted_at IS NULL AND s.status IN ('active', 'validating')
             JOIN service_prompts sp ON sp.service_id = s.id AND sp.status = 'active'
             WHERE tbi.toolbox_id = ? AND tbi.deleted_at IS NULL AND tbi.enabled = 1
               AND s.slug = ? AND sp.name = ?

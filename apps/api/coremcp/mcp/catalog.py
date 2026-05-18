@@ -7,15 +7,17 @@ from fastapi import FastAPI
 from coremcp.db import DEFAULT_TOOLBOX_ID
 from coremcp.mcp.context import McpHandlerContext
 
+CATALOG_VISIBLE_SERVICE_STATUSES = {"active", "validating"}
+
 
 async def active_toolbox_services(app: FastAPI, toolbox_id: str = DEFAULT_TOOLBOX_ID) -> list[dict[str, Any]]:
     ctx = McpHandlerContext.from_app(app)
     services: list[dict[str, Any]] = []
     for item in await ctx.repos.toolbox.list_toolbox_items(toolbox_id):
-        if not bool(item.get("enabled")) or item.get("service_status") != "active":
+        if not bool(item.get("enabled")) or item.get("service_status") not in CATALOG_VISIBLE_SERVICE_STATUSES:
             continue
         service = await ctx.repos.services.get_mcp_service(str(item["service_id"]))
-        if service and service.get("status") == "active":
+        if service and service.get("status") in CATALOG_VISIBLE_SERVICE_STATUSES:
             services.append(service)
     return services
 

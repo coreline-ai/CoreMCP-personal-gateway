@@ -1682,6 +1682,39 @@ async def test_tools_list_includes_unavailable_service_metadata(app_client):
 
 
 @pytest.mark.asyncio
+async def test_tools_list_preserves_cached_catalog_while_service_validating(app_client):
+    client, _, app = app_client
+    created = await client.post(
+        "/v1/mcp-services",
+        headers=auth_headers(),
+        json={"name": "Validating Fake", "slug": "validating", "endpoint_url": "http://fake.local/mcp"},
+    )
+    service_id = created.json()["id"]
+    assert (await client.post(f"/v1/mcp-services/{service_id}/validate", headers=auth_headers())).status_code == 200
+    assert (await client.post("/v1/toolboxes/tbx_default/items", headers=auth_headers(), json={"service_id": service_id})).status_code == 201
+
+    # A manual validation marks the service as "validating" before the new
+    # catalog has been persisted. The last-known-good catalog must remain
+    # visible so bulk validation does not make every tool disappear from
+    # connected clients or the Playground.
+    await app.state.repos.services.update_mcp_service(service_id, {"status": "validating"})
+
+    init = await initialize(client)
+    listed = await client.post(
+        "/mcp",
+        headers={**auth_headers(), "Mcp-Session-Id": init.headers["Mcp-Session-Id"]},
+        json={"jsonrpc": "2.0", "id": "validating-list", "method": "tools/list", "params": {}},
+    )
+    assert listed.status_code == 200
+    names = [tool["name"] for tool in listed.json()["result"]["tools"]]
+    assert "validating.echo" in names
+
+    playground = await client.get("/v1/playground/tools/list", headers=auth_headers())
+    assert playground.status_code == 200
+    assert "validating.echo" in [tool["name"] for tool in playground.json()["items"]]
+
+
+@pytest.mark.asyncio
 async def test_health_probe_detects_tool_schema_drift_and_refreshes_catalog(tmp_path: Path):
     version = {"value": 1}
 
