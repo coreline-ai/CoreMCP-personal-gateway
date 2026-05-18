@@ -57,6 +57,13 @@ export function AdminConsole({ initialSection = 'dashboard' }: { initialSection?
   const [selectedTool, setSelectedTool] = useState('');
   const [argumentsJson, setArgumentsJson] = useState('{\n  "message": "hello"\n}');
   const [callResult, setCallResult] = useState('도구를 선택하고 호출하면 응답 JSON이 표시됩니다.');
+  const [validatingServiceIds, setValidatingServiceIds] = useState<string[]>([]);
+
+  const tokenPreview = useMemo(() => maskToken(token), [token]);
+  const toolboxItems = (defaultToolbox?.items ?? []) as ToolboxItemSummary[];
+  const activeSection = ['dashboard', 'services', 'toolbox', 'clients', 'settings', 'playground', 'logs'].includes(initialSection)
+    ? initialSection
+    : 'dashboard';
 
   useEffect(() => {
     const stored = getStoredAdminToken();
@@ -81,11 +88,11 @@ export function AdminConsole({ initialSection = 'dashboard' }: { initialSection?
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
-  const tokenPreview = useMemo(() => maskToken(token), [token]);
-  const toolboxItems = (defaultToolbox?.items ?? []) as ToolboxItemSummary[];
-  const activeSection = ['dashboard', 'services', 'toolbox', 'clients', 'settings', 'playground', 'logs'].includes(initialSection)
-    ? initialSection
-    : 'dashboard';
+  useEffect(() => {
+    if (!token || activeSection !== 'playground' || playgroundTools.length > 0) return;
+    void handleLoadPlaygroundTools();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, activeSection, playgroundTools.length]);
 
   async function refreshAdminData() {
     if (!getStoredAdminToken()) return;
@@ -127,7 +134,10 @@ export function AdminConsole({ initialSection = 'dashboard' }: { initialSection?
   function handleTokenSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const nextToken = tokenInput.trim();
-    if (!nextToken) return;
+    if (!nextToken) {
+      setStatusMessage('Admin token을 입력해야 저장할 수 있습니다.');
+      return;
+    }
     saveAdminToken(nextToken);
     setToken(nextToken);
     void runHealthCheck('admin token을 저장했습니다. API 상태를 확인하는 중입니다...');
@@ -149,6 +159,7 @@ export function AdminConsole({ initialSection = 'dashboard' }: { initialSection?
     setToolOverridesByService({});
     setIssuedToken(null);
     setHealthMessage('sessionStorage에 저장된 admin token을 삭제했습니다.');
+    setStatusMessage('Admin token을 삭제했습니다. 새 token을 저장하면 데이터를 다시 불러옵니다.');
   }
 
   async function runHealthCheck(loadingMessage = 'API 상태를 확인하는 중입니다...') {
@@ -183,6 +194,8 @@ export function AdminConsole({ initialSection = 'dashboard' }: { initialSection?
   }
 
   async function handleValidate(serviceId: string) {
+    if (validatingServiceIds.includes(serviceId)) return;
+    setValidatingServiceIds((current) => current.includes(serviceId) ? current : [...current, serviceId]);
     setStatusMessage('Validation을 실행하는 중입니다...');
     try {
       const report = await coreMcpApi.validateService(serviceId);
@@ -191,6 +204,8 @@ export function AdminConsole({ initialSection = 'dashboard' }: { initialSection?
     } catch (error) {
       setStatusMessage(explainError(error));
       await refreshAdminData();
+    } finally {
+      setValidatingServiceIds((current) => current.filter((id) => id !== serviceId));
     }
   }
 
@@ -220,6 +235,7 @@ export function AdminConsole({ initialSection = 'dashboard' }: { initialSection?
 
   async function handleRemoveToolboxItem(item: ToolboxItemSummary) {
     if (!defaultToolbox) return;
+    if (!window.confirm(`${item.service_name ?? item.service_slug ?? '이 service'}를 기본 도구함에서 제거할까요?`)) return;
     setStatusMessage('Toolbox에서 제거하는 중입니다...');
     try {
       await coreMcpApi.removeToolboxItem(defaultToolbox.id, item.id);
@@ -231,6 +247,7 @@ export function AdminConsole({ initialSection = 'dashboard' }: { initialSection?
   }
 
   async function handleRevokeConnection(connectionId: string) {
+    if (!window.confirm('이 AI client 연결과 관련 token을 revoke할까요?')) return;
     setStatusMessage('External connection을 revoke하는 중입니다...');
     try {
       await coreMcpApi.revokeExternalConnection(connectionId);
@@ -242,6 +259,7 @@ export function AdminConsole({ initialSection = 'dashboard' }: { initialSection?
   }
 
   async function handleRevokeClientToken(tokenId: string) {
+    if (!window.confirm('이 client token을 revoke할까요?')) return;
     setStatusMessage('Client token을 revoke하는 중입니다...');
     try {
       await coreMcpApi.revokeClientToken(tokenId);
@@ -254,9 +272,14 @@ export function AdminConsole({ initialSection = 'dashboard' }: { initialSection?
 
   async function handleCreateConnection(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const trimmedClientName = clientName.trim();
+    if (!trimmedClientName) {
+      setStatusMessage('Client name을 입력해야 token을 발급할 수 있습니다.');
+      return;
+    }
     setStatusMessage('External connection을 생성하는 중입니다...');
     try {
-      const connection = await coreMcpApi.createExternalConnection({ client_type: clientType, client_name: clientName });
+      const connection = await coreMcpApi.createExternalConnection({ client_type: clientType, client_name: trimmedClientName });
       const tokenResponse = await coreMcpApi.issueClientToken(connection.id);
       setIssuedToken(tokenResponse.token);
       setStatusMessage('Client token을 발급했습니다. 평문은 지금 한 번만 표시됩니다.');
@@ -322,6 +345,7 @@ export function AdminConsole({ initialSection = 'dashboard' }: { initialSection?
           onServiceUrlChange={setServiceUrl}
           onCreateService={handleCreateService}
           onValidate={handleValidate}
+          validatingServiceIds={validatingServiceIds}
           onAddToToolbox={handleAddToToolbox}
         />
       );

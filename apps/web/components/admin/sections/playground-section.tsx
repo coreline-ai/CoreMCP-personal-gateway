@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { PlaygroundToolSummary } from '@/lib/api';
 import { classNames } from '../admin-utils';
 
@@ -67,6 +67,24 @@ function diffSummary(previousResult: string, currentResult: string): string {
   return `이전 ${previousResult.length.toLocaleString()}자 → 현재 ${currentResult.length.toLocaleString()}자`;
 }
 
+function defaultArgumentsJson(tool: PlaygroundToolSummary | undefined): string {
+  const schema = asRecord(tool?.inputSchema) ?? asRecord(tool?.input_schema);
+  const properties = asRecord(schema?.properties);
+  if (!properties) return '{}';
+  const next: Record<string, unknown> = {};
+  for (const [key, raw] of Object.entries(properties)) {
+    const property = asRecord(raw) ?? {};
+    if (property.default !== undefined) next[key] = property.default;
+  }
+  return JSON.stringify(next, null, 2);
+}
+
+function isRiskyTool(tool: PlaygroundToolSummary | undefined): boolean {
+  if (!tool) return false;
+  if (tool.annotations?.destructiveHint === true || tool.annotations?.readOnlyHint === false) return true;
+  return /(delete|remove|archive|restart|create|update|write|rotate|revoke|reset)/i.test(`${tool.name} ${tool.title ?? ''} ${tool.description ?? ''}`);
+}
+
 export function PlaygroundSection({
   playgroundTools,
   selectedTool,
@@ -110,6 +128,14 @@ export function PlaygroundSection({
       return error instanceof Error ? error.message : 'JSON parse error';
     }
   }, [argumentsJson]);
+  const riskyTool = isRiskyTool(selectedToolSummary);
+  const canCallTool = Boolean(selectedTool) && !argumentParseError;
+
+  useEffect(() => {
+    if (!selectedToolSummary) return;
+    onArgumentsJsonChange(defaultArgumentsJson(selectedToolSummary));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedToolSummary?.name]);
 
   function updateArgument(property: SchemaProperty, rawValue: string, checked?: boolean) {
     const next = { ...parsedArguments };
@@ -130,6 +156,8 @@ export function PlaygroundSection({
   }
 
   function callWithReplaySnapshot() {
+    if (!canCallTool) return;
+    if (riskyTool && !window.confirm('이 도구는 데이터를 변경하거나 삭제할 수 있습니다. 실제로 호출할까요?')) return;
     if (callResult && !callResult.includes('도구를 호출하는 중입니다')) {
       setPreviousResult(callResult);
     }
@@ -174,6 +202,11 @@ export function PlaygroundSection({
                   {favorites.includes(selectedToolSummary.name) ? '★ Pinned' : '☆ Pin'}
                 </button>
               </div>
+              {riskyTool ? (
+                <p className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800 dark:border-amber-400/30 dark:bg-amber-500/10 dark:text-amber-100">
+                  주의: 이 tool은 데이터를 변경/삭제할 수 있어 호출 전 확인이 필요합니다.
+                </p>
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -242,8 +275,8 @@ export function PlaygroundSection({
             <div className="flex flex-wrap items-center justify-between gap-3">
               <p className="text-sm text-muted-foreground">Replay는 같은 도구/arguments로 재호출합니다.</p>
               <div className="flex flex-wrap gap-2">
-                <button type="button" onClick={callWithReplaySnapshot} className="cm-button cm-button-primary">Call tool</button>
-                <button type="button" onClick={callWithReplaySnapshot} disabled={!selectedTool} className="cm-button cm-button-secondary">Replay</button>
+                <button type="button" onClick={callWithReplaySnapshot} disabled={!canCallTool} className="cm-button cm-button-primary disabled:cursor-not-allowed disabled:opacity-60">Call tool</button>
+                <button type="button" onClick={callWithReplaySnapshot} disabled={!canCallTool} className="cm-button cm-button-secondary disabled:cursor-not-allowed disabled:opacity-60">Replay</button>
               </div>
             </div>
             <pre className="mt-4 cm-code-block max-h-72">{callResult}</pre>

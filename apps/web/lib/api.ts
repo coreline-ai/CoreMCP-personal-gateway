@@ -176,6 +176,13 @@ export interface PlaygroundToolSummary {
   description?: string;
   inputSchema?: Record<string, unknown>;
   input_schema?: Record<string, unknown>;
+  annotations?: {
+    readOnlyHint?: boolean;
+    destructiveHint?: boolean;
+    idempotentHint?: boolean;
+    openWorldHint?: boolean;
+    [key: string]: unknown;
+  };
   icons?: Array<{ src: string; mimeType?: string; sizes?: string[] }>;
 }
 

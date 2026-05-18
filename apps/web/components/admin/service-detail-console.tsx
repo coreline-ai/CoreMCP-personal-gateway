@@ -216,6 +216,7 @@ export function ServiceDetailConsole({ serviceId }: ServiceDetailConsoleProps) {
   const [deleteConfirm, setDeleteConfirm] = useState('');
   const [updatingToolId, setUpdatingToolId] = useState<string | null>(null);
   const [applyingPreset, setApplyingPreset] = useState<ToolPreset | null>(null);
+  const [isValidating, setIsValidating] = useState(false);
   const [metadataDraft, setMetadataDraft] = useState<MetadataDraft>({
     category: '',
     homepage_url: '',
@@ -352,15 +353,19 @@ export function ServiceDetailConsole({ serviceId }: ServiceDetailConsoleProps) {
   }
 
   async function handleValidate() {
+    if (isValidating) return;
+    setIsValidating(true);
     setStatusMessage('Validation을 실행하는 중입니다...');
     try {
       const report = await coreMcpApi.validateService(service?.id ?? serviceId);
-      setStatusMessage(`Validation ${report.status}: tools ${report.tools_found}개`);
       await refreshDetail();
+      setStatusMessage(`Validation ${report.status}: tools ${report.tools_found}개`);
       setActiveTab('Validation');
     } catch (error) {
       setStatusMessage(explainError(error));
       await refreshDetail();
+    } finally {
+      setIsValidating(false);
     }
   }
 
@@ -389,6 +394,7 @@ export function ServiceDetailConsole({ serviceId }: ServiceDetailConsoleProps) {
   }
 
   async function handleApplyPreset(preset: ToolPreset) {
+    if (preset === 'full_access' && !window.confirm('Full access는 destructive tool까지 호출 가능하게 만들 수 있습니다. 계속할까요?')) return;
     const targetServiceId = service?.id ?? serviceId;
     setApplyingPreset(preset);
     setStatusMessage(`${preset} tool preset을 적용하는 중입니다...`);
@@ -424,6 +430,7 @@ export function ServiceDetailConsole({ serviceId }: ServiceDetailConsoleProps) {
   }
 
   async function handleDeleteCredential() {
+    if (!window.confirm('Downstream credential을 삭제할까요? 이 service는 auth_required 상태가 될 수 있습니다.')) return;
     setStatusMessage('Credential을 삭제하는 중입니다...');
     try {
       await coreMcpApi.deleteServiceCredential(service?.id ?? serviceId);
@@ -497,7 +504,7 @@ export function ServiceDetailConsole({ serviceId }: ServiceDetailConsoleProps) {
             <p className="mt-2 font-mono text-sm text-muted-foreground">{service?.slug ?? serviceId} · {service?.endpoint_url ?? 'endpoint unknown'}</p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <button type="button" onClick={handleValidate} className="cm-button cm-button-brand">Validate</button>
+            <button type="button" onClick={handleValidate} disabled={isValidating} className="cm-button cm-button-brand disabled:cursor-not-allowed disabled:opacity-60">{isValidating ? '검증 중...' : 'Validate'}</button>
             <button type="button" onClick={() => setActiveTab('Credential')} className="cm-button cm-button-secondary">Credential</button>
           </div>
         </div>
@@ -656,7 +663,7 @@ export function ServiceDetailConsole({ serviceId }: ServiceDetailConsoleProps) {
               <div className="cm-empty">
                 <h4 className="font-medium text-foreground">아직 cached tool이 없습니다.</h4>
                 <p className="cm-copy">Validation을 실행해 downstream MCP의 tools/list를 가져온 뒤 tool-level 권한을 조정하세요.</p>
-                <button type="button" onClick={handleValidate} className="mt-4 cm-button cm-button-brand">Validate 실행</button>
+                <button type="button" onClick={handleValidate} disabled={isValidating} className="mt-4 cm-button cm-button-brand disabled:cursor-not-allowed disabled:opacity-60">{isValidating ? '검증 중...' : 'Validate 실행'}</button>
               </div>
             )}
           </div>
@@ -671,7 +678,7 @@ export function ServiceDetailConsole({ serviceId }: ServiceDetailConsoleProps) {
               <h3 className="cm-section-title">검증 파이프라인</h3>
               <p className="cm-copy">SSRF guard를 먼저 통과한 뒤 MCP initialize와 tools/list를 실행합니다.</p>
             </div>
-            <button type="button" onClick={handleValidate} className="cm-button cm-button-primary">Run validation</button>
+            <button type="button" onClick={handleValidate} disabled={isValidating} className="cm-button cm-button-primary disabled:cursor-not-allowed disabled:opacity-60">{isValidating ? '검증 중...' : 'Run validation'}</button>
           </div>
           <ol className="mt-4 grid gap-3 md:grid-cols-5">
             {validationStages.map((stage, index) => <li key={stage} className="cm-panel-subtle"><span className="text-xs font-medium text-brand-700">0{index + 1}</span><p className="mt-2 text-sm font-medium text-foreground">{stage}</p></li>)}

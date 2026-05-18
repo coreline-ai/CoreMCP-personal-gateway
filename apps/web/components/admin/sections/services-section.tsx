@@ -15,7 +15,19 @@ interface ServicesSectionProps {
   onServiceUrlChange: (value: string) => void;
   onCreateService: (event: FormEvent<HTMLFormElement>) => void;
   onValidate: (serviceId: string) => void;
+  validatingServiceIds?: string[];
   onAddToToolbox: (serviceId: string) => void;
+}
+
+function matchesStatusFilter(serviceStatus: string, statusFilter: string): boolean {
+  if (statusFilter === 'all') return true;
+  if (statusFilter === 'active') {
+    // Validation is a transient refresh state. Keep last-known-good services
+    // visible in the active view so bulk validation does not make the list
+    // appear empty while catalog refresh is running.
+    return serviceStatus === 'active' || serviceStatus === 'validating';
+  }
+  return serviceStatus === statusFilter;
 }
 
 export function ServicesSection({
@@ -28,6 +40,7 @@ export function ServicesSection({
   onServiceUrlChange,
   onCreateService,
   onValidate,
+  validatingServiceIds = [],
   onAddToToolbox
 }: ServicesSectionProps) {
   const [query, setQuery] = useState('');
@@ -38,7 +51,7 @@ export function ServicesSection({
   const filteredServices = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     const items = services.filter((service) => {
-      const matchesStatus = statusFilter === 'all' || service.status === statusFilter;
+      const matchesStatus = matchesStatusFilter(service.status, statusFilter);
       const searchText = [
         service.name,
         service.slug,
@@ -104,25 +117,35 @@ export function ServicesSection({
             <h3 className="font-medium text-foreground">검색 조건에 맞는 MCP가 없습니다.</h3>
             <p className="mt-2 text-sm text-muted-foreground">검색어 또는 상태 필터를 조정하세요.</p>
           </div>
-        ) : filteredServices.map((service) => (
-          <div key={service.id} className="cm-panel">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-              <div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <a href={`/services/${service.id}`} className="font-medium text-foreground transition hover:underline">{service.name}</a>
-                  <span className={classNames('rounded-full px-2.5 py-1 text-xs font-medium ring-1', statusPill(service.status))}>{service.status}</span>
-                  <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground">tools {service.tool_count ?? 0}</span>
+        ) : filteredServices.map((service) => {
+          const isValidating = service.status === 'validating' || validatingServiceIds.includes(service.id);
+          return (
+            <div key={service.id} className="cm-panel">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <a href={`/services/${service.id}`} className="font-medium text-foreground transition hover:underline">{service.name}</a>
+                    <span className={classNames('rounded-full px-2.5 py-1 text-xs font-medium ring-1', statusPill(service.status))}>{service.status}</span>
+                    <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground">tools {service.tool_count ?? 0}</span>
+                  </div>
+                  <p className="mt-1 font-mono text-xs text-muted-foreground">{service.slug} · {service.endpoint_url}</p>
                 </div>
-                <p className="mt-1 font-mono text-xs text-muted-foreground">{service.slug} · {service.endpoint_url}</p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <a href={`/services/${service.id}`} className="cm-button cm-button-secondary">Detail</a>
-                <button type="button" onClick={() => onValidate(service.id)} className="cm-button cm-button-brand">Validate</button>
-                <button type="button" onClick={() => onAddToToolbox(service.id)} className="cm-button cm-button-secondary">도구함 추가</button>
+                <div className="flex flex-wrap gap-2">
+                  <a href={`/services/${service.id}`} className="cm-button cm-button-secondary">Detail</a>
+                  <button
+                    type="button"
+                    onClick={() => onValidate(service.id)}
+                    disabled={isValidating}
+                    className="cm-button cm-button-brand disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {isValidating ? '검증 중...' : 'Validate'}
+                  </button>
+                  <button type="button" onClick={() => onAddToToolbox(service.id)} className="cm-button cm-button-secondary">도구함 추가</button>
+                </div>
               </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </article>
   );

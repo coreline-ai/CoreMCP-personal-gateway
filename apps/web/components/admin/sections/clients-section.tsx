@@ -56,6 +56,7 @@ export function ClientsSection({
 }: ClientsSectionProps) {
   const mcpUrl = `${getApiBaseUrl().replace(/\/$/, '')}/mcp`;
   const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
   const generatedConfig = useMemo(() => {
     if (clientType === 'codex_cli') {
       return `make codex-install\ninfra/scripts/codex-exec-coremcp.sh "CoreMCP 도구 목록을 확인해줘"`;
@@ -73,9 +74,11 @@ export function ClientsSection({
     try {
       await navigator.clipboard.writeText(generatedConfig);
       setCopied(true);
+      setCopyFailed(false);
       window.setTimeout(() => setCopied(false), 1500);
     } catch {
       setCopied(false);
+      setCopyFailed(true);
     }
   }
 
@@ -83,12 +86,39 @@ export function ClientsSection({
     <article id="clients" className="cm-card">
       <p className="cm-kicker">Connected Clients</p>
       <h2 className="cm-section-title">연결된 AI client</h2>
-      <p className="cm-copy">Codex CLI exec를 1차 경로로 사용하고, Claude Code/OAuth/OpenClaw는 선택 client로 연결합니다.</p>
+      <p className="cm-copy">
+        여기서 client는 CoreMCP 안에서 새 AI agent를 만드는 기능이 아니라, Codex CLI·Claude Code·Cursor·ChatGPT 같은
+        외부 AI 도구가 CoreMCP 도구함을 호출할 수 있게 권한을 발급하고 추적하는 연결 항목입니다.
+      </p>
+
+      <div className="mt-4 grid gap-3 lg:grid-cols-3">
+        <div className="cm-panel-subtle">
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-brand-700 dark:text-brand-200">1. AI client</p>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">
+            Codex CLI exec, Claude Code, Cursor, ChatGPT처럼 MCP endpoint에 접속하는 외부 앱입니다.
+            CoreMCP는 이 앱을 대신 실행하지 않고 접속 권한만 관리합니다.
+          </p>
+        </div>
+        <div className="cm-panel-subtle">
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-brand-700 dark:text-brand-200">2. Client token</p>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">
+            외부 AI client가 <code className="rounded bg-card px-1.5 py-0.5 font-mono text-xs">/mcp</code>를 호출할 때 쓰는
+            bearer token입니다. Admin token과 분리되어 있고 revoke할 수 있습니다.
+          </p>
+        </div>
+        <div className="cm-panel-subtle">
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-brand-700 dark:text-brand-200">3. Agent가 하는 일</p>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">
+            실제 작업 판단은 Codex/Claude 같은 외부 agent가 합니다. CoreMCP는 그 agent에게 현재 도구함의 tool 목록을 보여주고,
+            허용된 tool call만 downstream MCP로 중계합니다.
+          </p>
+        </div>
+      </div>
 
       <form onSubmit={onCreateConnection} className="mt-4 grid gap-3 cm-panel-subtle lg:grid-cols-[1fr_1fr_auto_auto]">
         <label className="grid gap-1 text-xs font-medium text-muted-foreground">
           Client name
-          <input value={clientName} onChange={(event) => onClientNameChange(event.target.value)} className="cm-input py-2" />
+          <input value={clientName} onChange={(event) => onClientNameChange(event.target.value)} className="cm-input py-2" required />
         </label>
         <label className="grid gap-1 text-xs font-medium text-muted-foreground">
           Client type
@@ -102,7 +132,7 @@ export function ClientsSection({
             <option value="other">other</option>
           </select>
         </label>
-        <button type="submit" className="self-end cm-button cm-button-primary">등록+Token</button>
+        <button type="submit" disabled={!clientName.trim()} className="self-end cm-button cm-button-primary disabled:cursor-not-allowed disabled:opacity-60">등록+Token 발급</button>
         <button type="button" onClick={onCreateOneTimeToken} className="self-end cm-button cm-button-brand">
           One-time Token
         </button>
@@ -113,10 +143,11 @@ export function ClientsSection({
           <div>
             <p className="font-medium text-foreground">MCP endpoint</p>
             <p className="mt-1 font-mono text-xs text-muted-foreground">{mcpUrl}</p>
-            <p className="mt-2">선택한 client type에 맞는 config/command를 생성합니다.</p>
+            <p className="mt-2">선택한 client type에 맞는 config/command를 생성합니다. 이 값은 외부 AI client에 붙여 넣는 연결 정보입니다.</p>
           </div>
           <button type="button" onClick={copyGeneratedConfig} className="cm-button cm-button-secondary">{copied ? 'Copied' : 'Copy config'}</button>
         </div>
+        {copyFailed ? <p className="mt-2 text-xs font-medium text-amber-700 dark:text-amber-200">브라우저 클립보드 권한 때문에 복사하지 못했습니다. 아래 config를 직접 선택해서 복사하세요.</p> : null}
         <pre className="mt-3 whitespace-pre-wrap rounded-lg bg-primary px-3 py-3 font-mono text-xs leading-5 text-primary-foreground">{generatedConfig}</pre>
         <p className="mt-3">Bearer 지원 client는 <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">Authorization: Bearer cmcp_client_…</code> 헤더를 사용할 수 있습니다.</p>
       </div>
