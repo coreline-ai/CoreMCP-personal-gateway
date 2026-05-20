@@ -103,7 +103,7 @@ CoreMCP는 본인 1명이 Mac mini에서 운영하는 protected MCP gateway다. 
 | 외부환경 검증 필요 | actual macOS reboot recovery, Tailscale CLI install/login/Serve/ACL smoke, real external OAuth client compatibility, 실제 모바일 visual QA, long soak — `make external-env-validate`, `make mobile-qa-checklist`, `make soak-check`로 운영 host에서 결과 기록 |
 | 선택 Polish | Web Admin UX polish, 관측 dashboard/metric tuning, proactive health probe tuning은 지속 개선 대상 |
 
-### 🛠️ Stabilization Batch Notes — 2026-05-16
+### 🛠️ Stabilization Batch Notes — 2026-05-20
 
 - 권장 commit split은 `dev-plan/implement_20260514_224500.md` 및 후속 dev-plan에 기록되어 있습니다. 이 문서/code patch는 commit split을 **계획만** 하며, 사용자가 `commit/push`를 명시 요청하기 전에는 commit을 만들지 않습니다.
 - 2026-05-15/16 코드 레벨 안정화 사이클에서 다음 항목이 추가 통합되었습니다.
@@ -113,7 +113,8 @@ CoreMCP는 본인 1명이 Mac mini에서 운영하는 protected MCP gateway다. 
   - `coremcp.errors` 의 `CoreMcpError` / `CoreMcpValueError` / `CoreMcpRuntimeError` 공통 base 계층에 9개 도메인 예외를 모두 상속시켜 일관 catch 와 builtin 호환성을 양립시켰습니다.
   - `OAuthService.shutdown()` 을 lifespan teardown 에 연결하고, service mutation / circuit-open 시 `forget_downstream_session` 으로 downstream session cache 를 즉시 무효화합니다. TTL 만료는 reaper 가 별도 청소합니다.
   - `app_factory.create_app` 을 공개 import 경계로 명시하고 transition docstring 을 갱신했습니다.
-- 최신 API 검증: `cd apps/api && uv run pytest -q` **PASS** (159 passed). 최신 전체 smoke 기준: `make test` **PASS** (API 159 + fake-mcp 12 + demo-mcp-suite 21), 이전 검증 기준 `pnpm lint && pnpm build && pnpm test`, `make ui-smoke`, `git diff --check` **PASS**.
+- 2026-05-20 사이클 추가: 실사용 stdio MCP `apps/project-docs-mcp` 신규 (5 read-only tools: project_list / project_docs_list / project_docs_search / project_doc_read / project_summary, path traversal · symlink escape · write 차단). `make project-docs-register` 로 CoreMCP 도구함에 즉시 등록 가능. Web Admin `/simulator` 신규 — Codex CLI `exec` wrapper 챗봇 시뮬레이션 (4 quick-prompt + Chat result + MCP Tool trace + Run metadata 3 분할). 사이드바 아이콘에 `SimulatorIcon` 추가하고 admin-utils `sections` 에 Connections 그룹으로 등록.
+- 최신 API 검증: `cd apps/api && uv run pytest -q` **PASS** (206 passed). 최신 전체 smoke 기준: `make test` **PASS** (API 206 + fake-mcp 12 + demo-mcp-suite 21 + project-docs-mcp), 이전 검증 기준 `pnpm lint && pnpm build && pnpm test`, `make ui-smoke`, `make ui-smoke-p0` (23 cases), `git diff --check` **PASS**.
 - 외부환경 검증 대표 명령:
   - `make external-env-validate`
   - `COREMCP_EXTERNAL_API_URL=https://<host> COREMCP_EXTERNAL_WEB_URL=https://<host> make external-env-validate`
@@ -128,7 +129,7 @@ CoreMCP Web Admin (`http://localhost:3003`) 의 8개 주요 화면입니다. adm
 
 ![Dashboard](coremcp-docs/screenshots/web-admin/01-dashboard.png)
 
-운영 한눈 보기 — KPI 4 카드(Default Toolbox 항목 수, MCP Services active/total, Client Tokens 활성 수, 최근 24h Tool Calls + 평균 latency)와 운영 상태(error rate, max latency, health failing, circuit open) + `Top tools 24h` 로 가장 많이 호출된 도구를 표시합니다. 사이드바 하단 `Health` 버튼으로 `GET /health` 즉시 점검 가능합니다.
+운영 한눈 보기 — 상단 **`READ-ONLY OVERVIEW`** 안내 + 자주 쓰는 3 액션 바로가기(MCP 추가/등록 · 도구 테스트 · 최근 로그). **KPI 4 카드** 각각 도메인 deep-link 포함(Default Toolbox → 도구함 관리, MCP Services active/total → 서비스 보기, Client Tokens → client 연결, 24h Tool Calls + 평균 latency + errors → 로그 확인). **운영 상태** 패널(error rate · max latency · health failing · circuit open) + **Top tools 24h** 호출 빈도 순위(예: `project_docs.project_list 33 calls`). 사이드바 하단 `Health` 버튼으로 `GET /health` 즉시 점검.
 
 ### 2. Services `/services`
 
@@ -146,7 +147,7 @@ CoreMCP Web Admin (`http://localhost:3003`) 의 8개 주요 화면입니다. adm
 
 ![Toolbox](coremcp-docs/screenshots/web-admin/04-toolbox.png)
 
-Default 도구함의 가시 상태 — 등록된 서비스마다 service-level enable/disable 토글과 per-tool count 색 핀(callable / visible_only / hidden / disabled)을 표시합니다. 토글 변경은 즉시 `notifications/tools/list_changed` SSE 로 fan-out 되어 다른 탭의 Playground 도구 목록까지 자동 동기화됩니다.
+Default 도구함의 가시 상태 — 9 service (8 demo + `project_docs`) 마다 `service enabled` + status 배지, `Disable service` / `Remove` 버튼, per-tool count 색 핀(callable / visible_only / hidden / disabled tools). 토글 변경은 즉시 `notifications/tools/list_changed` SSE 로 fan-out 되어 다른 탭의 Playground 도구 목록까지 자동 동기화됩니다.
 
 ### 5. Playground `/playground`
 
@@ -158,19 +159,25 @@ Default 도구함의 가시 상태 — 등록된 서비스마다 service-level e
 
 ![Connected Clients](coremcp-docs/screenshots/web-admin/06-clients.png)
 
-외부 AI agent (Codex CLI exec / Claude Code / Cursor / ChatGPT / OpenClaw 등) 를 CoreMCP에 연결할 때 사용. `등록+Token` 으로 client_type / client_name 입력 후 client token 1회 발급(`cmcp_client_…`), `One-time Token` 으로 OAuth 미지원 client 용 10분 TTL 1회용 prompt+token 발급, `Revoke` 로 즉시 차단(다른 client 영향 0). 모든 발급/회수는 audit 기록됩니다.
+외부 AI agent (Codex CLI exec / Claude Code / Cursor / ChatGPT / OpenClaw 등) 를 CoreMCP 에 연결할 때 사용 — 상단 **3-step 안내** (1. AI CLIENT 선택 → 2. CLIENT TOKEN 발급 → 3. AGENT 도구함 사용), `Client name` + `Client type` 입력 후 `등록+Token 발급` 또는 OAuth 미지원 client 용 `One-time Token` (10 분 TTL), **MCP endpoint URL + `Copy config`** 버튼, Codex CLI exec helper 코드 블록 (`make codex-install`), **4 가이드 카드** (Codex CLI exec / Claude Code · bearer / OAuth client / OpenClaw · one-time token). 등록된 client 목록 + 개별 `Revoke`. 모든 발급/회수는 audit 기록됩니다.
 
 ### 7. Logs `/logs`
 
 ![Logs](coremcp-docs/screenshots/web-admin/07-logs.png)
 
-최근 tool invocation 과 audit event 를 단일 화면에서 — invocation 은 method/exposed_tool_name/status/latency_ms/created_at, audit 은 action(`service.create` / `service.validate.success` / `policy.deny` / `ssrf.block` / `credential.put` 등)/resource_type/resource_id/request_id 표시. `X-Request-ID` 가 invocation 과 audit cross-link 됩니다. metadata 에 admin/client token 노출 0건 (structlog `redact_sensitive_data` processor + 회귀 테스트로 보장).
+**Tool invocations** 와 **Audit events** 두 분할 카드 리스트 — 우측 상단 status filter dropdown(`All events` / `success` / `failure` / `policy_denied` 등) + 검색. invocation 카드: request_id / direction / status (success·failure 색 핀) / error_code / downstream warm·cold / latency_ms / created_at. audit 카드: action(`service.create` / `service.validate.success` / `policy.deny` / `ssrf.block` / `credential.put` 등) / resource_type / resource_id / request_id. `X-Request-ID` 기준 invocation ↔ audit cross-link. metadata 에 admin/client token 노출 0건 (structlog `redact_sensitive_data` + 회귀 테스트로 보장).
 
 ### 8. Settings / Tokens `/settings`
 
 ![Settings / Tokens](coremcp-docs/screenshots/web-admin/08-settings.png)
 
-admin token 은 항상 마스킹 표시 (`cmcp_admin_••••`) — 실제 값은 sessionStorage 에만, 절대 응답·로그에 노출되지 않습니다. 전체 client token 리스트(prefix + scopes + status + last_used_at)와 환경 meta(auth_mode / secret_backend / cache_backend / app_version) 표시. Revoke 는 Settings 와 Connected Clients 양쪽에서 가능합니다.
+상단 **amber 주의 안내** — *"admin token 은 브라우저 sessionStorage 에만 저장됩니다. client token 평문은 발급 응답에서 1 회만 표시됩니다."* Admin Token 섹션은 항상 마스킹 (`cmcp_admin_h••••1TY0`) — 실제 값은 sessionStorage 에만, 응답·로그에 노출되지 않습니다. 활성 client token 리스트(token_prefix + status + external_connection_id) + 개별 Revoke. Revoke 는 Settings 와 Connected Clients 양쪽에서 가능합니다.
+
+### 9. AI Client Simulator `/simulator`
+
+![AI Client Simulator](coremcp-docs/screenshots/web-admin/09-simulator.png)
+
+Codex CLI `exec` wrapper 를 실제로 실행해 외부 AI agent 가 CoreMCP 도구함을 어떻게 사용하는지 챗봇처럼 시뮬레이션 — 4 개 quick-prompt 칩(전체 프로젝트 정리 / 대표 README 요약 / MCP 문서 검색 / 도구함 확인) 또는 자유 Prompt 입력 → `Codex 시뮬레이션 실행` → Codex 가 `/mcp tools/list + tools/call` 호출 → **Chat result**(Codex 최종 답변) + **Tool trace**(MCP 호출 흐름) + **Run metadata**(exit code / duration / stdout) 3 분할로 결과 확인. Timeout 도 페이지에서 조절(기본 120초).
 
 ---
 
