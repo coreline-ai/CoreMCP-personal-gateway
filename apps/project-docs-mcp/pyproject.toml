@@ -1,0 +1,23 @@
+[project]
+name = "project-docs-mcp"
+version = "0.1.0"
+description = "Read-only MCP server for project README and Markdown documents."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "pytest>=8.0.0",
+]
+
+[project.scripts]
+project-docs-mcp = "project_docs_mcp.main:main"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["project_docs_mcp*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
