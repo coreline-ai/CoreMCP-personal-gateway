@@ -6,6 +6,7 @@ export const sections = [
   { id: 'services', label: 'Services', href: '/services', group: 'MCP' },
   { id: 'toolbox', label: '도구함', href: '/toolbox', group: 'MCP' },
   { id: 'playground', label: 'Playground', href: '/playground', group: 'MCP' },
+  { id: 'simulator', label: 'AI Client Simulator', href: '/simulator', group: 'Connections' },
   { id: 'clients', label: '연결된 AI client', href: '/clients', group: 'Connections' },
   { id: 'settings', label: 'Settings/Tokens', href: '/settings', group: 'Configure' }
 ] as const;
@@ -26,6 +27,10 @@ export const pageTitles: Record<string, { title: string; description: string }> 
   clients: {
     title: '연결된 AI client',
     description: 'Codex CLI exec를 1차 경로로 두고 client token과 연결 상태를 관리합니다.'
+  },
+  simulator: {
+    title: 'AI Client Simulator',
+    description: 'Codex CLI exec가 CoreMCP 도구함을 실제로 호출하는 흐름을 챗봇처럼 테스트합니다.'
   },
   settings: {
     title: 'Settings/Tokens',

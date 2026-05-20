@@ -34,6 +34,7 @@ from coremcp.api import (
     register_oauth_routes,
     register_playground_routes,
     register_services_routes,
+    register_simulator_routes,
     register_toolboxes_routes,
 )
 from coremcp.credentials import build_vault
@@ -1918,6 +1919,16 @@ def create_app(settings: Settings | None = None, http_client: httpx.AsyncClient 
         api_error=api_error,
         refresh_tools=refresh_tools_route,
         handle_tools_call=_handle_tools_call,
+        correlation_id=correlation_id,
+    )
+
+    register_simulator_routes(
+        app,
+        verify_admin_request=verify_admin_request,
+        unauthorized_response=unauthorized_response,
+        json_body=_json_body,
+        api_error=api_error,
+        request_ip=request_ip,
         correlation_id=correlation_id,
     )
 

@@ -246,6 +246,24 @@ export interface AuditLogSummary {
   created_at?: string;
 }
 
+export interface CodexSimulatorToolCall {
+  server?: string | null;
+  name?: string | null;
+  status?: string | null;
+}
+
+export interface CodexSimulatorResponse {
+  status: 'completed' | 'failed' | 'timed_out' | string;
+  exit_code: number | null;
+  duration_ms: number;
+  answer: string;
+  stdout: string;
+  stderr: string;
+  tool_calls: CodexSimulatorToolCall[];
+  stdout_truncated?: boolean;
+  stderr_truncated?: boolean;
+}
+
 interface ApiFetchOptions extends Omit<RequestInit, 'body' | 'headers'> {
   body?: unknown;
   headers?: HeadersInit;
@@ -423,6 +441,11 @@ export const coreMcpApi = {
   listPlaygroundTools: () => apiFetch<ListResponse<PlaygroundToolSummary>>('/v1/playground/tools/list?limit=100'),
   callPlaygroundTool: (exposedName: string, args: Record<string, unknown>) =>
     apiFetch<unknown>('/v1/playground/tools/call', { method: 'POST', body: { exposed_name: exposedName, arguments: args } }),
+  runCodexSimulator: (prompt: string, timeoutSeconds = 120) =>
+    apiFetch<CodexSimulatorResponse>('/v1/simulator/codex/run', {
+      method: 'POST',
+      body: { prompt, timeout_seconds: timeoutSeconds }
+    }),
   listToolInvocations: () => apiFetch<ListResponse<ToolInvocationSummary>>('/v1/tool-invocations?limit=10'),
   listAuditLogs: () => apiFetch<ListResponse<AuditLogSummary>>('/v1/audit-logs?limit=10')
 };

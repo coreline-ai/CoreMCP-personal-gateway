@@ -65,6 +65,13 @@ class Settings(BaseSettings):
     mcp_rate_limit_per_minute: int = Field(default=120, alias="COREMCP_MCP_RATE_LIMIT_PER_MINUTE")
     service_rate_limit_per_minute: int = Field(default=120, alias="COREMCP_SERVICE_RATE_LIMIT_PER_MINUTE")
     downstream_session_ttl_seconds: int = Field(default=3600, alias="COREMCP_DOWNSTREAM_SESSION_TTL_SECONDS")
+    codex_simulator_enabled: bool = Field(default=True, alias="COREMCP_CODEX_SIMULATOR_ENABLED")
+    codex_simulator_timeout_seconds: int = Field(default=120, alias="COREMCP_CODEX_SIMULATOR_TIMEOUT_SECONDS")
+    codex_simulator_max_prompt_chars: int = Field(default=4000, alias="COREMCP_CODEX_SIMULATOR_MAX_PROMPT_CHARS")
+    codex_simulator_script: Path = Field(
+        default=Path("infra/scripts/codex-exec-coremcp.sh"),
+        alias="COREMCP_CODEX_SIMULATOR_SCRIPT",
+    )
     cors_allowed_origins: str = Field(
         default=DEFAULT_CORS_ALLOWED_ORIGINS,
         alias="COREMCP_CORS_ALLOWED_ORIGINS",

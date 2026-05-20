@@ -26,6 +26,7 @@ import { LogsSection } from './sections/logs-section';
 import { PlaygroundSection } from './sections/playground-section';
 import { ServicesSection } from './sections/services-section';
 import { SettingsSection } from './sections/settings-section';
+import { SimulatorSection } from './sections/simulator-section';
 import { ToolboxSection } from './sections/toolbox-section';
 
 const HEALTH_CHECK_PROMPT = 'Health 버튼을 눌러 API 상태를 확인하세요.';
@@ -61,7 +62,7 @@ export function AdminConsole({ initialSection = 'dashboard' }: { initialSection?
 
   const tokenPreview = useMemo(() => maskToken(token), [token]);
   const toolboxItems = (defaultToolbox?.items ?? []) as ToolboxItemSummary[];
-  const activeSection = ['dashboard', 'services', 'toolbox', 'clients', 'settings', 'playground', 'logs'].includes(initialSection)
+  const activeSection = ['dashboard', 'services', 'toolbox', 'clients', 'settings', 'playground', 'simulator', 'logs'].includes(initialSection)
     ? initialSection
     : 'dashboard';
 
@@ -396,6 +397,10 @@ export function AdminConsole({ initialSection = 'dashboard' }: { initialSection?
           onCallTool={handleCallTool}
         />
       );
+    }
+
+    if (activeSection === 'simulator') {
+      return <SimulatorSection token={token} />;
     }
 
     return <LogsSection invocations={invocations} auditLogs={auditLogs} />;

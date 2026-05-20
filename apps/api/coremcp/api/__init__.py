@@ -9,6 +9,7 @@ from .mcp_endpoint import register_mcp_routes
 from .oauth import oauth_issuer, oauth_resource, register_oauth_routes
 from .playground import register_playground_routes
 from .services import register_services_routes
+from .simulator import register_simulator_routes
 from .toolboxes import register_toolboxes_routes
 
 __all__ = [
@@ -21,5 +22,6 @@ __all__ = [
     "register_oauth_routes",
     "register_playground_routes",
     "register_services_routes",
+    "register_simulator_routes",
     "register_toolboxes_routes",
 ]

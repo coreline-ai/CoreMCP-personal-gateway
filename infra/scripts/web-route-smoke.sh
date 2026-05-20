@@ -79,7 +79,7 @@ check_security_headers
 "${PW[@]}" open "$WEB_URL/services" >/dev/null
 check_path "/services"
 
-for path in /toolbox /clients /settings /playground /logs; do
+for path in /toolbox /clients /settings /playground /simulator /logs; do
   click_route "$path"
   check_path "$path"
 done

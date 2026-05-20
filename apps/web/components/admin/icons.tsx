@@ -88,6 +88,16 @@ export const ClientsIcon: Icon = (props) => (
   </svg>
 );
 
+// Simulator: chat bubble with tool sparkle
+export const SimulatorIcon: Icon = (props) => (
+  <svg {...base} {...props}>
+    <path d="M4 5.5 h16 v9.5 a2 2 0 0 1 -2 2 H9 l-4 3 v-3 H4 a2 2 0 0 1 -2 -2 V7.5 a2 2 0 0 1 2 -2 Z" />
+    <path d="M8 10.5 H13.5" />
+    <path d="M8 13.5 H11.5" />
+    <path d="M16.5 9 l0.5 1.3 l1.3 0.5 l-1.3 0.5 l-0.5 1.3 l-0.5 -1.3 l-1.3 -0.5 l1.3 -0.5 Z" />
+  </svg>
+);
+
 // Settings: gear
 export const SettingsIcon: Icon = (props) => (
   <svg {...base} {...props}>
@@ -109,6 +119,7 @@ export const sectionIcons: Record<string, Icon> = {
   services: ServicesIcon,
   toolbox: ToolboxIcon,
   playground: PlaygroundIcon,
+  simulator: SimulatorIcon,
   clients: ClientsIcon,
   settings: SettingsIcon,
 };
