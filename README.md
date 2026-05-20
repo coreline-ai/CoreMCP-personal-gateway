@@ -86,7 +86,9 @@ CoreMCP는 본인 1명이 Mac mini에서 운영하는 protected MCP gateway다. 
 - API CORS는 `COREMCP_CORS_ALLOWED_ORIGINS` 환경변수로 허용 origin을 관리하며, Web UI ↔ API ↔ demo MCP 통합 흐름은 `make ui-smoke`로 검증합니다.
 - Web Admin 디자인 시스템은 `docs/design/`에 code-level audit, component pattern, token JSON/CSS/SVG asset으로 정리했고, `cm-*` semantic primitive를 전체 admin route에 반영했습니다.
 - Local demo MCP suite는 `apps/demo-mcp-suite`에서 8개 가상 MCP endpoint를 제공하며, 외부 credential 없이 CoreMCP service 등록/validation/도구함/preset/Playground 흐름을 시연할 수 있습니다.
+- Project Docs MCP는 `apps/project-docs-mcp`에서 `/Users/hwanchoi/projects` 하위 프로젝트의 `README.md` 및 Markdown 문서를 read-only로 검색/읽기할 수 있는 실사용용 stdio MCP service를 제공합니다. `make project-docs-register`로 CoreMCP 도구함에 바로 등록됩니다.
 - Codex CLI `exec` 연결 helper를 추가했습니다. `make codex-install`은 Codex 전용 client token을 발급해 `~/.coremcp/codex-client-token`에 저장하고, `codex mcp add coremcp --url ... --bearer-token-env-var COREMCP_CLIENT_TOKEN` 구성을 등록합니다.
+- Web Admin `/simulator` 는 Codex CLI exec wrapper를 실행해 연결된 AI client가 CoreMCP 도구함을 실제로 호출하는 흐름을 챗봇처럼 시뮬레이션합니다.
 - launchd fake-mcp/API/Web/backup/logrotate/refresh 실제 load smoke와 plist 검증을 통과했습니다. Reboot 검증은 실제 재부팅이 필요하며, Tailscale 검증은 현재 머신에 CLI가 없어 skipped 상태입니다.
 
 ---
@@ -181,6 +183,8 @@ admin token 은 항상 마스킹 표시 (`cmcp_admin_••••`) — 실제 �
 | **Authentication** | Admin file bearer + per-client DB hash token + MCP scope enforcement | implemented + tested |
 | **Codex CLI exec** | Codex MCP config 등록 + client token env wrapper + non-LLM MCP smoke | implemented + tested |
 | **Demo MCP Suite** | 8개 local demo MCP endpoint + registration payload + preset demo tools | implemented + tested |
+| **Project Docs MCP** | `/Users/hwanchoi/projects` 하위 README/Markdown read-only 검색·읽기 stdio MCP | implemented + tested |
+| **AI Client Simulator** | Web Admin `/simulator`에서 Codex CLI exec → CoreMCP `/mcp` tool call 흐름을 챗봇형으로 실행/관찰 | implemented + tested |
 | **MCP Registry** | private service 등록, category/homepage/docs/logo metadata, validation, schema cache + schema diff detail | implemented + tested |
 | **Toolbox** | default toolbox, item enable/disable, tool-level override(`hidden`/`visible_only`/`callable`), preset(`readonly`/`dangerous_off`/`full_access`), dynamic catalog | implemented + tested |
 | **Tool Alias** | `service_slug.tool_name` 매핑, primary alias | implemented |
@@ -233,10 +237,18 @@ open http://127.0.0.1:3003
 make codex-install
 make codex-smoke
 
-# 5. Codex CLI exec에서 CoreMCP 도구함 사용
-infra/scripts/codex-exec-coremcp.sh "CoreMCP MCP 도구 목록을 확인해줘"
+# 5. /Users/hwanchoi/projects Markdown 문서 읽기용 MCP 등록
+make project-docs-register
+make codex-smoke
 
-# 6. 중지
+# 6. Codex CLI exec에서 CoreMCP 도구함 사용
+infra/scripts/codex-exec-coremcp.sh "CoreMCP MCP 도구 목록을 확인해줘"
+infra/scripts/codex-exec-coremcp.sh "project_docs.project_list 도구로 전체 프로젝트 목록을 보고 카테고리별로 정리해줘"
+
+# 7. Web Admin에서 챗봇형 시뮬레이션
+open http://127.0.0.1:3003/simulator
+
+# 8. 중지
 make stop
 ```
 
@@ -380,11 +392,12 @@ CoreMCP/
 │   │   │       └── repos/                    # services / catalog / credentials / connections / toolbox / audit / jobs
 │   │   └── alembic/                # 마이그레이션 (0001 ~ 0008)
 │   ├── web/                        # Next.js 15 admin (App Router)
-│   │   ├── app/                    # Dashboard / Services / Toolbox / Clients / Playground / Logs / Settings
+│   │   ├── app/                    # Dashboard / Services / Toolbox / Clients / Playground / Simulator / Logs / Settings
 │   │   ├── components/admin/       # admin-shell, sections/*, icons, tool-icon
 │   │   └── middleware.ts           # CSP / nonce / 보안 헤더
 │   ├── fake-mcp/                   # 테스트용 downstream MCP (단일 server)
-│   └── demo-mcp-suite/             # 8개 가상 demo MCP endpoint
+│   ├── demo-mcp-suite/             # 8개 가상 demo MCP endpoint
+│   └── project-docs-mcp/           # /Users/hwanchoi/projects Markdown read-only MCP
 ├── packages/
 │   ├── shared-types/
 │   └── client-profiles/
