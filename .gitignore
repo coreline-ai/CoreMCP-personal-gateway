@@ -16,6 +16,7 @@ dist/
 build/
 .playwright-cli/
 dev-plan/.artifacts/
+apps/*/dev-plan/.artifacts/
 
 # Local runtime data
 .coremcp/
