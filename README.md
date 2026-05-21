@@ -179,6 +179,24 @@ Default 도구함의 가시 상태 — 9 service (8 demo + `project_docs`) 마�
 
 Codex CLI `exec` wrapper 를 실제로 실행해 외부 AI agent 가 CoreMCP 도구함을 어떻게 사용하는지 챗봇처럼 시뮬레이션 — 4 개 quick-prompt 칩(전체 프로젝트 정리 / 대표 README 요약 / MCP 문서 검색 / 도구함 확인) 또는 자유 Prompt 입력 → `Codex 시뮬레이션 실행` → Codex 가 `/mcp tools/list + tools/call` 호출 → **Chat result**(Codex 최종 답변) + **Tool trace**(MCP 호출 흐름) + **Run metadata**(exit code / duration / stdout) 3 분할로 결과 확인. Timeout 도 페이지에서 조절(기본 120초).
 
+#### 추천 사용 예시 — Project Docs MCP
+
+`/simulator` 또는 실제 Codex CLI `exec`에서 아래 프롬프트를 그대로 실행하면 `/Users/hwanchoi/projects` 하위 프로젝트 문서를 빠르게 정리할 수 있습니다.
+
+| 목적 | 추천 프롬프트 |
+|---|---|
+| 전체 프로젝트 파악 | `project_docs.project_list 도구만 1회 사용해서 전체 프로젝트 목록을 확인해줘. 추가 문서 읽기는 금지. 총 프로젝트 수, README 있는/없는 수, Markdown 수 기준 문서화 상태를 3줄로 요약하고, 최대 6개 카테고리 표로 묶어줘.` |
+| 문서화 상위 프로젝트 | `project_docs.project_list 도구만 사용해서 Markdown 문서가 많은 프로젝트 상위 10개를 찾아줘. README 유무, Markdown 수, 문서화 정도를 표로 정리해줘. 추가 문서 본문은 읽지 마.` |
+| README 없는 프로젝트 점검 | `project_docs.project_list 도구만 사용해서 README가 없는 프로젝트를 찾아줘. Markdown 수가 많은데 README가 없는 프로젝트를 우선순위 높게 표시하고, 정리 필요성을 한국어로 제안해줘.` |
+| 특정 키워드 문서 검색 | `project_docs.project_docs_search 도구로 "MCP"를 검색하고 관련 문서 후보 5개를 프로젝트명/파일명/근거 중심으로 정리해줘.` |
+| 대표 프로젝트 README 요약 | `project_docs.project_summary 도구로 html-news-creator 프로젝트 README를 읽고, 이 프로젝트의 목적, 주요 기능, 구조, 다음 개선 작업을 한국어로 짧게 요약해줘.` |
+
+CLI에서 바로 실행할 때는 다음처럼 사용합니다.
+
+```bash
+infra/scripts/codex-exec-coremcp.sh "project_docs.project_list 도구만 사용해서 README가 없는 프로젝트를 찾아줘. Markdown 수가 많은데 README가 없는 프로젝트를 우선순위 높게 표시하고, 정리 필요성을 한국어로 제안해줘."
+```
+
 ---
 
 ## 📦 Features
