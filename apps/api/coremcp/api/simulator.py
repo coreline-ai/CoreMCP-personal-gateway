@@ -211,7 +211,7 @@ def register_simulator_routes(
 
         runner = getattr(request.app.state, "codex_simulator_runner", run_codex_simulator)
         result = await runner(prompt=prompt, timeout_seconds=timeout_seconds, settings=settings)
-        await request.app.state.repository.log_audit(
+        await request.app.state.repos.audit.log_audit(
             action="simulator.codex.run",
             resource_type="simulator",
             resource_id="codex",

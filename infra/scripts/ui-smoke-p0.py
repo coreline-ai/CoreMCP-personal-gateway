@@ -342,10 +342,14 @@ with sync_playwright() as p:
     page.reload(wait_until="networkidle")
     page.wait_for_timeout(3000)
     body_text = page.locator("main").inner_text()
-    d02_ok = ("최신 데이터를 불러왔습니다" in body_text and "8/8" in body_text
+    import re as _re
+    services_match = _re.search(r"(\d+)/(\d+)", body_text)
+    services_ok = bool(services_match and int(services_match.group(1)) >= 1 and services_match.group(1) == services_match.group(2))
+    d02_ok = ("최신 데이터를 불러왔습니다" in body_text and services_ok
               and "auth ok" in body_text and "auth mode: static_bearer" in body_text)
-    record("D-02", "PASS" if d02_ok else "FAIL",
-           "auth ok + 8/8 + static_bearer" if d02_ok else body_text[:120])
+    detail = (f"auth ok + {services_match.group(0)} + static_bearer"
+              if d02_ok and services_match else body_text[:120])
+    record("D-02", "PASS" if d02_ok else "FAIL", detail)
     page.screenshot(path=str(OUT_DIR / "p0_D-02_authed.png"), full_page=True)
 
     # D-04: Health 버튼

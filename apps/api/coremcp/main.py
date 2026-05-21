@@ -693,6 +693,13 @@ async def _publish_list_changed(
     categories: tuple[ListChangedCategory, ...] = LIST_CHANGED_CATEGORIES,
 ) -> None:
     _invalidate_catalog_caches(app)
+    # Tool override / preset / catalog 변화는 같은 (token, tool, key) 조합의
+    # 캐시된 응답을 stale 로 만든다. permission/visibility 변경 직후 idempotency
+    # cache 가 남아 있으면 막힌 도구가 다시 success 응답을 돌려줄 수 있어 명시
+    # 무효화한다.
+    idempotency_cache = getattr(app.state, "idempotency_cache", None)
+    if idempotency_cache is not None:
+        idempotency_cache.clear()
     for category in categories:
         await app.state.list_changed_bus.publish_list_changed(
             category=category,
