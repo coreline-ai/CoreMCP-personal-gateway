@@ -201,6 +201,7 @@ function AuditLogCard({ item }: { item: AuditLogSummary }) {
 export function ServiceDetailConsole({ serviceId }: ServiceDetailConsoleProps) {
   const [token, setToken] = useState<string | null>(null);
   const [tokenInput, setTokenInput] = useState('');
+  const [mounted, setMounted] = useState(false);
   const [healthMessage, setHealthMessage] = useState(HEALTH_CHECK_PROMPT);
   const [statusMessage, setStatusMessage] = useState('Admin token 저장 후 service detail을 불러오세요.');
   const [service, setService] = useState<McpServiceSummary | null>(null);
@@ -228,6 +229,7 @@ export function ServiceDetailConsole({ serviceId }: ServiceDetailConsoleProps) {
     const stored = getStoredAdminToken();
     setToken(stored);
     setTokenInput(stored ?? '');
+    setMounted(true);
 
     const handleUnauthorized = () => {
       setToken(null);
@@ -486,6 +488,7 @@ export function ServiceDetailConsole({ serviceId }: ServiceDetailConsoleProps) {
       tokenInput={tokenInput}
       tokenPreview={tokenPreview}
       healthMessage={healthMessage}
+      mounted={mounted}
       onTokenInputChange={setTokenInput}
       onTokenSubmit={handleTokenSubmit}
       onTokenClear={handleTokenClear}

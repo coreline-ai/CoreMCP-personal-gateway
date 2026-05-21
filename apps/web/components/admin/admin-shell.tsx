@@ -14,6 +14,7 @@ interface AdminShellProps {
   tokenInput: string;
   tokenPreview: string;
   healthMessage: string;
+  mounted: boolean;
   onTokenInputChange: (value: string) => void;
   onTokenSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onTokenClear: () => void;
@@ -29,6 +30,7 @@ export function AdminShell({
   tokenInput,
   tokenPreview,
   healthMessage,
+  mounted,
   onTokenInputChange,
   onTokenSubmit,
   onTokenClear,
@@ -54,9 +56,13 @@ export function AdminShell({
           </Link>
           <div className="flex items-center justify-between gap-2 px-1">
             <span className="text-xs text-muted-foreground">Local Gateway</span>
-            <span className={classNames('rounded-full px-2 py-0.5 text-xs font-medium', token ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700')}>
-              {token ? 'auth ok' : 'token 필요'}
-            </span>
+            {mounted ? (
+              <span className={classNames('rounded-full px-2 py-0.5 text-xs font-medium', token ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700')}>
+                {token ? 'auth ok' : 'token 필요'}
+              </span>
+            ) : (
+              <span aria-hidden="true" className="rounded-full px-2 py-0.5 text-xs font-medium opacity-0">token 필요</span>
+            )}
           </div>
           <Link href="/services" className="cm-sidebar-link" data-active={activeSection === 'services' ? 'true' : 'false'}>
             <span aria-hidden="true">＋</span>
@@ -94,13 +100,16 @@ export function AdminShell({
           <input
             id="admin-token"
             type="password"
-            value={tokenInput}
+            value={mounted ? tokenInput : ''}
             onChange={(event) => onTokenInputChange(event.target.value)}
             placeholder="cmcp_admin_..."
             autoComplete="off"
             className="mt-2 cm-input"
+            suppressHydrationWarning
           />
-          <p className="mt-2 truncate font-mono text-xs text-muted-foreground">{tokenPreview}</p>
+          <p className="mt-2 min-h-[1rem] truncate font-mono text-xs text-muted-foreground" suppressHydrationWarning>
+            {mounted ? tokenPreview : ''}
+          </p>
           <div className="mt-3 flex gap-2">
             <button type="submit" className="cm-button cm-button-primary cm-button-sm">저장</button>
             <button type="button" onClick={onTokenClear} className="cm-button cm-button-secondary cm-button-sm">삭제</button>
@@ -123,9 +132,13 @@ export function AdminShell({
             <p className="hidden truncate text-xs text-muted-foreground sm:block">{page.description}</p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            <span className={classNames('hidden rounded-full px-2 py-0.5 text-xs font-medium sm:inline-flex', token ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700')}>
-              {token ? 'session 저장됨' : 'token 필요'}
-            </span>
+            {mounted ? (
+              <span className={classNames('hidden rounded-full px-2 py-0.5 text-xs font-medium sm:inline-flex', token ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700')}>
+                {token ? 'session 저장됨' : 'token 필요'}
+              </span>
+            ) : (
+              <span aria-hidden="true" className="hidden rounded-full px-2 py-0.5 text-xs font-medium opacity-0 sm:inline-flex">session 저장됨</span>
+            )}
             <button type="button" onClick={onRefresh} className="cm-button cm-button-secondary cm-button-sm">새로고침</button>
           </div>
         </header>

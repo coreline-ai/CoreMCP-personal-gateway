@@ -8,9 +8,14 @@ export const metadata: Metadata = {
 
 export const dynamic = 'force-dynamic';
 
+const themeBootScript = `(function(){try{var s=localStorage.getItem('coremcp_theme')||'dark';var t=s==='system'?(window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'):s;var c=document.documentElement.classList;if(t==='dark'){c.add('dark');}else{c.remove('dark');}document.documentElement.style.colorScheme=t;}catch(e){document.documentElement.classList.add('dark');document.documentElement.style.colorScheme='dark';}})();`;
+
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="ko" className="dark" suppressHydrationWarning>
+    <html lang="ko" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeBootScript }} />
+      </head>
       <body>{children}</body>
     </html>
   );

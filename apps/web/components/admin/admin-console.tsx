@@ -34,6 +34,7 @@ const HEALTH_CHECK_PROMPT = 'Health 버튼을 눌러 API 상태를 확인하세�
 export function AdminConsole({ initialSection = 'dashboard' }: { initialSection?: string }) {
   const [token, setToken] = useState<string | null>(null);
   const [tokenInput, setTokenInput] = useState('');
+  const [mounted, setMounted] = useState(false);
   const [healthMessage, setHealthMessage] = useState(HEALTH_CHECK_PROMPT);
   const [statusMessage, setStatusMessage] = useState('Admin token 저장 후 데이터를 불러오세요.');
 
@@ -70,6 +71,7 @@ export function AdminConsole({ initialSection = 'dashboard' }: { initialSection?
     const stored = getStoredAdminToken();
     setToken(stored);
     setTokenInput(stored ?? '');
+    setMounted(true);
 
     const handleUnauthorized = () => {
       setToken(null);
@@ -414,6 +416,7 @@ export function AdminConsole({ initialSection = 'dashboard' }: { initialSection?
       tokenInput={tokenInput}
       tokenPreview={tokenPreview}
       healthMessage={healthMessage}
+      mounted={mounted}
       onTokenInputChange={setTokenInput}
       onTokenSubmit={handleTokenSubmit}
       onTokenClear={handleTokenClear}
