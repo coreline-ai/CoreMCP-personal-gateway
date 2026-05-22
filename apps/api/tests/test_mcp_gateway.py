@@ -16,6 +16,7 @@ import httpx
 import pytest
 
 import coremcp.main as main_module
+import coremcp.mcp_gateway.stdio_pool as stdio_pool_module
 from coremcp.credentials import FernetBackend, KeychainBackend
 from coremcp.logging import REDACTED, redact_sensitive_data
 from coremcp.main import _run_service_health_probe_once, create_app
@@ -329,6 +330,38 @@ async def test_auth_failure(app_client):
     )
     assert response.status_code == 401
     assert response.headers["www-authenticate"].startswith('Bearer realm="coremcp"')
+
+
+@pytest.mark.asyncio
+async def test_malformed_json_body_returns_jsonrpc_parse_error(app_client):
+    """JSON-RPC 2.0 §5.1 — malformed body must yield -32700 envelope, HTTP 400."""
+    client, _, _ = app_client
+    # Truncated string literal — invalid JSON.
+    bad_json = await client.post(
+        "/mcp",
+        headers={**auth_headers(), "Content-Type": "application/json"},
+        content=b'{"jsonrpc":"2.0","id":1,"method":"ping',
+    )
+    assert bad_json.status_code == 400
+    envelope = bad_json.json()
+    assert envelope.get("jsonrpc") == "2.0"
+    assert envelope.get("id") is None
+    error = envelope.get("error") or {}
+    assert error.get("code") == -32700
+    assert isinstance(error.get("message"), str) and error["message"]
+
+
+@pytest.mark.asyncio
+async def test_empty_body_returns_jsonrpc_parse_error(app_client):
+    client, _, _ = app_client
+    empty = await client.post(
+        "/mcp",
+        headers={**auth_headers(), "Content-Type": "application/json"},
+        content=b"",
+    )
+    assert empty.status_code == 400
+    error = empty.json().get("error") or {}
+    assert error.get("code") == -32700
 
 
 @pytest.mark.asyncio
@@ -3428,7 +3461,7 @@ class FakeStdioClient:
 @pytest.mark.asyncio
 async def test_stdio_client_capacity_evicts_lru_idle_and_uses_default_timeout(tmp_path: Path, monkeypatch):
     FakeStdioClient.instances = []
-    monkeypatch.setattr(main_module, "StdioMcpClient", FakeStdioClient)
+    monkeypatch.setattr(stdio_pool_module, "StdioMcpClient", FakeStdioClient)
     app = SimpleNamespace(
         state=SimpleNamespace(
             settings=Settings(
@@ -3469,7 +3502,7 @@ async def test_stdio_client_capacity_evicts_lru_idle_and_uses_default_timeout(tm
 @pytest.mark.asyncio
 async def test_stdio_client_capacity_rejects_when_no_idle_client(tmp_path: Path, monkeypatch):
     FakeStdioClient.instances = []
-    monkeypatch.setattr(main_module, "StdioMcpClient", FakeStdioClient)
+    monkeypatch.setattr(stdio_pool_module, "StdioMcpClient", FakeStdioClient)
     app = SimpleNamespace(
         state=SimpleNamespace(
             settings=Settings(

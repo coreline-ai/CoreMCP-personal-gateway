@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
+from coremcp.api._schemas import CodexSimulatorResponse
 from coremcp.settings import Settings
 
 SENSITIVE_ENV_KEYS = {
@@ -183,7 +184,7 @@ def register_simulator_routes(
     request_ip: Callable[[Request], str | None],
     correlation_id: Callable[[Request], str],
 ) -> None:
-    @app.post("/v1/simulator/codex/run")
+    @app.post("/v1/simulator/codex/run", response_model=CodexSimulatorResponse)
     async def run_codex_simulator_route(request: Request) -> Response:
         if not verify_admin_request(request):
             return unauthorized_response()

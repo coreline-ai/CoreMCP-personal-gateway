@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
+from coremcp.api._schemas import ClientTokenList, ExternalConnectionList
 from coremcp.api.dependencies import get_repos
 from coremcp.auth import ClientTokenService, hash_token
 from coremcp.db import DEFAULT_TOOLBOX_ID
@@ -31,7 +32,7 @@ def register_connections_routes(
     one_time_token_prefix: str,
     one_time_token_ttl_seconds: int,
 ) -> None:
-    @app.get("/v1/settings/client-tokens")
+    @app.get("/v1/settings/client-tokens", response_model=ClientTokenList)
     async def list_client_tokens(
         request: Request,
         limit: int = 50,
@@ -179,7 +180,7 @@ def register_connections_routes(
             headers={"Cache-Control": "no-store"},
         )
 
-    @app.get("/v1/external-connections")
+    @app.get("/v1/external-connections", response_model=ExternalConnectionList)
     async def list_external_connections(
         request: Request,
         limit: int = 50,

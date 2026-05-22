@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 
+from coremcp.api._schemas import ServiceList, ServiceSummary
 from coremcp.credentials import mask_secret
 from coremcp.proxy import DownstreamMcpError, UrlSafetyError
 from coremcp.registry.catalog import slugify_tool_name
@@ -181,7 +182,7 @@ async def _service_update_payload(
 
 
 def include_service_crud_routes(router: APIRouter, deps: Any) -> None:
-    @router.get("/v1/mcp-services")
+    @router.get("/v1/mcp-services", response_model=ServiceList)
     async def list_services(request: Request, limit: int = 50, status: str | None = None) -> Response:
         if not deps.verify_admin_request(request):
             return deps.unauthorized_response()
@@ -226,7 +227,7 @@ def include_service_crud_routes(router: APIRouter, deps: Any) -> None:
             )
         return JSONResponse(service, status_code=201)
 
-    @router.get("/v1/mcp-services/{service_id}")
+    @router.get("/v1/mcp-services/{service_id}", response_model=ServiceSummary)
     async def get_service(request: Request, service_id: str) -> Response:
         if not deps.verify_admin_request(request):
             return deps.unauthorized_response()

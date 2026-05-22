@@ -52,6 +52,10 @@ from coremcp.mcp_gateway import (
     protocol_negotiation_warning,
     run_reaper_loop,
 )
+from coremcp.mcp_gateway.health_probe import (
+    run_service_health_probe_loop as _run_service_health_probe_loop,
+    run_service_health_probe_once as _run_service_health_probe_once,
+)
 from coremcp.mcp_gateway.responses import (
     accepted,
     api_error,
@@ -59,6 +63,11 @@ from coremcp.mcp_gateway.responses import (
     jsonrpc_result,
     not_found,
     tool_error_result,
+)
+from coremcp.mcp_gateway.stdio_pool import (
+    close_stdio_client_for_service as _close_stdio_client_for_service,
+    persist_stdio_state as _persist_stdio_state,
+    stdio_client_for_config as _stdio_client_for_config,
 )
 from coremcp.mcp.capabilities import (
     DEFAULT_SERVER_CAPABILITIES,
@@ -106,7 +115,6 @@ from coremcp.proxy import (
     CircuitBreaker,
     DownstreamMcpClient,
     DownstreamMcpError,
-    StdioCommandNotAllowedError,
     StdioMcpClient,
     UrlSafetyChecker,
     UrlSafetyError,
@@ -128,8 +136,6 @@ SERVICE_TRANSPORT_TYPES = {"http", "stdio"}
 SESSION_IDLE_REAP_SECONDS = 30 * 60
 INFLIGHT_REAP_INTERVAL_SECONDS = 30
 JOB_REAP_MAX_AGE_SECONDS = 60 * 60
-SERVICE_HEALTH_FAILURE_THRESHOLD = 3
-SERVICE_HEALTH_CIRCUIT_OPEN_SECONDS = 30
 DANGEROUS_TOOL_KEYWORDS = (
     "delete",
     "remove",
@@ -403,109 +409,6 @@ async def _audit_stdio_command_rejected(
         ip=request_ip(request),
         user_agent=request.headers.get("user-agent"),
     )
-
-
-def _stdio_snapshot_sort_key(snapshot: dict[str, Any]) -> float:
-    value = snapshot.get("last_used_at") or snapshot.get("started_at") or 0
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-async def _ensure_stdio_client_capacity_locked(
-    app: FastAPI,
-    *,
-    service_key: str,
-    clients: dict[str, tuple[tuple[Any, ...], StdioMcpClient]],
-) -> None:
-    max_processes = int(app.state.settings.stdio_max_concurrent_processes)
-    if max_processes < 1:
-        raise DownstreamMcpError(
-            "CoreMCP stdio process capacity exceeded: maximum concurrent processes is 0",
-            code=-32010,
-        )
-
-    while len(clients) >= max_processes:
-        candidates: list[tuple[float, str, StdioMcpClient]] = []
-        for key, (_, candidate) in clients.items():
-            if key == service_key:
-                continue
-            snapshot = candidate.snapshot()
-            if int(snapshot.get("pending_requests") or 0) > 0:
-                continue
-            candidates.append((_stdio_snapshot_sort_key(snapshot), key, candidate))
-
-        if not candidates:
-            raise DownstreamMcpError(
-                "CoreMCP stdio process capacity exceeded and no idle stdio client can be evicted",
-                code=-32010,
-            )
-
-        _, evicted_key, evicted_client = min(candidates, key=lambda item: item[0])
-        clients.pop(evicted_key, None)
-        await evicted_client.aclose()
-
-
-async def _close_stdio_client_for_service(app: FastAPI, service_id: str | None) -> None:
-    if not service_id:
-        return
-    clients: dict[str, tuple[tuple[Any, ...], StdioMcpClient]] = app.state.stdio_clients
-    lock: asyncio.Lock | None = getattr(app.state, "stdio_clients_lock", None)
-    if lock is None:
-        entry = clients.pop(str(service_id), None)
-        if entry is not None:
-            await entry[1].aclose()
-        return
-    async with lock:
-        entry = clients.pop(str(service_id), None)
-    if entry is not None:
-        await entry[1].aclose()
-
-
-async def _stdio_client_for_config(app: FastAPI, config: dict[str, Any]) -> StdioMcpClient:
-    signature = _stdio_signature(config, app.state.settings)
-    service_key = str(config.get("service_id") or config.get("id") or config.get("endpoint_url") or signature[0])
-    clients: dict[str, tuple[tuple[Any, ...], StdioMcpClient]] = app.state.stdio_clients
-    lock: asyncio.Lock | None = getattr(app.state, "stdio_clients_lock", None)
-    if lock is None:
-        lock = asyncio.Lock()
-        app.state.stdio_clients_lock = lock
-    async with lock:
-        existing = clients.get(service_key)
-        if existing is not None and existing[0] == signature:
-            existing[1].notification_callback = _downstream_notification_callback(
-                app,
-                service_id=service_key,
-                source="stdio",
-            )
-            return existing[1]
-        if existing is not None:
-            clients.pop(service_key, None)
-            await existing[1].aclose()
-
-        await _ensure_stdio_client_capacity_locked(app, service_key=service_key, clients=clients)
-
-        command = [str(signature[0]), *list(signature[1])]
-        try:
-            client = StdioMcpClient(
-                command,
-                cwd=signature[3],
-                env=dict(signature[2]),
-                timeout=float(app.state.settings.downstream_timeout_seconds),
-                idle_timeout_seconds=int(signature[4]),
-                max_response_bytes=app.state.settings.downstream_max_response_bytes,
-                allowed_basenames=app.state.settings.stdio_allowed_command_set,
-            )
-        except StdioCommandNotAllowedError as exc:
-            raise DownstreamMcpError(str(exc), code=-32602) from exc
-        client.notification_callback = _downstream_notification_callback(
-            app,
-            service_id=service_key,
-            source="stdio",
-        )
-        clients[service_key] = (signature, client)
-        return client
 
 
 def _bearer_rate_limit_bucket(request: Request, *, route_kind: str) -> str:
@@ -1107,23 +1010,6 @@ def _service_config_from_catalog_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def _persist_stdio_state(app: FastAPI, service_id: str | None, client: StdioMcpClient | None) -> None:
-    if not service_id or client is None:
-        return
-    snapshot = client.snapshot()
-    await app.state.repos.services.update_mcp_service(
-        service_id,
-        {
-            "last_stdio_started_at": snapshot.get("started_at"),
-            "last_stdio_used_at": snapshot.get("last_used_at"),
-            "stdio_restart_count": int(snapshot.get("restart_count") or 0),
-            "last_stdio_exit_code": snapshot.get("last_exit_code"),
-            "last_stdio_error": snapshot.get("last_error"),
-            "last_stdio_stderr_tail": snapshot.get("stderr_tail"),
-        },
-    )
-
-
 async def _run_ops_reapers_once(app: FastAPI) -> None:
     async def session_reap() -> int:
         return app.state.sessions.reap_idle(SESSION_IDLE_REAP_SECONDS)
@@ -1180,86 +1066,6 @@ async def _detect_service_tool_schema_drift(
         settings=app.state.settings,
     )
     return _tool_schema_change_summary(existing_tools, normalized).get("changed_tool_count", 0) > 0
-
-
-async def _probe_service_health(app: FastAPI, service: dict[str, Any]) -> tuple[bool, str | None]:
-    service_id = str(service.get("id") or "")
-    if not service_id:
-        return False, "missing service id"
-    protocol_version = str(service.get("protocol_version") or "2025-11-25")
-    timeout_seconds = max(0.1, float(app.state.settings.service_health_probe_timeout_seconds))
-    timeout = httpx.Timeout(
-        timeout_seconds,
-        connect=min(float(app.state.settings.downstream_connect_timeout_seconds), timeout_seconds),
-        read=timeout_seconds,
-        write=timeout_seconds,
-        pool=timeout_seconds,
-    )
-    try:
-        await _request_service_rpc(
-            app,
-            service,
-            method="initialize",
-            params={"protocolVersion": protocol_version, "capabilities": {}, "clientInfo": {"name": "coremcp-health-probe", "version": app.state.settings.app_version}},
-            request_id=f"health-{service_id}",
-            protocol_version=protocol_version,
-            correlation_id_value=f"health-probe-{service_id}",
-            timeout=timeout,
-            send_downstream_session=False,
-        )
-        if _transport_type(service) == "stdio":
-            stdio_client = await _stdio_client_for_config(app, service)
-            await _persist_stdio_state(app, service_id, stdio_client)
-        if await _detect_service_tool_schema_drift(
-            app,
-            service,
-            protocol_version=protocol_version,
-            timeout=timeout,
-        ):
-            await validate_service(app, service_id, correlation_id_value=f"health-drift-{service_id}")
-        app.state.circuit_breaker.record_success(service_id)
-        await app.state.repos.services.mark_service_health_probe(service_id=service_id, ok=True)
-        return True, None
-    except Exception as exc:  # noqa: BLE001 - health probes must isolate failing services.
-        _record_downstream_failure(app, service_id)
-        await app.state.repos.services.mark_service_health_probe(
-            service_id=service_id,
-            ok=False,
-            error_message=str(exc),
-            circuit_open_seconds=SERVICE_HEALTH_CIRCUIT_OPEN_SECONDS,
-            failure_threshold=SERVICE_HEALTH_FAILURE_THRESHOLD,
-        )
-        return False, str(exc)
-
-
-async def _run_service_health_probe_once(app: FastAPI) -> dict[str, Any]:
-    services = await app.state.repos.services.list_mcp_services(limit=500)
-    candidates = [
-        service
-        for service in services
-        if str(service.get("status") or "") in {"active", "error", "auth_required", "validating"}
-    ]
-    checked = 0
-    failed = 0
-    for service in candidates:
-        checked += 1
-        ok, _error = await _probe_service_health(app, service)
-        if not ok:
-            failed += 1
-    return {"checked": checked, "failed": failed}
-
-
-async def _run_service_health_probe_loop(app: FastAPI) -> None:
-    interval = max(5.0, float(app.state.settings.service_health_probe_interval_seconds))
-    while True:
-        await asyncio.sleep(interval)
-        try:
-            await _run_service_health_probe_once(app)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            # This loop is best-effort observability; API serving must continue.
-            continue
 
 
 async def _handle_initialize(

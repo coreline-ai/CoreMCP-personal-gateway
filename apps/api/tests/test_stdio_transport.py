@@ -99,6 +99,8 @@ for line in sys.stdin:
         sys.exit(7)
     elif method == "rpc_error":
         send({"jsonrpc": "2.0", "id": request_id, "error": {"code": -32601, "message": "Method not found"}})
+    elif method == "echo_params":
+        send({"jsonrpc": "2.0", "id": request_id, "result": {"received_params": params}})
     elif method == "mismatch":
         send({"jsonrpc": "2.0", "id": "other-id", "result": {"wrong": True}})
     elif method == "no_response":
@@ -403,5 +405,31 @@ async def test_stdio_crash_records_exit_and_restarts_on_next_request(stdio_scrip
         assert restarted["is_running"] is True
         assert restarted["restart_count"] == 1
         assert restarted["last_exit_code"] == 7
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_stdio_correlation_id_propagates_via_meta_when_present(stdio_script: Path) -> None:
+    client = await _new_client(stdio_script)
+    try:
+        echoed = await client.request(
+            "echo_params",
+            {"foo": "bar"},
+            request_id="echo-corr-1",
+            correlation_id="corr-trace-7",
+        )
+        received = echoed["result"]["received_params"]
+        assert received["foo"] == "bar"
+        assert received["_meta"]["coremcp"]["request_id"] == "corr-trace-7"
+
+        # Absence of correlation_id leaves params unchanged (no _meta injection).
+        echoed_no_corr = await client.request(
+            "echo_params",
+            {"foo": "baz"},
+            request_id="echo-corr-2",
+        )
+        received2 = echoed_no_corr["result"]["received_params"]
+        assert received2 == {"foo": "baz"}
     finally:
         await client.aclose()

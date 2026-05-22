@@ -7,8 +7,14 @@ from typing import Any
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
-from coremcp.credentials import mask_secret
+from coremcp.api._schemas import (
+    ServiceCredentialMasked,
+    ServiceToolList,
+    ToolOverrideList,
+    ToolPresetResponse,
+)
 from coremcp.api.services_crud import include_service_crud_routes
+from coremcp.credentials import mask_secret
 
 
 def _credential_payload(body: dict[str, Any], *, secret_key: str = "secret", default_type: str = "bearer_token") -> tuple[str | None, str, str | None]:
@@ -91,7 +97,7 @@ class ServicesRouteDeps:
 
 
 def _include_service_tool_routes(router: APIRouter, deps: ServicesRouteDeps) -> None:
-    @router.get("/v1/mcp-services/{service_id}/tools")
+    @router.get("/v1/mcp-services/{service_id}/tools", response_model=ServiceToolList)
     async def service_tools(request: Request, service_id: str) -> Response:
         if not deps.verify_admin_request(request):
             return deps.unauthorized_response()
@@ -100,7 +106,7 @@ def _include_service_tool_routes(router: APIRouter, deps: ServicesRouteDeps) -> 
         items = await request.app.state.repos.catalog.list_service_tools(service_id)
         return JSONResponse({"items": items, "next_cursor": None})
 
-    @router.get("/v1/mcp-services/{service_id}/tool-overrides")
+    @router.get("/v1/mcp-services/{service_id}/tool-overrides", response_model=ToolOverrideList)
     async def service_tool_overrides(request: Request, service_id: str) -> Response:
         if not deps.verify_admin_request(request):
             return deps.unauthorized_response()
@@ -135,7 +141,7 @@ def _include_service_tool_routes(router: APIRouter, deps: ServicesRouteDeps) -> 
         )
         return JSONResponse(item)
 
-    @router.post("/v1/mcp-services/{service_id}/tool-overrides/preset")
+    @router.post("/v1/mcp-services/{service_id}/tool-overrides/preset", response_model=ToolPresetResponse)
     async def apply_service_tool_preset(request: Request, service_id: str) -> Response:
         if not deps.verify_admin_request(request):
             return deps.unauthorized_response()
@@ -232,7 +238,7 @@ def _include_service_credential_routes(router: APIRouter, deps: ServicesRouteDep
         deps.forget_downstream_session(request.app, service_id)
         return _credential_response(item)
 
-    @router.get("/v1/mcp-services/{service_id}/credential")
+    @router.get("/v1/mcp-services/{service_id}/credential", response_model=ServiceCredentialMasked)
     async def get_credential(request: Request, service_id: str) -> Response:
         if not deps.verify_admin_request(request):
             return deps.unauthorized_response()

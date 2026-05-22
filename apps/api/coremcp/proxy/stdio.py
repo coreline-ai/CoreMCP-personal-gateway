@@ -193,9 +193,11 @@ class StdioMcpTransport:
         correlation_id: str | None = None,
         timeout: float | None = None,
     ) -> dict[str, Any]:
-        # STDIO MCP has no HTTP headers. These compatibility parameters are
-        # accepted so callers can share the HTTP downstream client call shape.
-        del protocol_version, session_id, correlation_id
+        # STDIO MCP has no HTTP headers. ``protocol_version`` / ``session_id`` are
+        # accepted for call-shape compatibility with the HTTP downstream client.
+        # ``correlation_id`` is embedded in ``params._meta.coremcp.request_id`` so
+        # the downstream server can log it alongside any structured trace.
+        del protocol_version, session_id
 
         process = await self._ensure_started()
         if process.stdin is None:
@@ -205,6 +207,14 @@ class StdioMcpTransport:
         payload: dict[str, Any] = {"jsonrpc": "2.0", "id": request_id, "method": method}
         if params is not None:
             payload["params"] = params
+        if correlation_id:
+            meta_params = payload.setdefault("params", {})
+            if isinstance(meta_params, dict):
+                meta = meta_params.setdefault("_meta", {})
+                if isinstance(meta, dict):
+                    coremcp_meta = meta.setdefault("coremcp", {})
+                    if isinstance(coremcp_meta, dict):
+                        coremcp_meta.setdefault("request_id", correlation_id)
 
         pending_key = self._id_key(request_id)
         future: asyncio.Future[dict[str, Any]] | None = None

@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
+from coremcp.api._schemas import PlaygroundToolList
 from coremcp.proxy import DownstreamMcpError
 
 
@@ -20,7 +21,7 @@ def register_playground_routes(
     handle_tools_call: Callable[[FastAPI, dict[str, Any], Request], Awaitable[dict[str, Any]]],
     correlation_id: Callable[[Request], str],
 ) -> None:
-    @app.get("/v1/playground/tools/list")
+    @app.get("/v1/playground/tools/list", response_model=PlaygroundToolList)
     async def playground_tools_list(request: Request) -> Response:
         if not verify_admin_request(request):
             return unauthorized_response()
