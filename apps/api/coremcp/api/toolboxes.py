@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
+from coremcp.api._schemas import ToolboxList
 from coremcp.api.dependencies import get_repos
 from coremcp.db.repository_facade import RepositoryFacades
 
@@ -21,7 +22,7 @@ def register_toolboxes_routes(
     accepted: Callable[[dict[str, Any]], JSONResponse],
     publish_list_changed: Callable[..., Awaitable[None]],
 ) -> None:
-    @app.get("/v1/toolboxes")
+    @app.get("/v1/toolboxes", response_model=ToolboxList, response_model_exclude_none=False)
     async def list_toolboxes(
         request: Request,
         limit: int = 50,

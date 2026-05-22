@@ -271,15 +271,76 @@ launchd log:
 - macOS Keychain은 iCloud Keychain 활성 시 자동 동기화
 - Fernet master key(`FERNET_KEY_FILE`, 기본 `~/.coremcp/data/secrets.key`)는 별도 안전한 곳에 보관 (1Password 등)
 
-### 5.4 Backup 복원
+### 5.5 Backup 복원
 ```bash
 launchctl bootout gui/$(id -u)/com.coremcp.api
-gunzip < ~/.coremcp/backups/db.20260511-030000.sqlite3.gz > ~/.coremcp/data/db.sqlite3
+infra/scripts/restore-sqlite.sh ~/.coremcp/backups/coremcp-20260511T030000Z.sqlite3
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.coremcp.api.plist
 ```
 
+`restore-sqlite.sh` 는 복원 직전 현재 DB 를 `coremcp.sqlite3.pre-restore-<UTC>` 로 자동 보관하고, 백업 파일의 `PRAGMA integrity_check;` 통과만 복원한다.
+
 RPO 목표: 24시간
 RTO 목표: 2시간
+
+## 5.6 DR (Disaster Recovery)
+
+운영 중 가장 자주 묻는 3가지 시나리오를 한 페이지에서 답한다. 모든 명령은 운영 host (서비스 daemon이 도는 머신) 에서 실행한다.
+
+### DR-1 Fernet 키 손실 대응
+
+영향 범위: `FERNET_KEY_FILE` (기본 `~/.coremcp/data/secrets.key`) 이 사라지면 file vault 백엔드에 저장된 모든 encrypted credential 이 영구 복구 불가. macOS Keychain 백엔드는 Keychain 자체가 살아있으면 무관.
+
+```bash
+# 1) 평소 백업 (정기 권장): Fernet 키를 1Password / 안전한 외부 저장소로 export
+cp ~/.coremcp/data/secrets.key ~/Documents/secrets.key.backup
+# 2) 키 손실 발생 시 복구
+cp ~/Documents/secrets.key.backup ~/.coremcp/data/secrets.key
+chmod 600 ~/.coremcp/data/secrets.key
+make stop && make run
+# 3) 백업이 없는 경우: file vault 의 credential 은 회복 불가 → 모든 service credential 재발급 필요
+make stop
+rm ~/.coremcp/data/secrets.key
+# 새 키가 자동 생성되며, credentials_secrets.json 의 기존 record 는 사용 불가
+make run
+# Web Admin > Services 에서 영향받은 service 의 credential 을 재입력
+```
+
+### DR-2 SQLite 손실 / 손상 복구
+
+```bash
+# 1) 최신 백업 찾기
+ls -lh ~/.coremcp/backups/coremcp-*.sqlite3 | tail -3
+# 2) launchd daemon 정지 (열린 file handle 해제)
+launchctl bootout gui/$(id -u)/com.coremcp.api
+# 3) restore (자동 integrity_check + pre-restore 백업)
+infra/scripts/restore-sqlite.sh ~/.coremcp/backups/coremcp-<UTC>.sqlite3
+# 4) 검증 → daemon 재기동
+cd apps/api && uv run coremcp doctor --api-url http://127.0.0.1:8787
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.coremcp.api.plist
+```
+
+만약 백업 자체가 손상되어 integrity_check 통과 못 하면 더 이전 백업을 선택한다. `find ~/.coremcp/backups -name 'coremcp-*.sqlite3' -mtime -7` 으로 7일치 후보 일람.
+
+### DR-3 keychain ↔ file vault 전환
+
+새 호스트로 이주하거나 Keychain 접근이 어려운 환경 (CI, SSH, headless) 으로 옮길 때:
+
+```bash
+# 1) 현재 백엔드 + 자료 확인
+cd apps/api && uv run coremcp doctor --api-url http://127.0.0.1:8787
+# 2) 전체 자료를 단일 tarball 로 export (DB + secrets + Fernet 키 + admin token)
+make cli-backup-export   # → ~/.coremcp/backups/coremcp-cli-export.tar
+# 3) 새 호스트에서 백엔드 환경변수 결정 후 import
+COREMCP_VAULT_BACKEND=keychain   # 또는 file
+make cli-backup-import-dry-run   # dry-run 으로 충돌 확인
+cd apps/api && uv run coremcp import --from ~/.coremcp/backups/coremcp-cli-export.tar
+# 4) 검증
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.coremcp.api.plist
+curl -fsS http://127.0.0.1:8787/ready
+```
+
+자동 회귀: `make backup-restore-drill` 이 임시 DB 로 위 흐름의 핵심 (백업→복원→해시 일치) 을 1분 안에 검증한다. CI 의 `restore-drill` job 도 동일 검증을 PR 단계에서 자동 실행.
 
 ---
 

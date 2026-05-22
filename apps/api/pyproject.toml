@@ -34,3 +34,45 @@ packages = ["coremcp"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.coverage.run]
+source = ["coremcp"]
+omit = [
+  "coremcp/cli.py",
+  "coremcp/refresh.py",
+  "coremcp/smoke.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+  "pragma: no cover",
+  "raise NotImplementedError",
+  "if __name__ == .__main__.:",
+  "if TYPE_CHECKING:",
+]
+skip_empty = true
+
+[tool.pyright]
+pythonVersion = "3.12"
+include = ["coremcp"]
+exclude = ["**/__pycache__", "**/.venv", "tests"]
+typeCheckingMode = "basic"
+reportMissingImports = "error"
+reportMissingTypeStubs = false
+reportGeneralTypeIssues = "warning"
+
+[tool.bandit]
+# B101 — `assert` statements are fine outside tests for invariant checks.
+# B608 — every flagged `f"..."` query uses an internal allowlist for column
+#        names and binds user-supplied values via `?` placeholders; reviewed
+#        in db/repository_audit.py, repository_credentials.py, repository_jobs.py,
+#        repository_services.py (2 sites). See dev-plan/implement_20260522_183112.md.
+exclude_dirs = ["tests", ".venv"]
+skips = ["B101", "B608"]
+
+[dependency-groups]
+dev = [
+    "bandit>=1.9.4",
+    "pyright>=1.1.409",
+    "pytest-cov>=7.1.0",
+]

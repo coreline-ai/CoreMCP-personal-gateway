@@ -10,10 +10,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      - name: API tests
-        run: cd apps/api && uv run pytest
+      - name: API tests + coverage gate
+        run: cd apps/api && uv run pytest --cov=coremcp --cov-fail-under=80
+      - name: Bandit security scan
+        run: cd apps/api && uv run bandit -c pyproject.toml -r coremcp -ll -ii
       - name: Fake MCP tests
         run: cd apps/fake-mcp && uv run pytest
+      - name: Project Docs MCP tests
+        run: cd apps/project-docs-mcp && uv run pytest
+      - name: Git Workspace MCP tests
+        run: cd apps/git-workspace-mcp && uv run pytest
+
+  pyright:
+    # Type checker runs as advisory in this cycle while the baseline is reduced.
+    # See dev-plan/implement_20260522_183112.md Phase 1 — current debt = 51 errors.
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Pyright (basic mode, advisory)
+        run: cd apps/api && uv run pyright
+
+  restore-drill:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Backup → restore round-trip
+        run: infra/scripts/backup-restore-drill.sh
 
   web:
     runs-on: ubuntu-latest
@@ -28,4 +52,5 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile=false
       - run: pnpm lint
+      - run: cd apps/web && pnpm typecheck
       - run: pnpm build

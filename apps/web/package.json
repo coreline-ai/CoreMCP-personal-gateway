@@ -8,6 +8,7 @@
     "start": "next start",
     "build": "next build",
     "lint": "eslint . --max-warnings=0",
+    "typecheck": "tsc --noEmit",
     "test": "echo 'web: no tests yet'"
   },
   "dependencies": {

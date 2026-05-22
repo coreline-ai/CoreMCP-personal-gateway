@@ -1,3 +1,7 @@
+# pyright: reportAttributeAccessIssue=false
+# Mixin classes rely on host-provided attributes (db, dumps_json, loads_json,
+# and cross-mixin methods); the composing Repository class supplies them at
+# runtime. Type checker cannot resolve them without a circular base class.
 from __future__ import annotations
 
 from typing import Any

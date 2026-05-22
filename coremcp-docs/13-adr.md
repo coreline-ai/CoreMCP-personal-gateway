@@ -799,6 +799,37 @@ Consequences:
 - Plugin 관련 보안 회귀 테스트는 `tests/test_plugins.py` 또는 해당 hook 통합 테스트에 추가한다.
 
 ---
+## ADR-042: main.py decomposition into mcp_gateway sub-modules
+
+Status: Accepted (2026-05-22)
+
+Context:
+`apps/api/coremcp/main.py` 가 1,955 lines 까지 성장했다 (HTTP middleware + MCP dispatch + stdio process pool + rate limiter + OAuth + 헬스 프로브 + service drift detector 등). 단일 파일에 70+ top-level helper 가 응집해 있어 리뷰 가능성, 단위 테스트 가능성, hot reload 안정성이 모두 손상되었다. 직전 프로덕션 품질 리뷰 (`dev-plan/implement_20260522_183112.md`) 에서 아키텍처 영역 7.2/10 의 주요 감점 사유로 지목됨.
+
+Decision:
+main.py 를 **동작 보존 우선** 으로 `coremcp/mcp_gateway/*.py` 하위 모듈에 점진 분해한다. 시그니처 / 응답 shape / 로그 메시지 / 라우트 경로는 모두 동일하게 유지한다.
+
+첫 cycle 의 분해 범위 (2026-05-22):
+- **`coremcp/mcp_gateway/responses.py`** 신설 — `jsonrpc_result`, `jsonrpc_error`, `api_error`, `accepted`, `not_found`, `tool_error_result`, `JSONRPC_VERSION`. 외부 의존 없는 pure response builder. main.py 1,955 → 1,915 lines.
+
+Next cycle 후보 (이번 cycle 에서 시도했으나 app-facade refactor 가 선행되어야 안전):
+- `coremcp/mcp_gateway/health_probe.py` — `_probe_service_health`, `_run_service_health_probe_once`, `_run_service_health_probe_loop`. `_request_service_rpc`, `_persist_stdio_state`, `_detect_service_tool_schema_drift`, `validate_service` 모두 `app.state` 결합 → DI container 또는 facade 가 선행 필요.
+- `coremcp/mcp_gateway/stdio_pool.py` — `_ensure_stdio_client_capacity_locked`, `_close_stdio_client_for_service`, `_stdio_client_for_config`, `_persist_stdio_state` 등. 동일하게 app facade 선행 필요.
+
+Constraints:
+- 각 추출 후 `make test` (209 tests) 통과 필수.
+- 함수 시그니처 변경 금지 (호출 사이트 안정성 보장).
+- 보안 모듈 (`proxy/security.py`, `proxy/stdio.py` 의 command allowlist) 은 본 분해 범위 밖.
+
+Rationale:
+god module 은 personal gateway 단계에서는 작동했지만, 다음 cycle 의 분산 rate limiter / response_model / scope decorator 도입 시 매번 main.py 의 깊은 부분을 건드려야 해서 회귀 위험이 누적된다. dispatch helpers 부터 안전 패턴을 확립한다.
+
+Consequences:
+- main.py 의 helper 가 mcp_gateway/* 하위 모듈로 이동될 때마다 import 만 추가되고 정의는 한 곳에 둔다 (중복 정의 금지).
+- 다음 cycle 의 첫 작업은 `app.state` 를 감싸는 facade (e.g., `AppContext`) 를 도입해 health_probe / stdio_pool 추출을 가능하게 한다.
+- 본 ADR 은 personal scope 의 internal refactor 이며 SaaS plugin / multi-tenant 와 무관하다.
+
+---
 ## Superseded / Future Migration
 
 다음 ADR은 SaaS 전환 시 Superseded:

@@ -52,6 +52,14 @@ from coremcp.mcp_gateway import (
     protocol_negotiation_warning,
     run_reaper_loop,
 )
+from coremcp.mcp_gateway.responses import (
+    accepted,
+    api_error,
+    jsonrpc_error,
+    jsonrpc_result,
+    not_found,
+    tool_error_result,
+)
 from coremcp.mcp.capabilities import (
     DEFAULT_SERVER_CAPABILITIES,
     server_capabilities_for_default_toolbox as _server_capabilities_for_default_toolbox,
@@ -141,32 +149,6 @@ BLOCKED_STDIO_ENV_KEYS = {
 }
 
 
-def jsonrpc_result(request_id: Any, result: dict[str, Any]) -> dict[str, Any]:
-    return {"jsonrpc": JSONRPC_VERSION, "id": request_id, "result": result}
-
-
-def jsonrpc_error(request_id: Any, code: int, message: str, data: Any | None = None) -> dict[str, Any]:
-    error: dict[str, Any] = {"code": code, "message": message}
-    if data is not None:
-        error["data"] = data
-    return {"jsonrpc": JSONRPC_VERSION, "id": request_id, "error": error}
-
-
-def api_error(code: str, message: str, *, status_code: int = 400, details: Any | None = None) -> JSONResponse:
-    payload: dict[str, Any] = {"error": {"code": code, "message": message}}
-    if details is not None:
-        payload["error"]["details"] = details
-    return JSONResponse(payload, status_code=status_code)
-
-
-def accepted(payload: dict[str, Any] | None = None) -> JSONResponse:
-    return JSONResponse(payload or {"status": "accepted"}, status_code=202)
-
-
-def not_found(resource: str = "resource") -> JSONResponse:
-    return api_error("not_found", f"{resource} not found", status_code=404)
-
-
 def correlation_id(request: Request) -> str:
     return str(getattr(request.state, "request_id", "") or request.headers.get("X-Request-ID") or f"req_{secrets.token_hex(16)}")
 
@@ -235,28 +217,6 @@ def _mcp_has_scope(request: Request, required_scope: str) -> bool:
 
 def request_ip(request: Request) -> str | None:
     return request.client.host if request.client else None
-
-
-def tool_error_result(
-    error_code: str,
-    message: str,
-    *,
-    downstream_code: int | None = None,
-    reason: str | None = None,
-    retry_after_seconds: float | None = None,
-) -> dict[str, Any]:
-    meta: dict[str, Any] = {"error_code": error_code}
-    if downstream_code is not None:
-        meta["downstream_code"] = downstream_code
-    if reason is not None:
-        meta["reason"] = reason
-    if retry_after_seconds is not None:
-        meta["retry_after_seconds"] = retry_after_seconds
-    return {
-        "content": [{"type": "text", "text": message}],
-        "isError": True,
-        "_meta": {"coremcp": meta},
-    }
 
 
 def _get_request_id(payload: dict[str, Any]) -> Any:

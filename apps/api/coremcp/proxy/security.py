@@ -130,7 +130,7 @@ class UrlSafetyChecker:
             raise UrlSafetyError("Endpoint DNS changed before downstream request")
         return after
 
-    def _resolve(self, host: str) -> list[ipaddress._BaseAddress]:
+    def _resolve(self, host: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
         try:
             return [ipaddress.ip_address(host)]
         except ValueError:
@@ -139,7 +139,7 @@ class UrlSafetyChecker:
             records = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
         except socket.gaierror as exc:
             raise UrlSafetyError("Endpoint hostname could not be resolved") from exc
-        ips: list[ipaddress._BaseAddress] = []
+        ips: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
         for record in records:
             address = record[4][0]
             try:
@@ -150,7 +150,7 @@ class UrlSafetyChecker:
                 ips.append(ip)
         return ips
 
-    def _ip_allowed_by_cidr(self, ip: ipaddress._BaseAddress) -> bool:
+    def _ip_allowed_by_cidr(self, ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
         return any(ip in network for network in self.allow_networks)
 
     @classmethod
@@ -161,7 +161,7 @@ class UrlSafetyChecker:
             return False
 
     @classmethod
-    def _is_metadata_ip(cls, ip: ipaddress._BaseAddress) -> bool:
+    def _is_metadata_ip(cls, ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
         if ip == cls.METADATA_IP:
             return True
         if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped == cls.METADATA_IP:
@@ -201,7 +201,7 @@ class UrlSafetyChecker:
         return f"{scheme}|{host}|{port}|{path}"
 
     @classmethod
-    def _is_private_like(cls, ip: ipaddress._BaseAddress) -> bool:
+    def _is_private_like(cls, ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
         return bool(
             any(ip in network for network in cls.UNSAFE_NETWORKS)
             or ip.is_private
