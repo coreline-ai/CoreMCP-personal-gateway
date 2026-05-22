@@ -87,6 +87,7 @@ CoreMCP는 본인 1명이 Mac mini에서 운영하는 protected MCP gateway다. 
 - Web Admin 디자인 시스템은 `docs/design/`에 code-level audit, component pattern, token JSON/CSS/SVG asset으로 정리했고, `cm-*` semantic primitive를 전체 admin route에 반영했습니다.
 - Local demo MCP suite는 `apps/demo-mcp-suite`에서 8개 가상 MCP endpoint를 제공하며, 외부 credential 없이 CoreMCP service 등록/validation/도구함/preset/Playground 흐름을 시연할 수 있습니다.
 - Project Docs MCP는 `apps/project-docs-mcp`에서 `/Users/hwanchoi/projects` 하위 프로젝트의 `README.md` 및 Markdown 문서를 read-only로 검색/읽기할 수 있는 실사용용 stdio MCP service를 제공합니다. `make project-docs-register`로 CoreMCP 도구함에 바로 등록됩니다.
+- Git Workspace MCP는 `apps/git-workspace-mcp`에서 `/Users/hwanchoi/projects` 하위 Git repository의 상태/로그/브랜치/diff/blame/recent activity를 read-only로 조회하는 실사용용 stdio MCP service입니다. `make git-workspace-register`로 CoreMCP 도구함에 바로 등록됩니다.
 - Codex CLI `exec` 연결 helper를 추가했습니다. `make codex-install`은 Codex 전용 client token을 발급해 `~/.coremcp/codex-client-token`에 저장하고, `codex mcp add coremcp --url ... --bearer-token-env-var COREMCP_CLIENT_TOKEN` 구성을 등록합니다.
 - Web Admin `/simulator` 는 Codex CLI exec wrapper를 실행해 연결된 AI client가 CoreMCP 도구함을 실제로 호출하는 흐름을 챗봇처럼 시뮬레이션합니다.
 - launchd fake-mcp/API/Web/backup/logrotate/refresh 실제 load smoke와 plist 검증을 통과했습니다. Reboot 검증은 실제 재부팅이 필요하며, Tailscale 검증은 현재 머신에 CLI가 없어 skipped 상태입니다.
@@ -197,6 +198,29 @@ CLI에서 바로 실행할 때는 다음처럼 사용합니다.
 infra/scripts/codex-exec-coremcp.sh "project_docs.project_list 도구만 사용해서 README가 없는 프로젝트를 찾아줘. Markdown 수가 많은데 README가 없는 프로젝트를 우선순위 높게 표시하고, 정리 필요성을 한국어로 제안해줘."
 ```
 
+#### 추천 사용 예시 — Git Workspace MCP
+
+`Git Workspace MCP`는 `/Users/hwanchoi/projects` 아래 Git repository를 **읽기 전용**으로 점검합니다. 등록 후 노출되는 7개 도구는 `repo_list`, `repo_status`, `repo_log`, `repo_branch_list`, `repo_diff`, `repo_blame`, `repo_recent_activity` 입니다.
+
+```bash
+make git-workspace-register
+make codex-smoke
+```
+
+| 목적 | 추천 프롬프트 |
+|---|---|
+| 전체 Git 작업 현황 | `git_workspace.repo_recent_activity 도구로 최근 7일간 가장 활발했던 repository 10개를 찾고, 커밋 수와 dominant author 기준으로 정리해줘.` |
+| 변경사항 점검 | `git_workspace.repo_status 도구로 html-news-creator repository 상태를 확인하고, dirty/staged/untracked 파일을 작업 위험도 기준으로 요약해줘.` |
+| 릴리즈 전 diff 리뷰 | `git_workspace.repo_diff 도구로 CoreMCP repository의 HEAD diff를 읽고, 보안/문서/테스트 관점에서 체크리스트를 만들어줘.` |
+| 코드 소유권 파악 | `git_workspace.repo_blame 도구로 web_new_coreline repository의 README.md 주요 라인을 확인하고, 최근 변경 책임자를 정리해줘.` |
+| Project Docs 조합 | `project_docs.project_summary로 README를 요약한 뒤 git_workspace.repo_recent_activity로 최근 변경량을 확인해서, 지금 문서화 우선순위가 높은 프로젝트 5개를 추천해줘.` |
+
+CLI에서 바로 실행할 때는 다음처럼 사용합니다.
+
+```bash
+infra/scripts/codex-exec-coremcp.sh "project_docs.project_summary로 README를 요약한 뒤 git_workspace.repo_recent_activity로 최근 변경량을 확인해서, 지금 문서화 우선순위가 높은 프로젝트 5개를 추천해줘."
+```
+
 ---
 
 ## 📦 Features
@@ -209,6 +233,7 @@ infra/scripts/codex-exec-coremcp.sh "project_docs.project_list 도구만 사용�
 | **Codex CLI exec** | Codex MCP config 등록 + client token env wrapper + non-LLM MCP smoke | implemented + tested |
 | **Demo MCP Suite** | 8개 local demo MCP endpoint + registration payload + preset demo tools | implemented + tested |
 | **Project Docs MCP** | `/Users/hwanchoi/projects` 하위 README/Markdown read-only 검색·읽기 stdio MCP | implemented + tested |
+| **Git Workspace MCP** | `/Users/hwanchoi/projects` 하위 Git repository 상태/로그/브랜치/diff/blame/recent activity read-only 조회 stdio MCP | implemented + tested |
 | **AI Client Simulator** | Web Admin `/simulator`에서 Codex CLI exec → CoreMCP `/mcp` tool call 흐름을 챗봇형으로 실행/관찰 | implemented + tested |
 | **MCP Registry** | private service 등록, category/homepage/docs/logo metadata, validation, schema cache + schema diff detail | implemented + tested |
 | **Toolbox** | default toolbox, item enable/disable, tool-level override(`hidden`/`visible_only`/`callable`), preset(`readonly`/`dangerous_off`/`full_access`), dynamic catalog | implemented + tested |
@@ -266,14 +291,19 @@ make codex-smoke
 make project-docs-register
 make codex-smoke
 
-# 6. Codex CLI exec에서 CoreMCP 도구함 사용
+# 6. /Users/hwanchoi/projects Git repository 읽기용 MCP 등록
+make git-workspace-register
+make codex-smoke
+
+# 7. Codex CLI exec에서 CoreMCP 도구함 사용
 infra/scripts/codex-exec-coremcp.sh "CoreMCP MCP 도구 목록을 확인해줘"
 infra/scripts/codex-exec-coremcp.sh "project_docs.project_list 도구로 전체 프로젝트 목록을 보고 카테고리별로 정리해줘"
+infra/scripts/codex-exec-coremcp.sh "git_workspace.repo_recent_activity 도구로 최근 7일간 활발한 repository를 정리해줘"
 
-# 7. Web Admin에서 챗봇형 시뮬레이션
+# 8. Web Admin에서 챗봇형 시뮬레이션
 open http://127.0.0.1:3003/simulator
 
-# 8. 중지
+# 9. 중지
 make stop
 ```
 
@@ -422,7 +452,8 @@ CoreMCP/
 │   │   └── middleware.ts           # CSP / nonce / 보안 헤더
 │   ├── fake-mcp/                   # 테스트용 downstream MCP (단일 server)
 │   ├── demo-mcp-suite/             # 8개 가상 demo MCP endpoint
-│   └── project-docs-mcp/           # /Users/hwanchoi/projects Markdown read-only MCP
+│   ├── project-docs-mcp/           # /Users/hwanchoi/projects Markdown read-only MCP
+│   └── git-workspace-mcp/          # /Users/hwanchoi/projects Git status/log/diff read-only MCP
 ├── packages/
 │   ├── shared-types/
 │   └── client-profiles/

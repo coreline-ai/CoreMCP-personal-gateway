@@ -45,6 +45,24 @@ async def test_repo_list_pattern_filter(workspace_root: Path) -> None:
     assert payload["items"][0]["name"] == "alpha"
 
 
+async def test_repo_list_skips_symlink_escape(workspace_root: Path, tmp_path: Path) -> None:
+    outside = tmp_path / "outside_repo"
+    outside.mkdir()
+    _git(outside, "init", "-b", "main")
+    _git(outside, "config", "user.email", "test@example.com")
+    _git(outside, "config", "user.name", "Test Author")
+    (outside / "README.md").write_text("# outside\n")
+    _git(outside, "add", ".")
+    _git(outside, "commit", "-m", "outside commit")
+    (workspace_root / "escape").symlink_to(outside)
+
+    payload = await repo_list(workspace_root)
+    names = {item["name"] for item in payload["items"]}
+    paths = {item["path"] for item in payload["items"]}
+    assert "escape" not in names
+    assert str(outside.resolve()) not in paths
+
+
 async def test_repo_status_clean(workspace_root: Path) -> None:
     payload = await repo_status(workspace_root, name="alpha")
     assert payload["dirty"] is False
@@ -62,6 +80,16 @@ async def test_repo_log_returns_initial_commit(workspace_root: Path) -> None:
     payload = await repo_log(workspace_root, name="alpha", limit=5)
     assert payload["count"] == 1
     assert payload["items"][0]["subject"] == "initial commit"
+
+
+async def test_repo_log_redacts_secret_in_subject(workspace_root: Path, alpha_repo: Path) -> None:
+    (alpha_repo / "token.txt").write_text("rotated\n")
+    _git(alpha_repo, "add", ".")
+    _git(alpha_repo, "commit", "-m", "rotate sk-subjectsecret999999")
+    payload = await repo_log(workspace_root, name="alpha", limit=1)
+    assert payload["count"] == 1
+    assert "sk-subjectsecret999999" not in payload["items"][0]["subject"]
+    assert "***REDACTED***" in payload["items"][0]["subject"]
 
 
 async def test_repo_log_limit_capped(workspace_root: Path) -> None:
@@ -122,3 +150,19 @@ async def test_repo_recent_activity_includes_commits(workspace_root: Path) -> No
     assert "alpha" in repos
     for item in payload["items"]:
         assert item["commits"] >= 1
+
+
+async def test_repo_recent_activity_skips_symlink_escape(workspace_root: Path, tmp_path: Path) -> None:
+    outside = tmp_path / "outside_recent"
+    outside.mkdir()
+    _git(outside, "init", "-b", "main")
+    _git(outside, "config", "user.email", "test@example.com")
+    _git(outside, "config", "user.name", "Test Author")
+    (outside / "README.md").write_text("# outside\n")
+    _git(outside, "add", ".")
+    _git(outside, "commit", "-m", "outside commit")
+    (workspace_root / "escape_recent").symlink_to(outside)
+
+    payload = await repo_recent_activity(workspace_root, days=30)
+    names = {item["repo"] for item in payload["items"]}
+    assert "escape_recent" not in names

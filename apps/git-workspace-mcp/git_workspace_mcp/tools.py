@@ -83,13 +83,13 @@ async def _summarize_repo(repo: Path, name: str) -> dict[str, Any]:
 async def repo_list(root: Path, *, pattern: str | None = None) -> dict[str, Any]:
     items: list[dict[str, Any]] = []
     for entry in sorted(root.iterdir()):
-        if not entry.is_dir():
-            continue
-        if not (entry / ".git").exists():
+        try:
+            repo = resolve_repo(root, entry.name)
+        except GitWorkspaceSecurityError:
             continue
         if pattern and pattern.lower() not in entry.name.lower():
             continue
-        items.append(await _summarize_repo(entry.resolve(), entry.name))
+        items.append(await _summarize_repo(repo, entry.name))
     return {"root": str(root), "count": len(items), "items": items}
 
 
@@ -147,7 +147,7 @@ def _parse_log(stdout: str) -> list[dict[str, Any]]:
                 "sha": sha,
                 "author": author,
                 "date": date,
-                "subject": subject,
+                "subject": redact_secrets(subject),
                 "body": redact_secrets(body),
                 "files_changed_count": files_changed,
             }
@@ -310,11 +310,13 @@ async def repo_recent_activity(root: Path, *, days: int = 7) -> dict[str, Any]:
     since = f"{capped_days} days ago"
     items: list[dict[str, Any]] = []
     for entry in sorted(root.iterdir()):
-        if not entry.is_dir() or not (entry / ".git").exists():
+        try:
+            repo = resolve_repo(root, entry.name)
+        except GitWorkspaceSecurityError:
             continue
         try:
             log_result = await run_git(
-                entry.resolve(),
+                repo,
                 "log",
                 f"--since={since}",
                 "--pretty=format:%H\x1f%an",
@@ -343,7 +345,7 @@ async def repo_recent_activity(root: Path, *, days: int = 7) -> dict[str, Any]:
             continue
         try:
             last = await run_git(
-                entry.resolve(),
+                repo,
                 "log",
                 "-1",
                 "--format=%cI",

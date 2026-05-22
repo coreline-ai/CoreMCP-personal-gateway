@@ -65,13 +65,13 @@ check_security_headers() {
 
 check_path() {
   local path="$1"
-  "${PW[@]}" eval "() => { if (location.pathname !== '$path') throw new Error('expected $path, got ' + location.pathname); return location.pathname; }" >/dev/null
+  "${PW[@]}" run-code "async (page) => { const actual = new URL(page.url()).pathname; if (actual !== '$path') throw new Error('expected $path, got ' + actual); }" >/dev/null
   echo "PASS route $path"
 }
 
 click_route() {
   local path="$1"
-  "${PW[@]}" eval "() => { const link = document.querySelector('a[href=\"$path\"]'); if (!link) throw new Error('missing link $path'); link.click(); }" >/dev/null
+  "${PW[@]}" run-code "async (page) => { const link = page.locator('a[href=\"$path\"]').first(); await link.waitFor({ state: 'visible', timeout: 5000 }); await link.click(); await page.waitForURL((url) => url.pathname === '$path', { timeout: 5000 }); }" >/dev/null
 }
 
 check_security_headers
@@ -86,6 +86,20 @@ done
 
 console_logs=(.playwright-cli/console-*.log)
 if (( ${#console_logs[@]} > 0 )); then
-  cat "${console_logs[@]}" >&2
-  exit 1
+  filtered_console_log="$(mktemp "${TMPDIR:-/tmp}/coremcp-web-route-smoke-console.XXXXXX")"
+  # Playwright CLI injects a tiny inline probe script for its own page commands.
+  # CoreMCP intentionally blocks that probe with nonce CSP, so the browser logs
+  # one "Executing inline script violates..." error even when the app is healthy.
+  # Keep failing on all other console output so real route regressions remain
+  # visible.
+  if ! grep -vE "Executing inline script violates the following Content Security Policy directive 'script-src 'self' 'nonce-[^']+''.*@ ${WEB_URL%/}/services:0$" "${console_logs[@]}" >"$filtered_console_log"; then
+    :
+  fi
+  if [[ -s "$filtered_console_log" ]]; then
+    cat "$filtered_console_log" >&2
+    rm -f "$filtered_console_log"
+    exit 1
+  fi
+  rm -f "$filtered_console_log"
+  echo "PASS console logs"
 fi

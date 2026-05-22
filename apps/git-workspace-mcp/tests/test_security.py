@@ -53,7 +53,7 @@ def test_validate_ref_accepts_valid_refs(ref: str) -> None:
     assert validate_ref(ref) == ref
 
 
-@pytest.mark.parametrize("ref", ["HEAD; rm -rf /", "main && curl evil", "HEAD\nrm", "main | cat", ""])
+@pytest.mark.parametrize("ref", ["HEAD; rm -rf /", "main && curl evil", "HEAD\nrm", "main | cat", "--cached", "--ext-diff", "-Ssecret", ""])
 def test_validate_ref_rejects_shell_metachars(ref: str) -> None:
     with pytest.raises(GitWorkspaceSecurityError):
         validate_ref(ref)

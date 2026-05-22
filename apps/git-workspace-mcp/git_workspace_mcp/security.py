@@ -77,6 +77,8 @@ def validate_ref(ref: str) -> str:
     cleaned = ref.strip()
     if not cleaned:
         raise GitWorkspaceSecurityError("ref must be non-empty")
+    if cleaned.startswith("-"):
+        raise GitWorkspaceSecurityError("ref must not start with '-'")
     if not _REF_PATTERN.match(cleaned):
         raise GitWorkspaceSecurityError(f"invalid ref: {ref!r}")
     return cleaned

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .git_runner import GitRunError
-from .security import GitWorkspaceSecurityError, resolve_root
+from .security import GitWorkspaceSecurityError, redact_secrets, resolve_root
 from .tools import (
     repo_blame,
     repo_branch_list,
@@ -210,7 +210,7 @@ class GitWorkspaceMcpServer:
             except GitWorkspaceSecurityError as exc:
                 return json_rpc_error(request_id, -32602, str(exc), {"tool": name})
             except GitRunError as exc:
-                return json_rpc_error(request_id, -32000, str(exc), {"tool": name, "stderr": exc.stderr[:512]})
+                return json_rpc_error(request_id, -32000, str(exc), {"tool": name, "stderr": redact_secrets(exc.stderr[:512])})
         if method == "ping":
             return json_rpc_result(request_id, {})
         return json_rpc_error(request_id, -32601, "Method not found", {"method": method})

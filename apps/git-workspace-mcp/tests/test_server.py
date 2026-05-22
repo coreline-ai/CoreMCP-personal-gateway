@@ -70,3 +70,22 @@ async def test_security_error_returns_jsonrpc_error(workspace_root: Path) -> Non
     )
     assert response is not None
     assert response.get("error", {}).get("code") == -32602
+
+
+async def test_git_run_error_stderr_is_redacted(workspace_root: Path) -> None:
+    server = GitWorkspaceMcpServer(workspace_root)
+    secret_ref = "sk-stderrsecret999999"
+    response = await server.dispatch(
+        {
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "tools/call",
+            "params": {"name": "repo_diff", "arguments": {"name": "alpha", "ref": secret_ref}},
+        }
+    )
+    assert response is not None
+    error = response.get("error", {})
+    assert error.get("code") == -32000
+    stderr = error.get("data", {}).get("stderr", "")
+    assert secret_ref not in stderr
+    assert "***REDACTED***" in stderr
