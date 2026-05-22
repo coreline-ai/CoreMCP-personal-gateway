@@ -26,9 +26,9 @@ def register_connections_routes(
     request_ip: Callable[[Request], str | None],
     validated_scopes: Callable[[Any], list[str] | None],
     generate_one_time_token: Callable[[], str],
-    utc_sql_timestamp: Callable[[float | None], str],
-    iso_z: Callable[[str | None], str | None],
-    connection_token_prompt: Callable[[str, str | None], str],
+    utc_sql_timestamp: Callable[[float], str],
+    iso_z: Callable[[str], str],
+    connection_token_prompt: Callable[[str, str], str],
     one_time_token_prefix: str,
     one_time_token_ttl_seconds: int,
 ) -> None:

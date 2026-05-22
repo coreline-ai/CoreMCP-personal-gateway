@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useReducer, useState } from 'react';
 import {
   coreMcpApi,
   clearAdminToken,
@@ -31,6 +31,50 @@ import { ToolboxSection } from './sections/toolbox-section';
 
 const HEALTH_CHECK_PROMPT = 'Health 버튼을 눌러 API 상태를 확인하세요.';
 
+interface DataState {
+  settings: SettingsResponse | null;
+  services: McpServiceSummary[];
+  toolboxes: ToolboxSummary[];
+  defaultToolbox: ToolboxSummary | null;
+  connections: ExternalConnectionSummary[];
+  clientTokens: ClientTokenSummary[];
+  invocations: ToolInvocationSummary[];
+  auditLogs: AuditLogSummary[];
+  dashboardSummary: DashboardSummary | null;
+  playgroundTools: PlaygroundToolSummary[];
+  toolOverridesByService: Record<string, ToolOverrideSummary[]>;
+}
+
+type DataAction =
+  | { type: 'LOAD_ALL'; payload: Omit<DataState, 'playgroundTools'> }
+  | { type: 'RESET' }
+  | { type: 'SET_PLAYGROUND_TOOLS'; payload: PlaygroundToolSummary[] };
+
+const initialDataState: DataState = {
+  settings: null,
+  services: [],
+  toolboxes: [],
+  defaultToolbox: null,
+  connections: [],
+  clientTokens: [],
+  invocations: [],
+  auditLogs: [],
+  dashboardSummary: null,
+  playgroundTools: [],
+  toolOverridesByService: {}
+};
+
+function dataReducer(state: DataState, action: DataAction): DataState {
+  switch (action.type) {
+    case 'LOAD_ALL':
+      return { ...state, ...action.payload };
+    case 'RESET':
+      return initialDataState;
+    case 'SET_PLAYGROUND_TOOLS':
+      return { ...state, playgroundTools: action.payload };
+  }
+}
+
 export function AdminConsole({ initialSection = 'dashboard' }: { initialSection?: string }) {
   const [token, setToken] = useState<string | null>(null);
   const [tokenInput, setTokenInput] = useState('');
@@ -38,17 +82,20 @@ export function AdminConsole({ initialSection = 'dashboard' }: { initialSection?
   const [healthMessage, setHealthMessage] = useState(HEALTH_CHECK_PROMPT);
   const [statusMessage, setStatusMessage] = useState('Admin token 저장 후 데이터를 불러오세요.');
 
-  const [settings, setSettings] = useState<SettingsResponse | null>(null);
-  const [services, setServices] = useState<McpServiceSummary[]>([]);
-  const [toolboxes, setToolboxes] = useState<ToolboxSummary[]>([]);
-  const [defaultToolbox, setDefaultToolbox] = useState<ToolboxSummary | null>(null);
-  const [connections, setConnections] = useState<ExternalConnectionSummary[]>([]);
-  const [clientTokens, setClientTokens] = useState<ClientTokenSummary[]>([]);
-  const [invocations, setInvocations] = useState<ToolInvocationSummary[]>([]);
-  const [auditLogs, setAuditLogs] = useState<AuditLogSummary[]>([]);
-  const [dashboardSummary, setDashboardSummary] = useState<DashboardSummary | null>(null);
-  const [playgroundTools, setPlaygroundTools] = useState<PlaygroundToolSummary[]>([]);
-  const [toolOverridesByService, setToolOverridesByService] = useState<Record<string, ToolOverrideSummary[]>>({});
+  const [data, dispatchData] = useReducer(dataReducer, initialDataState);
+  const {
+    settings,
+    services,
+    toolboxes,
+    defaultToolbox,
+    connections,
+    clientTokens,
+    invocations,
+    auditLogs,
+    dashboardSummary,
+    playgroundTools,
+    toolOverridesByService
+  } = data;
 
   const [serviceName, setServiceName] = useState('Fake MCP');
   const [serviceSlug, setServiceSlug] = useState('fake');
@@ -111,23 +158,28 @@ export function AdminConsole({ initialSection = 'dashboard' }: { initialSection?
         coreMcpApi.listToolInvocations(),
         coreMcpApi.listAuditLogs()
       ]);
-      setSettings(settingsResponse);
-      setDashboardSummary(dashboardResponse);
-      setServices(servicesResponse.items);
-      setToolboxes(toolboxesResponse.items);
-      setConnections(connectionsResponse.items);
-      setClientTokens(tokensResponse.items);
-      setInvocations(invocationsResponse.items);
-      setAuditLogs(auditResponse.items);
       const firstToolbox = toolboxesResponse.items.find((item) => item.is_default) ?? toolboxesResponse.items[0];
       const defaultToolboxResponse = firstToolbox ? await coreMcpApi.getToolbox(firstToolbox.id) : null;
-      setDefaultToolbox(defaultToolboxResponse);
       const nextOverridesByService: Record<string, ToolOverrideSummary[]> = {};
       await Promise.all((defaultToolboxResponse?.items ?? []).map(async (item) => {
         const response = await coreMcpApi.listToolOverrides(item.service_id).catch(() => ({ items: [], next_cursor: null }));
         nextOverridesByService[item.service_id] = response.items;
       }));
-      setToolOverridesByService(nextOverridesByService);
+      dispatchData({
+        type: 'LOAD_ALL',
+        payload: {
+          settings: settingsResponse,
+          dashboardSummary: dashboardResponse,
+          services: servicesResponse.items,
+          toolboxes: toolboxesResponse.items,
+          connections: connectionsResponse.items,
+          clientTokens: tokensResponse.items,
+          invocations: invocationsResponse.items,
+          auditLogs: auditResponse.items,
+          defaultToolbox: defaultToolboxResponse,
+          toolOverridesByService: nextOverridesByService
+        }
+      });
       setStatusMessage('최신 데이터를 불러왔습니다.');
     } catch (error) {
       setStatusMessage(explainError(error));
@@ -150,16 +202,7 @@ export function AdminConsole({ initialSection = 'dashboard' }: { initialSection?
     clearAdminToken();
     setToken(null);
     setTokenInput('');
-    setSettings(null);
-    setServices([]);
-    setToolboxes([]);
-    setDefaultToolbox(null);
-    setConnections([]);
-    setClientTokens([]);
-    setAuditLogs([]);
-    setDashboardSummary(null);
-    setInvocations([]);
-    setToolOverridesByService({});
+    dispatchData({ type: 'RESET' });
     setIssuedToken(null);
     setHealthMessage('sessionStorage에 저장된 admin token을 삭제했습니다.');
     setStatusMessage('Admin token을 삭제했습니다. 새 token을 저장하면 데이터를 다시 불러옵니다.');
@@ -310,7 +353,7 @@ export function AdminConsole({ initialSection = 'dashboard' }: { initialSection?
     setCallResult('도구 목록을 불러오는 중입니다...');
     try {
       const response = await coreMcpApi.listPlaygroundTools();
-      setPlaygroundTools(response.items);
+      dispatchData({ type: 'SET_PLAYGROUND_TOOLS', payload: response.items });
       setSelectedTool(response.items[0]?.name ?? '');
       setCallResult(`사용 가능한 도구 ${response.items.length}개를 불러왔습니다.`);
     } catch (error) {

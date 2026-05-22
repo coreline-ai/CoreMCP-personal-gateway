@@ -15,7 +15,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from jwt.algorithms import RSAAlgorithm
 
-from coremcp.auth.rate_limit import FixedWindowRateLimiter
+from coremcp.auth.rate_limit import InMemoryRateLimiter, RateLimitBackend
 from coremcp.credentials import CredentialVault
 from coremcp.db import Repository, new_id
 from coremcp.errors import CoreMcpValueError
@@ -76,13 +76,13 @@ class OAuthService:
         repository: Repository,
         http_client: httpx.AsyncClient,
         *,
-        cimd_rate_limiter: FixedWindowRateLimiter | None = None,
+        cimd_rate_limiter: RateLimitBackend | None = None,
         vault: CredentialVault | None = None,
     ) -> None:
         self.settings = settings
         self.repository = repository
         self.http_client = http_client
-        self.cimd_rate_limiter = cimd_rate_limiter or FixedWindowRateLimiter()
+        self.cimd_rate_limiter: RateLimitBackend = cimd_rate_limiter or InMemoryRateLimiter()
         self.vault = vault
         self._private_key: rsa.RSAPrivateKey | None = None
         self.kid: str | None = None
@@ -159,8 +159,10 @@ class OAuthService:
             raise OAuthError("invalid_client_metadata", "redirect_uris is required")
         for redirect_uri in redirect_uris:
             self._validate_redirect_uri(redirect_uri)
-        grant_types = metadata.get("grant_types") if isinstance(metadata.get("grant_types"), list) else ["authorization_code", "refresh_token"]
-        response_types = metadata.get("response_types") if isinstance(metadata.get("response_types"), list) else ["code"]
+        raw_grant_types = metadata.get("grant_types")
+        grant_types: list[Any] = raw_grant_types if isinstance(raw_grant_types, list) else ["authorization_code", "refresh_token"]
+        raw_response_types = metadata.get("response_types")
+        response_types: list[Any] = raw_response_types if isinstance(raw_response_types, list) else ["code"]
         if "authorization_code" not in grant_types or "code" not in response_types:
             raise OAuthError("invalid_client_metadata", "authorization_code/code support is required")
         method = metadata.get("token_endpoint_auth_method") or "none"

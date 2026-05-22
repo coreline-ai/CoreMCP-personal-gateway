@@ -49,7 +49,8 @@ async def dispatch_mcp(
         ctx.sessions.mark_initialized(request.headers.get("Mcp-Session-Id"))
         return None, None
     if method == "notifications/cancelled":
-        params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
+        raw_params = payload.get("params")
+        params: dict[str, Any] = raw_params if isinstance(raw_params, dict) else {}
         await handlers.forward_downstream_cancellation(app, request, params=params, request_id=request_id)
         await ctx.repos.audit.log_invocation(
             session_id=request.headers.get("Mcp-Session-Id"),

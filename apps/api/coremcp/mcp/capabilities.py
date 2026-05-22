@@ -20,7 +20,8 @@ def capability_present(capabilities: dict[str, Any], key: str) -> bool:
 
 
 def summary_supports(summary: dict[str, Any], *keys: str) -> bool:
-    catalog = summary.get("resource_prompt_catalog") if isinstance(summary.get("resource_prompt_catalog"), dict) else {}
+    raw_catalog = summary.get("resource_prompt_catalog")
+    catalog: dict[str, Any] = raw_catalog if isinstance(raw_catalog, dict) else {}
     return any(bool(catalog.get(key)) for key in keys)
 
 

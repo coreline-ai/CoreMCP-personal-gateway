@@ -36,7 +36,7 @@ class ToolsHandlerDeps:
     downstream_session_callback: Callable[..., Callable[[str], Awaitable[None]]]
     downstream_notification_callback: Callable[..., Callable[[dict[str, Any]], Awaitable[None]]]
     tool_error_result: Callable[..., dict[str, Any]]
-    idempotency_cache_key: Callable[[Request, str], str]
+    idempotency_cache_key: Callable[[Request, str], str | None]
     check_service_rate_limit: Callable[..., Any]
     rate_limit_tool_error: Callable[[int | None], dict[str, Any]]
     transport_type: Callable[[dict[str, Any]], str]
@@ -253,7 +253,7 @@ class ToolCallRuntime:
     protocol_version: str | None
     request_log_id: str
     exposed_name: str
-    idempotency_key: str
+    idempotency_key: str | None
 
 
 @dataclass(slots=True)

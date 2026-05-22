@@ -87,10 +87,10 @@ class ServicesRouteDeps:
     publish_list_changed: Callable[..., Awaitable[None]]
     tool_preset_policy: Callable[[dict[str, Any], str], tuple[bool, str]]
     tool_override_counts: Callable[[list[dict[str, Any]]], dict[str, int]]
-    string_list: Callable[[Any], list[str] | None]
-    stdio_env: Callable[[Any], dict[str, str] | None]
-    positive_int: Callable[[Any, int | None], int | None]
-    stdio_default_idle_timeout: Callable[[Any], int | None]
+    string_list: Callable[[Any], list[str]]
+    stdio_env: Callable[[Any], dict[str, str]]
+    positive_int: Callable[[Any, int], int]
+    stdio_default_idle_timeout: Callable[[Any], int]
     service_transport_types: set[str]
     tool_permission_levels: set[str]
     tool_presets: set[str]
@@ -282,10 +282,10 @@ def register_services_routes(
     publish_list_changed: Callable[..., Awaitable[None]],
     tool_preset_policy: Callable[[dict[str, Any], str], tuple[bool, str]],
     tool_override_counts: Callable[[list[dict[str, Any]]], dict[str, int]],
-    string_list: Callable[[Any], list[str] | None],
-    stdio_env: Callable[[Any], dict[str, str] | None],
-    positive_int: Callable[[Any, int | None], int | None],
-    stdio_default_idle_timeout: Callable[[Any], int | None],
+    string_list: Callable[[Any], list[str]],
+    stdio_env: Callable[[Any], dict[str, str]],
+    positive_int: Callable[[Any, int], int],
+    stdio_default_idle_timeout: Callable[[Any], int],
     service_transport_types: set[str],
     tool_permission_levels: set[str],
     tool_presets: set[str],

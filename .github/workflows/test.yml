@@ -22,14 +22,13 @@ jobs:
         run: cd apps/git-workspace-mcp && uv run pytest
 
   pyright:
-    # Type checker runs as advisory in this cycle while the baseline is reduced.
-    # See dev-plan/implement_20260522_183112.md Phase 1 — current debt = 51 errors.
+    # Baseline reached 0 errors in dev-plan/implement_20260523_082116.md Phase 3.
+    # CI now blocks PRs that re-introduce errors.
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      - name: Pyright (basic mode, advisory)
+      - name: Pyright (basic mode, blocking)
         run: cd apps/api && uv run pyright
 
   restore-drill:

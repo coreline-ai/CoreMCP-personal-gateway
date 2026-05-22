@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from fastapi import FastAPI, Request
 
     from coremcp.auth.rate_limit import FixedWindowRateLimiter
-    from coremcp.credentials.vault import VaultBackend
+    from coremcp.credentials.vault import CredentialVault
     from coremcp.db.repository import Repository
     from coremcp.db.repository_facade import RepositoryFacades
     from coremcp.mcp_gateway import (
@@ -81,7 +81,7 @@ class AppContext:
         return self.app.state.repos
 
     @property
-    def vault(self) -> VaultBackend:
+    def vault(self) -> CredentialVault:
         return self.app.state.vault
 
     # ------------------------------------------------------------------
@@ -107,7 +107,7 @@ class AppContext:
     # STDIO process pool
     # ------------------------------------------------------------------
     @property
-    def stdio_clients(self) -> dict[str, StdioMcpClient]:
+    def stdio_clients(self) -> dict[str, tuple[tuple[Any, ...], StdioMcpClient]]:
         return self.app.state.stdio_clients
 
     @property

@@ -830,6 +830,67 @@ Consequences:
 - 본 ADR 은 personal scope 의 internal refactor 이며 SaaS plugin / multi-tenant 와 무관하다.
 
 ---
+## ADR-043: bandit B608 global skip — parameterized SQL with internal column allowlist
+
+Status: Accepted (2026-05-22 도입, 2026-05-23 정식화)
+
+Context:
+직전 cycle (`implement_20260522_183112.md` Phase 1) 의 CI 강화 작업에서 bandit 가 5건의 medium-severity B608 (hardcoded_sql_expressions) 를 보고했다. 모두 `repository_*.py` 의 동일한 pattern:
+- `repository_services.py:91` — `SELECT ... FROM mcp_services WHERE {where_sql}` (where_sql 은 정적 fragment 조립)
+- `repository_services.py:162` — `UPDATE mcp_services SET {', '.join(fields)} WHERE id = ? ...` (fields 는 내부 컬럼 allowlist)
+- `repository_audit.py:271`, `repository_credentials.py:266`, `repository_jobs.py:60` — 동일
+
+각 query 는:
+1. 컬럼명 / WHERE fragment 가 **내부 allowlist** 에서 조립됨 (사용자 입력 직접 보간 0)
+2. user-supplied 값은 100% `?` parameterized binding 로 전달
+
+따라서 SQL injection 표면은 0 이지만, bandit 의 정적 분석은 f-string SQL 패턴 자체를 위험으로 본다.
+
+Decision:
+`pyproject.toml` 의 `[tool.bandit] skips = ["B101", "B608"]` 로 B608 을 글로벌 skip 처리한다. 각 호출 사이트에 inline `# nosec` 을 다는 대안은:
+- multi-line f-string 에 대해 `# nosec` 위치가 까다로워 일관 적용 어려움
+- noise/유지보수 비용 > 가치 (총 5건이며 모두 동일 패턴)
+
+대신 **본 ADR 으로 사유를 명시** 하여 향후 새로운 f-string SQL 도입 시 동일 패턴 (allowlist + binding) 인지 PR 검토에서 확인한다.
+
+Constraints:
+- 새로 작성하는 SQL builder 는 user input 을 f-string 에 직접 보간하지 않는다 — 100% `?` placeholder.
+- 컬럼명 동적 조립이 필요한 경우 `repository_constants.SERVICE_UPDATE_FIELDS` 같은 internal allowlist 를 거친다.
+- 일반 코드 리뷰에서 SQL 변경 PR 은 B608 skip 효과 위에서 review 한다.
+
+Consequences:
+- bandit CI gate 는 B101 / B608 만 무시, 나머지 모든 medium+ 는 차단.
+- 신규 SQL 패턴이 본 정책 외 (user input 직접 보간) 라면 reviewer 가 ADR 위반으로 거절.
+- 후속 cycle 에서 Low-severity 34건도 동일 방식으로 ADR / nosec 처리 가능 (별도 cycle).
+
+---
+## ADR-044: Distributed rate limiter interface (Redis backlog)
+
+Status: Accepted (2026-05-23)
+
+Context:
+직전 cycle 의 multi-MCP 전문가 리뷰 (8.6/10) 에서 보안 영역 유일한 medium-risk 로 "rate limiter 가 in-memory 단일 프로세스 — N workers 배포 시 N × 한도" 가 지적됐다. 단일 머신 personal gateway 에서는 무관하지만, 팀/SaaS 확장 시 차단 요인.
+
+Decision:
+`coremcp/auth/rate_limit.py` 에 **`RateLimitBackend` Protocol** 을 도입하고, 기존 in-memory 구현을 `InMemoryRateLimiter` 로 명시화한다. `FixedWindowRateLimiter` 는 backwards-compat alias 로 유지. `RedisRateLimiter` 스텁 클래스 + `build_rate_limiter(backend, redis_url)` factory + `COREMCP_RATE_LIMIT_BACKEND` / `COREMCP_RATE_LIMIT_REDIS_URL` env 도입.
+
+실제 Redis 와이어 통신 (INCR + EXPIRE) 은 본 cycle 에 도입하지 않는다 — `RedisRateLimiter.check()` 는 현재 in-memory fallback 으로 전달하며 한 번의 warning 로그를 남긴다.
+
+이유:
+- 인터페이스를 먼저 잡으면 라우트 코드 변경 없이 백엔드 교체 가능 (`app.state.*_rate_limiter` 의 사용처는 그대로).
+- Redis SLO / 운영 환경 (Tailscale 통신, 인증, fail-open vs fail-closed 정책) 은 별도 결정이 필요해 본 cycle 의 안정화 작업과 분리.
+
+Constraints:
+- `FixedWindowRateLimiter` 직접 import 가 기존 코드에 다수 존재 → alias 로 100% 호환.
+- redis 라이브러리 import 가 optional — 미설치 시에도 startup 통과해야 함 (`from coremcp.auth.rate_limit import build_rate_limiter` 가 redis 없는 환경에서 정상).
+- `RateLimitDecision` shape / `check()` 시그니처 변경 금지 — 라우트 호출 site 회귀 0.
+
+Consequences:
+- 다음 cycle 의 첫 작업: `RedisRateLimiter.check()` 의 INCR/EXPIRE 와이어 구현 + 운영 환경 ADR (URL/auth/fail-mode).
+- 본 ADR 은 personal scope 의 indirection 도입만 — 단일 머신에서는 동작 변화 0.
+- `runtime_checkable` Protocol 도입으로 테스트의 `isinstance(limiter, RateLimitBackend)` 같은 검증도 향후 가능.
+
+---
 ## Superseded / Future Migration
 
 다음 ADR은 SaaS 전환 시 Superseded:

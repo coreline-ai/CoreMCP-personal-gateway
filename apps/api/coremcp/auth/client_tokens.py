@@ -5,7 +5,12 @@ import secrets
 from dataclasses import dataclass
 from typing import Any
 
+from typing import TYPE_CHECKING
+
 from coremcp.db import Repository
+
+if TYPE_CHECKING:
+    from coremcp.db.repository_facade import CredentialRepository
 
 CLIENT_TOKEN_PREFIX = "cmcp_client_"
 
@@ -41,7 +46,7 @@ class ClientTokenAuth:
 
 
 class ClientTokenService:
-    def __init__(self, repository: Repository) -> None:
+    def __init__(self, repository: Repository | CredentialRepository) -> None:
         self.repository = repository
 
     async def issue(

@@ -7,8 +7,9 @@ RESOURCE_READ_MAX_BLOB_CHARS = 1_000_000
 
 
 def cached_resource_to_mcp(row: dict[str, Any]) -> dict[str, Any]:
-    metadata = row.get("metadata_json") if isinstance(row.get("metadata_json"), dict) else {}
-    item = dict(metadata)
+    raw_metadata = row.get("metadata_json")
+    metadata: dict[str, Any] = raw_metadata if isinstance(raw_metadata, dict) else {}
+    item: dict[str, Any] = dict(metadata)
     item["uri"] = row["uri"]
     if row.get("name"):
         item["name"] = row["name"]
@@ -33,8 +34,9 @@ def unambiguous_resource_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]
 
 
 def cached_resource_template_to_mcp(row: dict[str, Any]) -> dict[str, Any]:
-    metadata = row.get("metadata_json") if isinstance(row.get("metadata_json"), dict) else {}
-    item = dict(metadata)
+    raw_metadata = row.get("metadata_json")
+    metadata: dict[str, Any] = raw_metadata if isinstance(raw_metadata, dict) else {}
+    item: dict[str, Any] = dict(metadata)
     item["uriTemplate"] = row["uri_template"]
     if row.get("name"):
         item["name"] = row["name"]

@@ -38,7 +38,10 @@ def _bounded_service_limit(limit: int) -> int:
 
 
 def _service_slug(body: dict[str, Any], name: str) -> str:
-    return body.get("slug") if isinstance(body.get("slug"), str) and body.get("slug") else slugify_tool_name(name).lower()
+    slug = body.get("slug")
+    if isinstance(slug, str) and slug:
+        return slug
+    return slugify_tool_name(name).lower()
 
 
 def _service_stdio_command(body: dict[str, Any]) -> str | None:
@@ -78,10 +81,10 @@ async def _service_create_payload(
     validate_stdio_runtime_config: Callable[..., str | None],
     audit_stdio_command_rejected: Callable[..., Awaitable[None]],
     api_error: Callable[..., JSONResponse],
-    string_list: Callable[[Any], list[str] | None],
-    stdio_env: Callable[[Any], dict[str, str] | None],
-    positive_int: Callable[[Any, int | None], int | None],
-    stdio_default_idle_timeout: Callable[[Any], int | None],
+    string_list: Callable[[Any], list[str]],
+    stdio_env: Callable[[Any], dict[str, str]],
+    positive_int: Callable[[Any, int], int],
+    stdio_default_idle_timeout: Callable[[Any], int],
     service_transport_types: set[str],
 ) -> tuple[dict[str, Any] | None, JSONResponse | None]:
     name = body.get("name")
@@ -146,10 +149,10 @@ async def _service_update_payload(
     validate_stdio_runtime_config: Callable[..., str | None],
     audit_stdio_command_rejected: Callable[..., Awaitable[None]],
     api_error: Callable[..., JSONResponse],
-    string_list: Callable[[Any], list[str] | None],
-    stdio_env: Callable[[Any], dict[str, str] | None],
-    positive_int: Callable[[Any, int | None], int | None],
-    stdio_default_idle_timeout: Callable[[Any], int | None],
+    string_list: Callable[[Any], list[str]],
+    stdio_env: Callable[[Any], dict[str, str]],
+    positive_int: Callable[[Any, int], int],
+    stdio_default_idle_timeout: Callable[[Any], int],
 ) -> tuple[dict[str, Any] | None, JSONResponse | None]:
     updates = {key: body[key] for key in SERVICE_UPDATE_FIELDS if key in body}
     if updates.get("transport_type") not in {None, "http", "stdio"}:

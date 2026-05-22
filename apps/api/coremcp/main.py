@@ -5,7 +5,6 @@ import hashlib
 import secrets
 import time
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -22,7 +21,7 @@ from coremcp.auth import (
     verify_admin_bearer,
 )
 from coremcp.auth.admin import ADMIN_TOKEN_PREFIX
-from coremcp.auth.rate_limit import FixedWindowRateLimiter
+from coremcp.auth.rate_limit import FixedWindowRateLimiter, build_rate_limiter
 from coremcp.api.body_limit import RequestBodyTooLarge, contains_request_body_too_large, install_streaming_body_limit
 from coremcp.api import (
     oauth_issuer,
@@ -53,6 +52,7 @@ from coremcp.mcp_gateway import (
     run_reaper_loop,
 )
 from coremcp.mcp_gateway.health_probe import (
+    detect_service_tool_schema_drift as _detect_service_tool_schema_drift,
     run_service_health_probe_loop as _run_service_health_probe_loop,
     run_service_health_probe_once as _run_service_health_probe_once,
 )
@@ -65,9 +65,15 @@ from coremcp.mcp_gateway.responses import (
     tool_error_result,
 )
 from coremcp.mcp_gateway.stdio_pool import (
+    audit_stdio_command_rejected as _audit_stdio_command_rejected,
     close_stdio_client_for_service as _close_stdio_client_for_service,
     persist_stdio_state as _persist_stdio_state,
     stdio_client_for_config as _stdio_client_for_config,
+    stdio_command_basename as _stdio_command_basename,
+    stdio_default_idle_timeout as _stdio_default_idle_timeout,
+    stdio_env as _stdio_env,
+    stdio_signature as _stdio_signature,
+    validate_stdio_runtime_config as _validate_stdio_runtime_config,
 )
 from coremcp.mcp.capabilities import (
     DEFAULT_SERVER_CAPABILITIES,
@@ -147,14 +153,6 @@ DANGEROUS_TOOL_KEYWORDS = (
     "disable",
     "shutdown",
 )
-BLOCKED_STDIO_ENV_KEYS = {
-    "authorization",
-    "coremcp_admin_token",
-    "coremcp_client_token",
-    "coremcp_admin_token_value",
-}
-
-
 def correlation_id(request: Request) -> str:
     return str(getattr(request.state, "request_id", "") or request.headers.get("X-Request-ID") or f"req_{secrets.token_hex(16)}")
 
@@ -258,7 +256,8 @@ async def _scope_denied_response(
 ) -> dict[str, Any]:
     request_id = _get_request_id(payload)
     method = str(payload.get("method") or "")
-    params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
+    raw_params = payload.get("params")
+    params: dict[str, Any] = raw_params if isinstance(raw_params, dict) else {}
     tool_name = params.get("name") if isinstance(params.get("name"), str) else None
     request_log_id = correlation_id(request)
     await app.state.repos.audit.log_audit(
@@ -309,25 +308,6 @@ def _string_list(value: Any) -> list[str]:
     return [item for item in value if isinstance(item, str) and item]
 
 
-def _stdio_env(value: Any) -> dict[str, str]:
-    if not isinstance(value, dict):
-        return {}
-    env: dict[str, str] = {}
-    for key, item in value.items():
-        if not isinstance(key, str) or not isinstance(item, str):
-            continue
-        normalized = key.lower().replace("-", "_")
-        if (
-            normalized in BLOCKED_STDIO_ENV_KEYS
-            or normalized.startswith("coremcp_admin_token")
-            or normalized.startswith("coremcp_client_token")
-            or "authorization" in normalized
-        ):
-            continue
-        env[key] = item
-    return env
-
-
 def _positive_int(value: Any, default: int) -> int:
     try:
         parsed = int(value)
@@ -339,76 +319,6 @@ def _positive_int(value: Any, default: int) -> int:
 def _transport_type(config: dict[str, Any]) -> str:
     transport = str(config.get("transport_type") or "http").lower()
     return transport if transport in SERVICE_TRANSPORT_TYPES else "http"
-
-
-def _stdio_command_basename(command: str | None) -> str:
-    return Path(str(command or "").strip()).name
-
-
-def _validate_stdio_runtime_config(
-    command: str | None,
-    cwd: str | None = None,
-    *,
-    settings: Settings | None = None,
-) -> str | None:
-    if not command or not command.strip():
-        return "stdio_command is required for stdio transport"
-    command_path = Path(command.strip()).expanduser()
-    if not command_path.is_absolute():
-        return "stdio_command must be an absolute path"
-    allowed_basenames = (settings or get_settings()).stdio_allowed_command_set
-    command_basename = command_path.name
-    if command_basename not in allowed_basenames:
-        allowed = ", ".join(sorted(allowed_basenames)) or "<none>"
-        return f"stdio_command basename is not allowed: {command_basename} (allowed: {allowed})"
-    if cwd and cwd.strip():
-        cwd_path = Path(cwd.strip()).expanduser()
-        if not cwd_path.is_absolute():
-            return "stdio_cwd must be an absolute path"
-        if not cwd_path.exists() or not cwd_path.is_dir():
-            return "stdio_cwd must be an existing directory"
-    return None
-
-
-def _stdio_default_idle_timeout(settings: Settings) -> int:
-    return max(1, int(settings.stdio_default_idle_timeout_seconds))
-
-
-def _stdio_signature(config: dict[str, Any], settings: Settings | None = None) -> tuple[Any, ...]:
-    command = str(config.get("stdio_command") or "").strip()
-    cwd = str(config.get("stdio_cwd") or "").strip() or None
-    settings = settings or get_settings()
-    validation_error = _validate_stdio_runtime_config(command, cwd, settings=settings)
-    if validation_error:
-        raise DownstreamMcpError(validation_error, code=-32602)
-    args = tuple(_string_list(config.get("stdio_args")))
-    env = _stdio_env(config.get("stdio_env"))
-    idle_timeout = _positive_int(
-        config.get("stdio_idle_timeout_seconds"),
-        _stdio_default_idle_timeout(settings),
-    )
-    return (command, args, tuple(sorted(env.items())), cwd, idle_timeout)
-
-
-async def _audit_stdio_command_rejected(
-    request: Request,
-    *,
-    command: str | None,
-    reason: str,
-    service_id: str | None = None,
-) -> None:
-    await request.app.state.repos.audit.log_audit(
-        action="service.stdio_command_rejected",
-        resource_type="mcp_service",
-        resource_id=service_id,
-        metadata={
-            "command_basename": _stdio_command_basename(command),
-            "reason": reason,
-        },
-        request_id=correlation_id(request),
-        ip=request_ip(request),
-        user_agent=request.headers.get("user-agent"),
-    )
 
 
 def _bearer_rate_limit_bucket(request: Request, *, route_kind: str) -> str:
@@ -1035,51 +945,19 @@ async def _run_ops_reapers_once(app: FastAPI) -> None:
     )
 
 
-async def _detect_service_tool_schema_drift(
-    app: FastAPI,
-    service: dict[str, Any],
-    *,
-    protocol_version: str,
-    timeout: httpx.Timeout,
-) -> bool:
-    service_id = str(service.get("id") or "")
-    if not service_id:
-        return False
-    response = await _request_service_rpc(
-        app,
-        service,
-        method="tools/list",
-        params={},
-        request_id=f"health-{service_id}-tools",
-        protocol_version=protocol_version,
-        correlation_id_value=f"health-probe-{service_id}",
-        timeout=timeout,
-    )
-    result = response.get("result")
-    tools = result.get("tools") if isinstance(result, dict) else None
-    if not isinstance(tools, list):
-        return False
-    existing_tools = await app.state.repos.catalog.list_service_tools(service_id)
-    normalized, _warnings = normalize_downstream_tools(
-        tools,
-        service_slug=str(service.get("slug") or service_id),
-        settings=app.state.settings,
-    )
-    return _tool_schema_change_summary(existing_tools, normalized).get("changed_tool_count", 0) > 0
-
-
 async def _handle_initialize(
     app: FastAPI,
     payload: dict[str, Any],
     request: Request,
 ) -> tuple[dict[str, Any], str]:
-    params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
+    raw_params = payload.get("params")
+    params: dict[str, Any] = raw_params if isinstance(raw_params, dict) else {}
     requested_raw = params.get("protocolVersion") or request.headers.get("MCP-Protocol-Version")
     requested = str(requested_raw) if requested_raw is not None else None
     protocol_version = negotiate_protocol_version(requested)
     session = app.state.sessions.create(protocol_version)
 
-    downstream_params = dict(params)
+    downstream_params: dict[str, Any] = dict(params)
     downstream_params["protocolVersion"] = protocol_version
     init_timeout_seconds = max(0.1, float(app.state.settings.initialize_downstream_timeout_seconds))
     init_timeout = httpx.Timeout(
@@ -1370,11 +1248,15 @@ def create_app(settings: Settings | None = None, http_client: httpx.AsyncClient 
         app.state.stdio_clients = {}
         app.state.stdio_clients_lock = asyncio.Lock()
         app.state.circuit_breaker = CircuitBreaker()
-        app.state.auth_rate_limiter = FixedWindowRateLimiter()
-        app.state.mcp_rate_limiter = FixedWindowRateLimiter()
-        app.state.service_rate_limiter = FixedWindowRateLimiter()
-        app.state.oauth_dcr_rate_limiter = FixedWindowRateLimiter()
-        app.state.oauth_cimd_rate_limiter = FixedWindowRateLimiter()
+        rate_limit_factory = lambda: build_rate_limiter(  # noqa: E731 - inline closure preserves call shape
+            settings.rate_limit_backend,
+            redis_url=settings.rate_limit_redis_url,
+        )
+        app.state.auth_rate_limiter = rate_limit_factory()
+        app.state.mcp_rate_limiter = rate_limit_factory()
+        app.state.service_rate_limiter = rate_limit_factory()
+        app.state.oauth_dcr_rate_limiter = rate_limit_factory()
+        app.state.oauth_cimd_rate_limiter = rate_limit_factory()
         app.state.plugins = PluginRegistry()
         app.state.reaper_task = None
         app.state.health_probe_task = None

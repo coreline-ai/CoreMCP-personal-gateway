@@ -46,6 +46,6 @@ def install_streaming_body_limit(request: Request, *, max_bytes: int) -> None:
                 seen += len(body)
                 if seen > max_bytes:
                     raise RequestBodyTooLarge(max_bytes)
-        return message
+        return message  # type: ignore[return-value]  # starlette Message is a TypedDict superset of dict[str, Any]
 
     request._receive = limited_receive  # noqa: SLF001 - see docstring above.

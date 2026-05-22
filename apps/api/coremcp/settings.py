@@ -64,6 +64,8 @@ class Settings(BaseSettings):
     auth_rate_limit_per_minute: int = Field(default=240, alias="COREMCP_AUTH_RATE_LIMIT_PER_MINUTE")
     mcp_rate_limit_per_minute: int = Field(default=120, alias="COREMCP_MCP_RATE_LIMIT_PER_MINUTE")
     service_rate_limit_per_minute: int = Field(default=120, alias="COREMCP_SERVICE_RATE_LIMIT_PER_MINUTE")
+    rate_limit_backend: str = Field(default="memory", alias="COREMCP_RATE_LIMIT_BACKEND")
+    rate_limit_redis_url: str | None = Field(default=None, alias="COREMCP_RATE_LIMIT_REDIS_URL")
     downstream_session_ttl_seconds: int = Field(default=3600, alias="COREMCP_DOWNSTREAM_SESSION_TTL_SECONDS")
     codex_simulator_enabled: bool = Field(default=True, alias="COREMCP_CODEX_SIMULATOR_ENABLED")
     codex_simulator_timeout_seconds: int = Field(default=120, alias="COREMCP_CODEX_SIMULATOR_TIMEOUT_SECONDS")

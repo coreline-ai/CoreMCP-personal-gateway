@@ -1,9 +1,28 @@
+"""Rate-limit backends.
+
+The codebase originally shipped a single ``FixedWindowRateLimiter`` —
+in-memory, single-process. ``RateLimitBackend`` formalises the protocol so
+the in-memory implementation can be swapped for a distributed one (Redis,
+etc.) without touching the call sites.
+
+For now we ship ``InMemoryRateLimiter`` (the historical behaviour, kept as
+``FixedWindowRateLimiter`` alias for back-compat) and ``RedisRateLimiter``
+which is a stub: it attempts to import ``redis`` and, on failure or absence
+of a connection URL, transparently delegates to an in-memory backend with a
+single warning log. The actual Redis wire integration is intentionally
+deferred — see dev-plan/implement_20260523_082116.md Phase 2.
+"""
+
 from __future__ import annotations
 
+import logging
 import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Protocol, runtime_checkable
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -14,8 +33,21 @@ class RateLimitDecision:
     reset_at: float
 
 
-class FixedWindowRateLimiter:
-    """Small in-memory fixed-window limiter for single-process OAuth endpoints."""
+@runtime_checkable
+class RateLimitBackend(Protocol):
+    """Protocol every rate-limit backend must satisfy."""
+
+    def check(self, key: str, *, limit: int, window_seconds: int) -> RateLimitDecision:
+        ...
+
+    def clear(self) -> None:
+        ...
+
+
+class InMemoryRateLimiter:
+    """Single-process fixed-window limiter. Backwards-compatible with the
+    original ``FixedWindowRateLimiter`` — values and decisions match exactly.
+    """
 
     def __init__(self, *, clock: Callable[[], float] | None = None) -> None:
         self._clock = clock or time.time
@@ -53,3 +85,67 @@ class FixedWindowRateLimiter:
 
     def clear(self) -> None:
         self._buckets.clear()
+
+
+# Back-compat alias. Existing imports of FixedWindowRateLimiter continue to work.
+FixedWindowRateLimiter = InMemoryRateLimiter
+
+
+class RedisRateLimiter:
+    """Stub for a distributed Redis-backed limiter.
+
+    Until the Redis wire integration ships, this class transparently delegates
+    to :class:`InMemoryRateLimiter`. The single behavioural difference is a
+    one-time warning emitted on construction so operators see they are not in
+    fact getting cross-process limits yet.
+    """
+
+    def __init__(self, url: str | None = None, *, clock: Callable[[], float] | None = None) -> None:
+        self.url = url
+        self._fallback = InMemoryRateLimiter(clock=clock)
+        self._redis_client = None
+        try:
+            if url:
+                import redis  # type: ignore[import-not-found]  # optional dependency
+                self._redis_client = redis.Redis.from_url(url)
+        except Exception as exc:  # noqa: BLE001 - any failure falls back to memory
+            logger.warning("RedisRateLimiter falling back to in-memory: %s", exc)
+            self._redis_client = None
+        if self._redis_client is None and url:
+            logger.warning(
+                "RedisRateLimiter url=%s configured but redis client unavailable; using in-memory fallback",
+                url,
+            )
+
+    def check(self, key: str, *, limit: int, window_seconds: int) -> RateLimitDecision:
+        # TODO: implement INCR + EXPIRE based fixed-window check on self._redis_client
+        # once the Redis wire format and operational SLOs are agreed.
+        return self._fallback.check(key, limit=limit, window_seconds=window_seconds)
+
+    def clear(self) -> None:
+        self._fallback.clear()
+
+
+def build_rate_limiter(
+    backend: str = "memory", *, redis_url: str | None = None
+) -> RateLimitBackend:
+    """Construct a rate limiter from a string backend identifier.
+
+    Used by ``create_app`` to honour the ``COREMCP_RATE_LIMIT_BACKEND`` env.
+    Unknown identifiers fall back to in-memory with a warning.
+    """
+    if backend == "redis":
+        return RedisRateLimiter(redis_url)
+    if backend != "memory":
+        logger.warning("Unknown rate limit backend %r; falling back to in-memory", backend)
+    return InMemoryRateLimiter()
+
+
+__all__ = [
+    "FixedWindowRateLimiter",
+    "InMemoryRateLimiter",
+    "RateLimitBackend",
+    "RateLimitDecision",
+    "RedisRateLimiter",
+    "build_rate_limiter",
+]

@@ -17,6 +17,7 @@ from coremcp.mcp_gateway.stdio_pool import (
     persist_stdio_state,
     stdio_client_for_config,
 )
+from coremcp.registry.catalog import normalize_downstream_tools
 from coremcp.runtime import AppContext
 
 if TYPE_CHECKING:
@@ -27,11 +28,47 @@ SERVICE_HEALTH_FAILURE_THRESHOLD = 3
 SERVICE_HEALTH_CIRCUIT_OPEN_SECONDS = 30
 
 
+async def detect_service_tool_schema_drift(
+    app: FastAPI,
+    service: dict[str, Any],
+    *,
+    protocol_version: str,
+    timeout: httpx.Timeout,
+) -> bool:
+    """Return True when downstream tools/list differs from the persisted catalog."""
+    from coremcp.main import _request_service_rpc, _tool_schema_change_summary
+
+    ctx = AppContext.from_app(app)
+    service_id = str(service.get("id") or "")
+    if not service_id:
+        return False
+    response = await _request_service_rpc(
+        app,
+        service,
+        method="tools/list",
+        params={},
+        request_id=f"health-{service_id}-tools",
+        protocol_version=protocol_version,
+        correlation_id_value=f"health-probe-{service_id}",
+        timeout=timeout,
+    )
+    result = response.get("result")
+    tools = result.get("tools") if isinstance(result, dict) else None
+    if not isinstance(tools, list):
+        return False
+    existing_tools = await ctx.repos.catalog.list_service_tools(service_id)
+    normalized, _warnings = normalize_downstream_tools(
+        tools,
+        service_slug=str(service.get("slug") or service_id),
+        settings=ctx.settings,
+    )
+    return _tool_schema_change_summary(existing_tools, normalized).get("changed_tool_count", 0) > 0
+
+
 async def probe_service_health(app: FastAPI, service: dict[str, Any]) -> tuple[bool, str | None]:
     """Run one ``initialize`` against ``service`` and update health columns."""
     # Lazy imports keep us off the main.py circular path.
     from coremcp.main import (
-        _detect_service_tool_schema_drift,
         _record_downstream_failure,
         _request_service_rpc,
         _transport_type,
@@ -70,7 +107,7 @@ async def probe_service_health(app: FastAPI, service: dict[str, Any]) -> tuple[b
         if _transport_type(service) == "stdio":
             stdio_client = await stdio_client_for_config(app, service)
             await persist_stdio_state(app, service_id, stdio_client)
-        if await _detect_service_tool_schema_drift(
+        if await detect_service_tool_schema_drift(
             app,
             service,
             protocol_version=protocol_version,
@@ -129,6 +166,7 @@ async def run_service_health_probe_loop(app: FastAPI) -> None:
 __all__ = [
     "SERVICE_HEALTH_CIRCUIT_OPEN_SECONDS",
     "SERVICE_HEALTH_FAILURE_THRESHOLD",
+    "detect_service_tool_schema_drift",
     "probe_service_health",
     "run_service_health_probe_loop",
     "run_service_health_probe_once",
