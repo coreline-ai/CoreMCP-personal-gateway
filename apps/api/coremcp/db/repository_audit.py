@@ -1,45 +1,36 @@
+"""Audit / invocation / dashboard repository.
+
+ADR-046 Step 2 (2026-05-23): ``AuditRepositoryMixin`` graduates to a
+composition class ``AuditRepository(repository)``. The legacy mixin name
+is kept as an alias so historical imports keep resolving, but it can no
+longer be inherited as a mixin. ``Repository`` now composes
+``self.audit_repo = AuditRepository(self)`` and exposes nine
+backward-compat delegate methods.
+"""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from coremcp.logging import redact_value
 from coremcp.db.repository_constants import DEFAULT_TOOLBOX_ID, LOCAL_USER_ID
 from coremcp.db.repository_ids import new_id
+from coremcp.logging import redact_value
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
-
-    import aiosqlite
+    from coremcp.db.repository import Repository
 
 
-class AuditRepositoryMixin:
-    """User, audit, invocation, metrics, and dashboard SQL operations.
+class AuditRepository:
+    """User / audit / invocation / metrics / dashboard SQL operations."""
 
-    ADR-046 Step 2 (2026-05-23): host-provided attributes are declared via
-    ``if TYPE_CHECKING`` so this module no longer needs the
-    ``reportAttributeAccessIssue=false`` directive.
-    """
-
-    if TYPE_CHECKING:
-        @property
-        def db(self) -> aiosqlite.Connection: ...
-
-        @staticmethod
-        def dumps_json(value: Any) -> str: ...
-
-        @staticmethod
-        def loads_json(value: Any, default: Any = None) -> Any: ...
-
-        @staticmethod
-        def _row_to_dict(
-            row: aiosqlite.Row | None, json_fields: Iterable[str] = ()
-        ) -> dict[str, Any] | None: ...
+    def __init__(self, repository: Repository) -> None:
+        self._repo = repository
 
     # ------------------------------------------------------------------
     # User / settings
     # ------------------------------------------------------------------
     async def get_me(self) -> dict[str, Any]:
-        cursor = await self.db.execute(
+        cursor = await self._repo.db.execute(
             """
             SELECT u.id, u.email, u.name, u.locale, u.bootstrap_completed_at, u.created_at,
                    t.id AS default_toolbox_id
@@ -55,7 +46,7 @@ class AuditRepositoryMixin:
         return dict(row)
 
     async def count_active_client_tokens(self) -> int:
-        cursor = await self.db.execute(
+        cursor = await self._repo.db.execute(
             "SELECT COUNT(*) AS count FROM personal_access_tokens WHERE status = 'active' AND revoked_at IS NULL"
         )
         row = await cursor.fetchone()
@@ -77,7 +68,7 @@ class AuditRepositoryMixin:
         user_agent: str | None = None,
     ) -> str:
         audit_id = new_id("aud")
-        await self.db.execute(
+        await self._repo.db.execute(
             """
             INSERT INTO audit_logs
               (id, request_id, actor_user_id, action, resource_type, resource_id, ip, user_agent, metadata)
@@ -92,10 +83,10 @@ class AuditRepositoryMixin:
                 resource_id,
                 ip,
                 user_agent,
-                self.dumps_json(redact_value(metadata or {})),
+                self._repo.dumps_json(redact_value(metadata or {})),
             ),
         )
-        await self.db.commit()
+        await self._repo.db.commit()
         return audit_id
 
     async def log_invocation(
@@ -121,7 +112,7 @@ class AuditRepositoryMixin:
     ) -> str:
         invocation_id = new_id("inv")
         exposed_tool_name = tool_name or method
-        await self.db.execute(
+        await self._repo.db.execute(
             """
             INSERT INTO tool_invocations
               (id, request_id, user_id, external_connection_id, toolbox_id, service_id, service_tool_id,
@@ -154,11 +145,11 @@ class AuditRepositoryMixin:
                 user_agent,
             ),
         )
-        await self.db.commit()
+        await self._repo.db.commit()
         return invocation_id
 
     async def count_invocations(self) -> int:
-        cursor = await self.db.execute("SELECT COUNT(*) AS count FROM tool_invocations")
+        cursor = await self._repo.db.execute("SELECT COUNT(*) AS count FROM tool_invocations")
         row = await cursor.fetchone()
         assert row is not None  # COUNT(*) always returns one row
         return int(row["count"])
@@ -182,7 +173,7 @@ class AuditRepositoryMixin:
         }
         snapshot: dict[str, int] = {}
         for key, query in queries.items():
-            cursor = await self.db.execute(query)
+            cursor = await self._repo.db.execute(query)
             row = await cursor.fetchone()
             assert row is not None  # COUNT(*) always returns one row
             snapshot[key] = int(row["count"])
@@ -191,7 +182,7 @@ class AuditRepositoryMixin:
     async def dashboard_summary(self) -> dict[str, Any]:
         metrics = await self.metrics_snapshot()
 
-        cursor = await self.db.execute(
+        cursor = await self._repo.db.execute(
             """
             SELECT status, COUNT(*) AS count
             FROM mcp_services
@@ -202,7 +193,7 @@ class AuditRepositoryMixin:
         )
         service_status_counts = {str(row["status"]): int(row["count"]) for row in await cursor.fetchall()}
 
-        cursor = await self.db.execute(
+        cursor = await self._repo.db.execute(
             """
             SELECT
               COUNT(*) AS calls,
@@ -222,7 +213,7 @@ class AuditRepositoryMixin:
             "max_latency_ms": int(row["max_latency_ms"] or 0),
         }
 
-        cursor = await self.db.execute(
+        cursor = await self._repo.db.execute(
             """
             SELECT COALESCE(exposed_tool_name, tool_name, downstream_tool_name, 'unknown') AS tool,
                    COUNT(*) AS calls,
@@ -245,7 +236,7 @@ class AuditRepositoryMixin:
             for item in await cursor.fetchall()
         ]
 
-        cursor = await self.db.execute(
+        cursor = await self._repo.db.execute(
             """
             SELECT id, name, slug, status, consecutive_failures, last_health_check_at, circuit_open_until
             FROM mcp_services
@@ -266,7 +257,7 @@ class AuditRepositoryMixin:
         }
 
     async def recent_invocations(self, limit: int = 20) -> list[dict[str, Any]]:
-        cursor = await self.db.execute(
+        cursor = await self._repo.db.execute(
             """
             SELECT id, request_id, method, tool_name, exposed_tool_name, status, error_code,
                    error_message, latency_ms, service_id, service_tool_id, downstream_tool_name,
@@ -296,7 +287,7 @@ class AuditRepositoryMixin:
             params.append(resource_type)
         where_sql = f"WHERE {' AND '.join(where)}" if where else ""
         params.append(limit)
-        cursor = await self.db.execute(
+        cursor = await self._repo.db.execute(
             f"""
             SELECT id, request_id, action, resource_type, resource_id, ip, user_agent, metadata, created_at
             FROM audit_logs
@@ -310,7 +301,14 @@ class AuditRepositoryMixin:
         items: list[dict[str, Any]] = []
         for row in rows:
             item = dict(row)
-            item["metadata"] = self.loads_json(item.get("metadata"), {})
+            item["metadata"] = self._repo.loads_json(item.get("metadata"), {})
             items.append(item)
         return items
 
+
+# Backward-compat alias — historical imports still resolve, but the class is
+# no longer a Python mixin: subclassing it requires a Repository in __init__.
+AuditRepositoryMixin = AuditRepository
+
+
+__all__ = ["AuditRepository", "AuditRepositoryMixin"]

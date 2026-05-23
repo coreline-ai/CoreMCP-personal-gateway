@@ -420,7 +420,28 @@ infra/scripts/ops-smoke.sh --require-tailscale
 2026-05-14 현재 검증 머신에는 `tailscale` CLI가 설치되어 있지 않아 Tailscale install/login/Serve/ACL smoke는 skipped 상태다.
 
 ### 6.3 ACL
-admin console에서 본인 디바이스만 접근 허용.
+admin console에서 본인 디바이스만 접근 허용. ACL JSON 예시 (단일 사용자 / Mac mini host):
+
+```json
+{
+  "acls": [
+    {"action": "accept", "src": ["autogroup:owner"], "dst": ["coremcp-api:8787", "coremcp-api:6379"]}
+  ],
+  "tagOwners": {
+    "tag:coremcp-api": ["autogroup:owner"]
+  }
+}
+```
+
+운영 host name 이 `coremcp-api` 라고 가정. ACL 변경은 https://login.tailscale.com/admin/acls/file 에서 적용. 변경 후 검증:
+
+```bash
+COREMCP_TAILSCALE_HOST=coremcp-api make tailscale-acl-validate
+# → tailscale-acl-validate OK: BackendState=Running, Self=...
+# → tailscale-acl-validate OK: peer 'coremcp-api' is online
+```
+
+`tailscale-acl-validate` 는 CLI 미설치 / 미로그인 / 호스트 미존재 시 명확한 메시지 + exit 1. 실제 ACL JSON 의 push 는 운영자 책임이며 본 스크립트는 reachability 검증만 수행한다.
 
 ### 6.4 Caddy 대안
 ```text

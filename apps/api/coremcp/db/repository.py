@@ -8,7 +8,7 @@ from typing import Any
 import aiosqlite
 
 from coremcp.db.migrations import run_migrations
-from coremcp.db.repository_audit import AuditRepositoryMixin
+from coremcp.db.repository_audit import AuditRepository, AuditRepositoryMixin  # noqa: F401 - AuditRepositoryMixin kept for backward-compat imports
 from coremcp.db.repository_catalog import CatalogRepositoryMixin
 from coremcp.db.repository_connections import ConnectionsRepositoryMixin
 from coremcp.db.repository_constants import DEFAULT_TOOLBOX_ID, LOCAL_USER_ID
@@ -25,7 +25,6 @@ class Repository(
     ToolboxRepositoryMixin,
     CredentialsRepositoryMixin,
     ConnectionsRepositoryMixin,
-    AuditRepositoryMixin,
 ):
     """SQLite repository for the personal CoreMCP gateway.
 
@@ -38,10 +37,11 @@ class Repository(
     def __init__(self, database_path: Path) -> None:
         self.database_path = database_path
         self._db: aiosqlite.Connection | None = None
-        # ADR-046 Step 1 / Phase 2 (2026-05-23): Jobs is the first mixin to
-        # graduate to explicit composition. The remaining 6 mixins stay on
-        # the host pattern with TYPE_CHECKING stubs until they migrate too.
+        # ADR-046 Step 1+2 (2026-05-23): Jobs and Audit have graduated to
+        # explicit composition. The remaining 5 mixins stay on the host
+        # pattern with TYPE_CHECKING stubs until they migrate too.
         self.jobs: JobsRepository = JobsRepository(self)
+        self.audit_repo: AuditRepository = AuditRepository(self)
 
     # ------------------------------------------------------------------
     # Backward-compat delegates for the old JobsRepositoryMixin surface.
@@ -70,6 +70,37 @@ class Repository(
         return await self.jobs.mark_stuck_jobs_failed(
             max_age_seconds=max_age_seconds, now_epoch=now_epoch
         )
+
+    # ------------------------------------------------------------------
+    # Backward-compat delegates for the old AuditRepositoryMixin surface.
+    # New code should call ``repository.audit_repo.<method>(...)`` directly.
+    # ------------------------------------------------------------------
+    async def get_me(self) -> dict[str, Any]:
+        return await self.audit_repo.get_me()
+
+    async def count_active_client_tokens(self) -> int:
+        return await self.audit_repo.count_active_client_tokens()
+
+    async def log_audit(self, **kwargs: Any) -> str:
+        return await self.audit_repo.log_audit(**kwargs)
+
+    async def log_invocation(self, **kwargs: Any) -> str:
+        return await self.audit_repo.log_invocation(**kwargs)
+
+    async def count_invocations(self) -> int:
+        return await self.audit_repo.count_invocations()
+
+    async def metrics_snapshot(self) -> dict[str, int]:
+        return await self.audit_repo.metrics_snapshot()
+
+    async def dashboard_summary(self) -> dict[str, Any]:
+        return await self.audit_repo.dashboard_summary()
+
+    async def recent_invocations(self, limit: int = 20) -> list[dict[str, Any]]:
+        return await self.audit_repo.recent_invocations(limit=limit)
+
+    async def recent_audit_logs(self, limit: int = 20, **kwargs: Any) -> list[dict[str, Any]]:
+        return await self.audit_repo.recent_audit_logs(limit=limit, **kwargs)
 
     async def connect(self) -> None:
         if str(self.database_path) == ":memory:":

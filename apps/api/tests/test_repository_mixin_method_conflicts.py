@@ -16,7 +16,7 @@ import itertools
 from pathlib import Path
 
 from coremcp.db.repository import Repository
-from coremcp.db.repository_audit import AuditRepositoryMixin
+from coremcp.db.repository_audit import AuditRepository
 from coremcp.db.repository_catalog import CatalogRepositoryMixin
 from coremcp.db.repository_connections import ConnectionsRepositoryMixin
 from coremcp.db.repository_credentials import CredentialsRepositoryMixin
@@ -24,15 +24,16 @@ from coremcp.db.repository_jobs import JobsRepository
 from coremcp.db.repository_services import ServicesRepositoryMixin
 from coremcp.db.repository_toolbox import ToolboxRepositoryMixin
 
-# Jobs graduated from mixin to composition (ADR-046 Step 1 / Phase 2,
-# 2026-05-23 cycle) — Repository.jobs is now a JobsRepository instance.
+# Jobs and Audit have graduated from mixin to composition (ADR-046 Step 1/2,
+# 2026-05-23 cycle) — Repository.jobs and Repository.audit_repo are composed
+# facades. The remaining five mixins still inherit via the host-attribute
+# TYPE_CHECKING pattern.
 MIXINS = [
     ServicesRepositoryMixin,
     CatalogRepositoryMixin,
     ToolboxRepositoryMixin,
     CredentialsRepositoryMixin,
     ConnectionsRepositoryMixin,
-    AuditRepositoryMixin,
 ]
 
 
@@ -80,3 +81,10 @@ def test_repository_composes_jobs_facade(tmp_path: Path) -> None:
     repo = Repository(database_path=tmp_path / "__composition_check__.sqlite3")
     assert isinstance(repo.jobs, JobsRepository)
     assert repo.jobs._repo is repo  # noqa: SLF001 - assertion on composition wiring
+
+
+def test_repository_composes_audit_facade(tmp_path: Path) -> None:
+    """Audit graduated to composition — verify the wiring is in place."""
+    repo = Repository(database_path=tmp_path / "__composition_check__.sqlite3")
+    assert isinstance(repo.audit_repo, AuditRepository)
+    assert repo.audit_repo._repo is repo  # noqa: SLF001 - assertion on composition wiring

@@ -9,7 +9,7 @@ wire contract.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -227,6 +227,51 @@ class MeResponse(BaseModel):
     default_toolbox_id: str | None = None
 
 
+class OAuthProtectedResourceMetadata(BaseModel):
+    """RFC 9728 OAuth 2.0 Protected Resource Metadata response."""
+
+    model_config = ConfigDict(extra="allow")
+
+    resource: str
+    bearer_methods_supported: list[str]
+    scopes_supported: list[str]
+    authorization_servers: list[str] | None = None
+
+
+class OAuthAuthorizationServerMetadata(BaseModel):
+    """RFC 8414 OAuth 2.0 Authorization Server Metadata response."""
+
+    model_config = ConfigDict(extra="allow")
+
+    issuer: str
+    authorization_endpoint: str
+    token_endpoint: str
+    registration_endpoint: str | None = None
+    revocation_endpoint: str | None = None
+    introspection_endpoint: str | None = None
+    jwks_uri: str
+    response_types_supported: list[str]
+    grant_types_supported: list[str]
+    code_challenge_methods_supported: list[str]
+    token_endpoint_auth_methods_supported: list[str]
+
+
+class JWKSResponse(BaseModel):
+    """RFC 7517 JSON Web Key Set."""
+
+    model_config = ConfigDict(extra="allow")
+
+    keys: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class AcceptedResponse(BaseModel):
+    """Shared shape for endpoints returning ``{"status": "accepted"}`` (HTTP 202)."""
+
+    model_config = ConfigDict(extra="allow")
+
+    status: str = "accepted"
+
+
 class HealthResponse(BaseModel):
     """Liveness / readiness response from /health, /live, /ready."""
 
@@ -311,6 +356,7 @@ class AuditLogList(BaseModel):
 
 
 __all__ = [
+    "AcceptedResponse",
     "AuditLogList",
     "AuditLogSummary",
     "ClientTokenList",
@@ -319,7 +365,10 @@ __all__ = [
     "CodexSimulatorToolCall",
     "DashboardSummary",
     "HealthResponse",
+    "JWKSResponse",
     "MeResponse",
+    "OAuthAuthorizationServerMetadata",
+    "OAuthProtectedResourceMetadata",
     "ExternalConnectionList",
     "ExternalConnectionSummary",
     "PlaygroundToolList",

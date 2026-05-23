@@ -8,6 +8,11 @@ from urllib.parse import parse_qs
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
+from coremcp.api._schemas import (
+    JWKSResponse,
+    OAuthAuthorizationServerMetadata,
+    OAuthProtectedResourceMetadata,
+)
 from coremcp.api.dependencies import get_oauth_dcr_rate_limiter, get_oauth_service, get_settings
 from coremcp.auth import OAuthError
 from coremcp.auth.oauth import OAuthService
@@ -107,7 +112,7 @@ def register_oauth_routes(
     dcr_rate_limit: int,
     dcr_rate_limit_window_seconds: int,
 ) -> None:
-    @app.get("/.well-known/oauth-protected-resource")
+    @app.get("/.well-known/oauth-protected-resource", response_model=OAuthProtectedResourceMetadata)
     async def protected_resource_metadata(
         request: Request,
         settings_obj: Settings = Depends(get_settings),
@@ -124,7 +129,7 @@ def register_oauth_routes(
             payload["authorization_servers"] = [str(request.base_url).rstrip("/")]
         return JSONResponse(payload)
 
-    @app.get("/.well-known/oauth-authorization-server")
+    @app.get("/.well-known/oauth-authorization-server", response_model=OAuthAuthorizationServerMetadata)
     async def authorization_server_metadata(
         request: Request,
         settings_obj: Settings = Depends(get_settings),
@@ -151,7 +156,7 @@ def register_oauth_routes(
             }
         )
 
-    @app.get("/.well-known/jwks.json")
+    @app.get("/.well-known/jwks.json", response_model=JWKSResponse)
     async def jwks(
         request: Request,
         settings_obj: Settings = Depends(get_settings),

@@ -33,7 +33,7 @@ from coremcp.db.repository_facade import (
     ToolboxRepository,
     new_id,
 )
-from coremcp.db.repository_audit import AuditRepositoryMixin
+from coremcp.db.repository_audit import AuditRepository
 from coremcp.db.repository_catalog import CatalogRepositoryMixin
 from coremcp.db.repository_connections import ConnectionsRepositoryMixin
 from coremcp.db.repository_credentials import CredentialsRepositoryMixin
@@ -75,7 +75,6 @@ REPOSITORY_DOMAIN_MIXINS = (
     ToolboxRepositoryMixin,
     CredentialsRepositoryMixin,
     ConnectionsRepositoryMixin,
-    AuditRepositoryMixin,
 )
 
 
@@ -218,6 +217,11 @@ def test_repository_keeps_w1_domain_mixin_split():
 def test_repository_jobs_is_composed_facade(tmp_path):
     repo = Repository(database_path=tmp_path / "__composition_check__.sqlite3")
     assert isinstance(repo.jobs, JobsRepository)
+
+
+def test_repository_audit_is_composed_facade(tmp_path):
+    repo = Repository(database_path=tmp_path / "__composition_check__.sqlite3")
+    assert isinstance(repo.audit_repo, AuditRepository)
 
 
 def test_repository_mro_has_no_unintended_public_callable_collisions():

@@ -6,7 +6,7 @@ FERNET_KEY_FILE ?= $(HOME)/.coremcp/data/secrets.key
 BACKUP_ARCHIVE ?= $(HOME)/.coremcp/backups/coremcp-cli-export.tar
 CLIENT_NAME ?= coremcp-cli
 
-.PHONY: bootstrap run run-local stop status test test-api test-fake test-demo test-project-docs test-git-workspace demo-run lint build smoke ops-smoke external-env-validate soak-check mobile-qa-checklist route-smoke cli-doctor cli-service-list cli-token-issue cli-backup-export cli-backup-import-dry-run backup-restore-drill redis-smoke project-docs-register git-workspace-register codex-install codex-smoke codex-exec
+.PHONY: bootstrap run run-local stop status test test-api test-fake test-demo test-project-docs test-git-workspace demo-run lint build smoke ops-smoke external-env-validate soak-check mobile-qa-checklist route-smoke cli-doctor cli-service-list cli-token-issue cli-backup-export cli-backup-import-dry-run backup-restore-drill redis-smoke tailscale-acl-validate project-docs-register git-workspace-register codex-install codex-smoke codex-exec
 
 bootstrap:
 	infra/scripts/bootstrap-local.sh
@@ -89,6 +89,9 @@ backup-restore-drill:
 
 redis-smoke:
 	infra/scripts/redis-smoke.sh
+
+tailscale-acl-validate:
+	infra/scripts/tailscale-acl-validate.sh
 
 project-docs-register:
 	infra/scripts/register-project-docs-mcp.sh

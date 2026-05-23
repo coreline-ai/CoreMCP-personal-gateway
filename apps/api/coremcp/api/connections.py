@@ -8,7 +8,12 @@ from typing import Any
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
-from coremcp.api._schemas import ClientTokenList, ExternalConnectionList
+from coremcp.api._schemas import (
+    ClientTokenList,
+    ClientTokenSummary,
+    ExternalConnectionList,
+    ExternalConnectionSummary,
+)
 from coremcp.api.dependencies import get_repos
 from coremcp.auth import ClientTokenService, hash_token
 from coremcp.db import DEFAULT_TOOLBOX_ID
@@ -43,7 +48,7 @@ def register_connections_routes(
         items = await repos.credentials.list_personal_access_tokens(limit=max(1, min(limit, 100)))
         return JSONResponse({"items": items, "next_cursor": None})
 
-    @app.post("/v1/settings/client-tokens")
+    @app.post("/v1/settings/client-tokens", response_model=ClientTokenSummary, status_code=201)
     async def issue_client_token(
         request: Request,
         repos: RepositoryFacades = Depends(get_repos),
@@ -191,7 +196,7 @@ def register_connections_routes(
         items = await repos.connections.list_external_connections(limit=max(1, min(limit, 100)))
         return JSONResponse({"items": items, "next_cursor": None})
 
-    @app.post("/v1/external-connections")
+    @app.post("/v1/external-connections", response_model=ExternalConnectionSummary, status_code=201)
     async def create_external_connection(
         request: Request,
         repos: RepositoryFacades = Depends(get_repos),
