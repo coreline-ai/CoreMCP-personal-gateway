@@ -88,6 +88,7 @@ CoreMCP는 본인 1명이 Mac mini에서 운영하는 protected MCP gateway다. 
 - Local demo MCP suite는 `apps/demo-mcp-suite`에서 8개 가상 MCP endpoint를 제공하며, 외부 credential 없이 CoreMCP service 등록/validation/도구함/preset/Playground 흐름을 시연할 수 있습니다.
 - Project Docs MCP는 `apps/project-docs-mcp`에서 `/Users/hwanchoi/projects` 하위 프로젝트의 `README.md` 및 Markdown 문서를 read-only로 검색/읽기할 수 있는 실사용용 stdio MCP service를 제공합니다. `make project-docs-register`로 CoreMCP 도구함에 바로 등록됩니다.
 - Git Workspace MCP는 `apps/git-workspace-mcp`에서 `/Users/hwanchoi/projects` 하위 Git repository의 상태/로그/브랜치/diff/blame/recent activity를 read-only로 조회하는 실사용용 stdio MCP service입니다. `make git-workspace-register`로 CoreMCP 도구함에 바로 등록됩니다.
+- 새 stdio MCP 한 줄 등록: `MCP_NAME="My MCP" MCP_SLUG="my_mcp" MCP_COMMAND=$(command -v python3) MCP_ARGS='["-m", "my_mcp.main"]' MCP_CWD=/path/to/my_mcp make register-mcp` — 신규 도구 시도 시 별도 스크립트 작성 없이 generic macro 로 즉시 등록·검증·toolbox 추가.
 - Codex CLI `exec` 연결 helper를 추가했습니다. `make codex-install`은 Codex 전용 client token을 발급해 `~/.coremcp/codex-client-token`에 저장하고, `codex mcp add coremcp --url ... --bearer-token-env-var COREMCP_CLIENT_TOKEN` 구성을 등록합니다.
 - Web Admin `/simulator` 는 Codex CLI exec wrapper를 실행해 연결된 AI client가 CoreMCP 도구함을 실제로 호출하는 흐름을 챗봇처럼 시뮬레이션합니다.
 - launchd fake-mcp/API/Web/backup/logrotate/refresh 실제 load smoke와 plist 검증을 통과했습니다. Reboot 검증은 실제 재부팅이 필요하며, Tailscale 검증은 현재 머신에 CLI가 없어 skipped 상태입니다.

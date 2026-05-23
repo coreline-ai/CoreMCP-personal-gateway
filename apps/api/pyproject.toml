@@ -84,6 +84,7 @@ skips = ["B101", "B608"]
 dev = [
     "bandit>=1.9.4",
     "fakeredis>=2.20",
+    "pip-audit>=2.7",
     "pyright>=1.1.409",
     "pytest-cov>=7.1.0",
 ]

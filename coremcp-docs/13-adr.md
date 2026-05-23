@@ -995,6 +995,37 @@ Consequences:
 - 신규 코드는 `standard` 수준에서 fully typed 로 작성하면 후속 `strict` 전환 비용 감소.
 
 ---
+## ADR-048: Dependency CVE audit baseline + policy
+
+Status: Accepted (2026-05-23)
+
+Context:
+직전 cycle 들이 코드 안정화·타입·테스트·운영 가이드 강화에 집중했지만, **공급망 / 의존성 CVE 자동 추적**은 한 번도 잡지 않았다. 신규 CVE 발견은 보통 외부 advisory (GitHub Security, OSV, PyPI) 가 먼저 알지만 PR 단계에서 즉시 보이지 않으면 누락 가능.
+
+Decision:
+`pip-audit` (Python) + `pnpm audit --audit-level high` (Node) 를 CI 의 별도 `dependency-audit` job 으로 추가한다. 정책:
+
+- **차단 정책**: 본 cycle 은 **advisory only** (`continue-on-error: true`). PR 의 빨간 ✗ 로 surface 하되 직접 차단은 X.
+- **trigger 조건**: high/critical 만 차단 후보 — moderate 이하는 정보 단계.
+- **로컬 검증**: `make audit-deps` 한 줄.
+- **baseline 0**: 2026-05-23 측정 결과 — pip-audit 0건, pnpm audit moderate 1건 (high+ 0).
+- **방침**: 신규 high+ CVE 발견 시 PR 단계에서 fix (의존성 bump) 또는 명시 suppression 사유 PR description 에 기록.
+
+본 cycle 에 fix 한 CVE:
+- `idna` 3.14 → 3.16 (CVE-2026-45409, fix 3.15+)
+- `starlette` 1.0.0 → 1.0.1 (PYSEC-2026-161)
+
+Constraints:
+- `coremcp-api` 자체 패키지는 PyPI 등록 안 되므로 pip-audit 가 skip (warning, 정상 동작).
+- pnpm audit 의 dev-dependency 결과는 운영 영향 0 — `--audit-level high` 가 충분히 보수적.
+- 신규 차단 정책 도입은 별도 cycle (advisory 운영 1-2주 관찰 후).
+
+Consequences:
+- 매 PR 마다 CVE 추적 가시화.
+- 본 ADR 의 fix 한 CVE 2건은 commit log 에 영구 기록.
+- 다음 cycle 후보: continue-on-error 제거 + critical-only-block 정책 명확화.
+
+---
 ## Superseded / Future Migration
 
 다음 ADR은 SaaS 전환 시 Superseded:

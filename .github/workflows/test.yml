@@ -38,6 +38,28 @@ jobs:
       - name: Backup → restore round-trip
         run: infra/scripts/backup-restore-drill.sh
 
+  dependency-audit:
+    # Advisory CVE scan — current baseline is clean (ADR-048). Continues on
+    # error so first newly-published CVE doesn't immediately block every PR;
+    # the red ✗ on the PR summary surfaces it for triage.
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: pip-audit (Python deps)
+        run: cd apps/api && uv run pip-audit
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile=false
+      - name: pnpm audit (Node deps, high+)
+        run: pnpm audit --audit-level high
+
   web:
     runs-on: ubuntu-latest
     steps:
