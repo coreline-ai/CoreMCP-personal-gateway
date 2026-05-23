@@ -118,9 +118,44 @@ class RedisRateLimiter:
             )
 
     def check(self, key: str, *, limit: int, window_seconds: int) -> RateLimitDecision:
-        # TODO: implement INCR + EXPIRE based fixed-window check on self._redis_client
-        # once the Redis wire format and operational SLOs are agreed.
-        return self._fallback.check(key, limit=limit, window_seconds=window_seconds)
+        if limit < 1:
+            raise ValueError("limit must be >= 1")
+        if window_seconds < 1:
+            raise ValueError("window_seconds must be >= 1")
+        if self._redis_client is None:
+            return self._fallback.check(key, limit=limit, window_seconds=window_seconds)
+
+        # Atomic INCR + EXPIRE-on-first-hit fixed-window check.
+        try:
+            pipe = self._redis_client.pipeline(transaction=True)
+            pipe.incr(key)
+            pipe.expire(key, window_seconds, nx=True)
+            pipe.pttl(key)
+            results = pipe.execute()
+        except Exception as exc:  # noqa: BLE001 - redis transport failures must not crash callers
+            logger.warning("RedisRateLimiter wire failure for key=%s, falling back to memory: %s", key, exc)
+            return self._fallback.check(key, limit=limit, window_seconds=window_seconds)
+
+        count = int(results[0])
+        pttl_ms = int(results[2]) if results[2] is not None else window_seconds * 1000
+        if pttl_ms < 0:  # key has no TTL (expire NX didn't take); use full window.
+            pttl_ms = window_seconds * 1000
+        reset_at = time.time() + (pttl_ms / 1000.0)
+
+        if count > limit:
+            retry_after = max(1, int(math.ceil(pttl_ms / 1000.0)))
+            return RateLimitDecision(
+                allowed=False,
+                remaining=0,
+                retry_after_seconds=retry_after,
+                reset_at=reset_at,
+            )
+        return RateLimitDecision(
+            allowed=True,
+            remaining=max(0, limit - count),
+            retry_after_seconds=None,
+            reset_at=reset_at,
+        )
 
     def clear(self) -> None:
         self._fallback.clear()

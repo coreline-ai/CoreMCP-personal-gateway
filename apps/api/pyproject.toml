@@ -23,6 +23,11 @@ dependencies = [
 [project.scripts]
 coremcp = "coremcp.cli:main"
 
+[project.optional-dependencies]
+redis = [
+    "redis>=5.0",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -56,7 +61,7 @@ skip_empty = true
 pythonVersion = "3.12"
 include = ["coremcp"]
 exclude = ["**/__pycache__", "**/.venv", "tests"]
-typeCheckingMode = "basic"
+typeCheckingMode = "standard"
 reportMissingImports = "error"
 reportMissingTypeStubs = false
 reportGeneralTypeIssues = "warning"
@@ -73,6 +78,7 @@ skips = ["B101", "B608"]
 [dependency-groups]
 dev = [
     "bandit>=1.9.4",
+    "fakeredis>=2.20",
     "pyright>=1.1.409",
     "pytest-cov>=7.1.0",
 ]

@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useMemo, useReducer } from 'react';
 import { coreMcpApi, type CodexSimulatorResponse } from '@/lib/api';
 import { classNames, explainError, logStatusPill } from '../admin-utils';
 
@@ -45,6 +45,44 @@ const PRESETS = [
 
 const DEFAULT_PROMPT = PRESETS[0].prompt;
 
+interface SimulatorState {
+  prompt: string;
+  timeoutSeconds: number;
+  result: CodexSimulatorResponse | null;
+  errorMessage: string;
+  isRunning: boolean;
+}
+
+type SimulatorAction =
+  | { type: 'SET_PROMPT'; payload: string }
+  | { type: 'SET_TIMEOUT'; payload: number }
+  | { type: 'RUN_START' }
+  | { type: 'RUN_SUCCESS'; payload: CodexSimulatorResponse }
+  | { type: 'RUN_FAIL'; payload: string };
+
+const initialSimulatorState: SimulatorState = {
+  prompt: DEFAULT_PROMPT,
+  timeoutSeconds: 120,
+  result: null,
+  errorMessage: '',
+  isRunning: false
+};
+
+function simulatorReducer(state: SimulatorState, action: SimulatorAction): SimulatorState {
+  switch (action.type) {
+    case 'SET_PROMPT':
+      return { ...state, prompt: action.payload };
+    case 'SET_TIMEOUT':
+      return { ...state, timeoutSeconds: action.payload };
+    case 'RUN_START':
+      return { ...state, isRunning: true, errorMessage: '', result: null };
+    case 'RUN_SUCCESS':
+      return { ...state, isRunning: false, result: action.payload };
+    case 'RUN_FAIL':
+      return { ...state, isRunning: false, errorMessage: action.payload };
+  }
+}
+
 function formatDuration(durationMs?: number) {
   if (typeof durationMs !== 'number') return '-';
   if (durationMs < 1000) return `${durationMs}ms`;
@@ -52,27 +90,22 @@ function formatDuration(durationMs?: number) {
 }
 
 export function SimulatorSection({ token }: SimulatorSectionProps) {
-  const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
-  const [timeoutSeconds, setTimeoutSeconds] = useState(120);
-  const [result, setResult] = useState<CodexSimulatorResponse | null>(null);
-  const [errorMessage, setErrorMessage] = useState('');
-  const [isRunning, setIsRunning] = useState(false);
+  const [state, dispatch] = useReducer(simulatorReducer, initialSimulatorState);
+  const { prompt, timeoutSeconds, result, errorMessage, isRunning } = state;
+  const setPrompt = (value: string) => dispatch({ type: 'SET_PROMPT', payload: value });
+  const setTimeoutSeconds = (value: number) => dispatch({ type: 'SET_TIMEOUT', payload: value });
   const canRun = Boolean(token) && prompt.trim().length > 0 && !isRunning;
 
   const answer = useMemo(() => result?.answer?.trim() || result?.stdout?.trim() || '', [result]);
 
   async function runSimulator() {
     if (!canRun) return;
-    setIsRunning(true);
-    setErrorMessage('');
-    setResult(null);
+    dispatch({ type: 'RUN_START' });
     try {
       const response = await coreMcpApi.runCodexSimulator(prompt, timeoutSeconds);
-      setResult(response);
+      dispatch({ type: 'RUN_SUCCESS', payload: response });
     } catch (error) {
-      setErrorMessage(explainError(error));
-    } finally {
-      setIsRunning(false);
+      dispatch({ type: 'RUN_FAIL', payload: explainError(error) });
     }
   }
 

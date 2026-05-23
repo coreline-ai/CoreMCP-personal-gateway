@@ -75,12 +75,110 @@ function dataReducer(state: DataState, action: DataAction): DataState {
   }
 }
 
+interface TokenState {
+  token: string | null;
+  tokenInput: string;
+  mounted: boolean;
+  healthMessage: string;
+  statusMessage: string;
+}
+
+type TokenAction =
+  | { type: 'MOUNT'; payload: { token: string | null } }
+  | { type: 'SET_TOKEN'; payload: string }
+  | { type: 'SET_TOKEN_INPUT'; payload: string }
+  | { type: 'CLEAR_TOKEN' }
+  | { type: 'SET_HEALTH_MESSAGE'; payload: string }
+  | { type: 'SET_STATUS_MESSAGE'; payload: string };
+
+const initialTokenState: TokenState = {
+  token: null,
+  tokenInput: '',
+  mounted: false,
+  healthMessage: HEALTH_CHECK_PROMPT,
+  statusMessage: 'Admin token 저장 후 데이터를 불러오세요.'
+};
+
+function tokenReducer(state: TokenState, action: TokenAction): TokenState {
+  switch (action.type) {
+    case 'MOUNT':
+      return {
+        ...state,
+        mounted: true,
+        token: action.payload.token,
+        tokenInput: action.payload.token ?? ''
+      };
+    case 'SET_TOKEN':
+      return { ...state, token: action.payload };
+    case 'SET_TOKEN_INPUT':
+      return { ...state, tokenInput: action.payload };
+    case 'CLEAR_TOKEN':
+      return { ...state, token: null, tokenInput: '' };
+    case 'SET_HEALTH_MESSAGE':
+      return { ...state, healthMessage: action.payload };
+    case 'SET_STATUS_MESSAGE':
+      return { ...state, statusMessage: action.payload };
+  }
+}
+
+interface FormState {
+  serviceName: string;
+  serviceSlug: string;
+  serviceUrl: string;
+  clientName: string;
+  clientType: string;
+  issuedToken: string | null;
+  selectedTool: string;
+  argumentsJson: string;
+  callResult: string;
+}
+
+type FormFieldKey = Exclude<keyof FormState, 'issuedToken'>;
+
+type FormAction =
+  | { type: 'UPDATE_FIELD'; field: FormFieldKey; value: string }
+  | { type: 'SET_ISSUED_TOKEN'; payload: string | null }
+  | { type: 'SET_CALL_RESULT'; payload: string }
+  | { type: 'SET_SELECTED_TOOL'; payload: string };
+
+const initialFormState: FormState = {
+  serviceName: 'Fake MCP',
+  serviceSlug: 'fake',
+  serviceUrl: 'http://127.0.0.1:8790/mcp',
+  clientName: 'Codex CLI exec (local)',
+  clientType: 'codex_cli',
+  issuedToken: null,
+  selectedTool: '',
+  argumentsJson: '{\n  "message": "hello"\n}',
+  callResult: '도구를 선택하고 호출하면 응답 JSON이 표시됩니다.'
+};
+
+function formReducer(state: FormState, action: FormAction): FormState {
+  switch (action.type) {
+    case 'UPDATE_FIELD':
+      return { ...state, [action.field]: action.value };
+    case 'SET_ISSUED_TOKEN':
+      return { ...state, issuedToken: action.payload };
+    case 'SET_CALL_RESULT':
+      return { ...state, callResult: action.payload };
+    case 'SET_SELECTED_TOOL':
+      return { ...state, selectedTool: action.payload };
+  }
+}
+
 export function AdminConsole({ initialSection = 'dashboard' }: { initialSection?: string }) {
-  const [token, setToken] = useState<string | null>(null);
-  const [tokenInput, setTokenInput] = useState('');
-  const [mounted, setMounted] = useState(false);
-  const [healthMessage, setHealthMessage] = useState(HEALTH_CHECK_PROMPT);
-  const [statusMessage, setStatusMessage] = useState('Admin token 저장 후 데이터를 불러오세요.');
+  const [tokenState, dispatchToken] = useReducer(tokenReducer, initialTokenState);
+  const { token, tokenInput, mounted, healthMessage, statusMessage } = tokenState;
+  const setToken = (value: string | null) => {
+    if (value === null) {
+      dispatchToken({ type: 'CLEAR_TOKEN' });
+    } else {
+      dispatchToken({ type: 'SET_TOKEN', payload: value });
+    }
+  };
+  const setTokenInput = (value: string) => dispatchToken({ type: 'SET_TOKEN_INPUT', payload: value });
+  const setHealthMessage = (value: string) => dispatchToken({ type: 'SET_HEALTH_MESSAGE', payload: value });
+  const setStatusMessage = (value: string) => dispatchToken({ type: 'SET_STATUS_MESSAGE', payload: value });
 
   const [data, dispatchData] = useReducer(dataReducer, initialDataState);
   const {
@@ -97,15 +195,17 @@ export function AdminConsole({ initialSection = 'dashboard' }: { initialSection?
     toolOverridesByService
   } = data;
 
-  const [serviceName, setServiceName] = useState('Fake MCP');
-  const [serviceSlug, setServiceSlug] = useState('fake');
-  const [serviceUrl, setServiceUrl] = useState('http://127.0.0.1:8790/mcp');
-  const [clientName, setClientName] = useState('Codex CLI exec (local)');
-  const [clientType, setClientType] = useState('codex_cli');
-  const [issuedToken, setIssuedToken] = useState<string | null>(null);
-  const [selectedTool, setSelectedTool] = useState('');
-  const [argumentsJson, setArgumentsJson] = useState('{\n  "message": "hello"\n}');
-  const [callResult, setCallResult] = useState('도구를 선택하고 호출하면 응답 JSON이 표시됩니다.');
+  const [formState, dispatchForm] = useReducer(formReducer, initialFormState);
+  const { serviceName, serviceSlug, serviceUrl, clientName, clientType, issuedToken, selectedTool, argumentsJson, callResult } = formState;
+  const setServiceName = (value: string) => dispatchForm({ type: 'UPDATE_FIELD', field: 'serviceName', value });
+  const setServiceSlug = (value: string) => dispatchForm({ type: 'UPDATE_FIELD', field: 'serviceSlug', value });
+  const setServiceUrl = (value: string) => dispatchForm({ type: 'UPDATE_FIELD', field: 'serviceUrl', value });
+  const setClientName = (value: string) => dispatchForm({ type: 'UPDATE_FIELD', field: 'clientName', value });
+  const setClientType = (value: string) => dispatchForm({ type: 'UPDATE_FIELD', field: 'clientType', value });
+  const setIssuedToken = (value: string | null) => dispatchForm({ type: 'SET_ISSUED_TOKEN', payload: value });
+  const setSelectedTool = (value: string) => dispatchForm({ type: 'SET_SELECTED_TOOL', payload: value });
+  const setArgumentsJson = (value: string) => dispatchForm({ type: 'UPDATE_FIELD', field: 'argumentsJson', value });
+  const setCallResult = (value: string) => dispatchForm({ type: 'SET_CALL_RESULT', payload: value });
   const [validatingServiceIds, setValidatingServiceIds] = useState<string[]>([]);
 
   const tokenPreview = useMemo(() => maskToken(token), [token]);
@@ -116,9 +216,7 @@ export function AdminConsole({ initialSection = 'dashboard' }: { initialSection?
 
   useEffect(() => {
     const stored = getStoredAdminToken();
-    setToken(stored);
-    setTokenInput(stored ?? '');
-    setMounted(true);
+    dispatchToken({ type: 'MOUNT', payload: { token: stored } });
 
     const handleUnauthorized = () => {
       setToken(null);

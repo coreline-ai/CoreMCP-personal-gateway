@@ -1,4 +1,17 @@
+import type { components } from './api.generated';
+
 export const ADMIN_TOKEN_STORAGE_KEY = 'coremcp_admin_token';
+
+// ----- Generated schema aliases (Phase 4 of dev-plan implement_20260523_092359) -----
+// 6 도메인의 backend Pydantic 응답 schema 를 OpenAPI codegen 결과 (api.generated.ts) 로 alias.
+// frontend-only field 가 있는 interface 는 extends 로 보강해서 사용처를 깨지 않게 유지한다.
+
+type GeneratedServiceSummary = components['schemas']['ServiceSummary'];
+type GeneratedToolboxSummary = components['schemas']['ToolboxSummary'];
+type GeneratedPlaygroundToolSummary = components['schemas']['PlaygroundToolSummary'];
+type GeneratedExternalConnectionSummary = components['schemas']['ExternalConnectionSummary'];
+type GeneratedClientTokenSummary = components['schemas']['ClientTokenSummary'];
+type GeneratedCodexSimulatorResponse = components['schemas']['CodexSimulatorResponse'];
 
 export type ApiErrorCode = 'unauthorized' | 'http_error' | 'network_error' | 'parse_error';
 
@@ -73,25 +86,9 @@ export interface ListResponse<T> {
   next_cursor: string | null;
 }
 
-export interface McpServiceSummary {
-  id: string;
-  name: string;
-  slug: string;
-  endpoint_url?: string;
-  description?: string | null;
-  category?: string | null;
-  logo_url?: string | null;
-  homepage_url?: string | null;
-  documentation_url?: string | null;
-  auth_type?: string;
-  status: 'draft' | 'validating' | 'active' | 'error' | 'disabled' | 'auth_required' | string;
-  tool_count?: number;
-  risk_level?: string | null;
-  credential_status?: string | null;
-  credential_masked?: string | null;
+export interface McpServiceSummary extends GeneratedServiceSummary {
+  // Frontend-only fields not yet on the backend Pydantic schema.
   validation_summary?: Record<string, unknown> | null;
-  last_validated_at?: string | null;
-  updated_at?: string | null;
 }
 
 export interface ServiceToolSummary {
@@ -138,10 +135,8 @@ export interface ServiceCredentialSummary {
   updated_at: string | null;
 }
 
-export interface ToolboxSummary {
-  id: string;
-  name: string;
-  is_default?: boolean;
+export interface ToolboxSummary extends GeneratedToolboxSummary {
+  // Frontend-only aggregates not yet on the backend Pydantic schema.
   item_count?: number;
   items?: ToolboxItemSummary[];
 }
@@ -161,19 +156,10 @@ export interface ToolboxItemSummary {
   disabled_tool_count?: number | null;
 }
 
-export interface ExternalConnectionSummary {
-  id: string;
-  client_type: string;
-  client_name: string;
-  status: 'active' | 'revoked' | string;
-  last_used_at?: string | null;
-  created_at?: string | null;
-}
+export type ExternalConnectionSummary = GeneratedExternalConnectionSummary;
 
-export interface PlaygroundToolSummary {
-  name: string;
-  title?: string;
-  description?: string;
+export interface PlaygroundToolSummary extends GeneratedPlaygroundToolSummary {
+  // Frontend-only fields (MCP `inputSchema` / annotations / icons) — not yet on backend Pydantic schema.
   inputSchema?: Record<string, unknown>;
   input_schema?: Record<string, unknown>;
   annotations?: {
@@ -186,16 +172,7 @@ export interface PlaygroundToolSummary {
   icons?: Array<{ src: string; mimeType?: string; sizes?: string[] }>;
 }
 
-export interface ClientTokenSummary {
-  id: string;
-  external_connection_id: string;
-  token_prefix: string;
-  scopes: string[];
-  status: 'active' | 'revoked' | string;
-  last_used_at?: string | null;
-  created_at?: string | null;
-  revoked_at?: string | null;
-}
+export type ClientTokenSummary = GeneratedClientTokenSummary;
 
 export interface IssueClientTokenResponse extends ClientTokenSummary {
   token: string;
@@ -252,7 +229,10 @@ export interface CodexSimulatorToolCall {
   status?: string | null;
 }
 
-export interface CodexSimulatorResponse {
+export interface CodexSimulatorResponse extends GeneratedCodexSimulatorResponse {
+  // Frontend consumes a richer shape than the backend Pydantic schema currently
+  // declares (extra="allow" keeps these flowing through). Tracking them here
+  // explicitly until the backend schema catches up.
   status: 'completed' | 'failed' | 'timed_out' | string;
   exit_code: number | null;
   duration_ms: number;

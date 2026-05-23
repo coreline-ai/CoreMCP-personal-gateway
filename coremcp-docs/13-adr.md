@@ -891,6 +891,69 @@ Consequences:
 - `runtime_checkable` Protocol 도입으로 테스트의 `isinstance(limiter, RateLimitBackend)` 같은 검증도 향후 가능.
 
 ---
+## ADR-045: bandit Low classification (no global skip)
+
+Status: Accepted (2026-05-23)
+
+Context:
+Phase 1 CI (`implement_20260522_183112.md`) 의 bandit gate 는 medium+ 만 차단하고 Low 34건은 보고만 됐다. 본 ADR 은 Low 카테고리를 분류·근거화하여 PR 리뷰에서 "기존 Low 는 무시 / 신규 Low 는 분류 확인" 표준을 명시.
+
+분포 (2026-05-23 측정):
+- **B105 (17건) hardcoded_password_string** — 모두 토큰 prefix / kind 이름 (`"Bearer"`, `"cmcp_admin"`, `"oauth"`, `"jwt"`, `"none"`, `"cmcp_otk_"`) 의 식별자 비교 용도. 실제 secret 0.
+- **B106 (3건) hardcoded_password_funcarg** — `KeychainBackend / FernetBackend` 의 backend kind 인자 (`"fernet"`, `"none"`). 식별자.
+- **B603 (3건) subprocess_without_shell_equals_true** — `proxy/stdio.py` 의 `asyncio.create_subprocess_exec` 호출. `shell=True` 미사용 + STDIO command allowlist 통과 후만 spawn (ADR-039).
+- **B607 (3건) start_process_with_partial_path** — `stdio_command` 검증에서 절대경로만 통과시키므로 partial path 사용 불가 (`validate_stdio_runtime_config`).
+- **B112 (1건) try_except_continue** — health probe loop 의 best-effort 흐름 (서비스 1개 실패가 다른 서비스를 막지 않음). 의도된 패턴.
+- **B404 (1건) blacklist subprocess** — `proxy/stdio.py` 의 subprocess import. allowlist + sandbox 후에만 사용.
+
+Decision:
+1. Low 카테고리를 `pyproject.toml` 에서 global skip 하지 않는다 — bandit -l 출력에 계속 보고되어 신규 추가가 발견되도록 한다.
+2. medium+ 만 CI gate (현재 0건, B608 만 ADR-043 으로 skip).
+3. 신규 코드의 Low 발생 시 PR 리뷰는 이 ADR 의 카테고리 표를 참조하여 동일 안전 근거 가능 여부 검토.
+
+Constraints:
+- 새 B105/B106 추가는 "실제 secret 이 아닌 식별자/kind 문자열" 검증.
+- 새 B603/B607 추가는 STDIO allowlist 통과 후 호출인지 검증.
+- 새 B112 추가는 best-effort loop / fail-soft 의 의도된 사용인지 검증.
+
+Consequences:
+- bandit Low 출력 자체가 review checklist 역할.
+- 다음 cycle 에서 카테고리가 늘어나면 본 ADR 을 갱신 (총 카운트 + 새 rule ID).
+
+---
+## ADR-046: Repository multi-mixin → explicit facade migration plan
+
+Status: Accepted (2026-05-23) — migration deferred to incremental cycles
+
+Context:
+`apps/api/coremcp/db/repository.py` 의 `Repository` 는 8개 mixin (Services / Catalog / Toolbox / Credentials / Connections / Audit / Jobs / Constants) 을 다중 상속한다. 각 mixin 의 메서드는 `self.db`, `self.dumps_json`, 다른 mixin 의 메서드 (`self.get_mcp_service` 등) 를 호출하지만, 어디에도 명시적 인터페이스가 없다.
+
+영향:
+- pyright basic mode 에서 모든 mixin 파일에 `# pyright: reportAttributeAccessIssue=false` 디렉티브 필요 (208 errors → 0 의 핵심 우회)
+- 신규 mixin 추가 시 cross-mixin 호출 어디서 깨질지 정적 검사 불가
+- `repository_facade.py` 의 `RepositoryFacades` 는 위 mixin 들을 wrapping 한 도메인별 facade 를 제공하지만 일부 cross-mixin 호출은 여전히 mixin 직접 접근
+
+Decision:
+**점진 마이그레이션** 으로 진행한다. 본 cycle 의 P5 에서는 ADR 만 작성하고 실제 코드 전환은 별도 cycle 에서:
+
+- **Step 1** — 가장 결합도 낮은 mixin 부터 facade 클래스화:
+  - 1차: `JobsRepositoryMixin` → `JobsRepository(repository: Repository)` — Jobs 는 다른 mixin 메서드 호출 0
+  - 2차: `AuditRepositoryMixin` — `log_audit`, `log_invocation` 등 narrow surface
+  - 3차: `Connections / Credentials / Toolbox / Catalog / Services` (cross-mixin 호출 분석 후)
+- **Step 2** — 각 facade 전환마다 해당 mixin 파일의 `# pyright: reportAttributeAccessIssue=false` 디렉티브 제거
+- **Step 3** — 전체 전환 완료 후 `Repository` 는 facade 들을 composition (`self.jobs`, `self.audit`, ...)으로 구성
+
+Constraints:
+- 각 cycle 의 facade 전환은 1~2 mixin 으로 제한.
+- 동작 보존 — 시그니처 / 반환값 / 트랜잭션 경계 변경 금지.
+- `RepositoryFacades` (기존 facade) 와 새 facade 가 병존하는 시기에 호출 사이트 혼란 없도록 명명 규칙 명확화.
+
+Consequences:
+- 본 cycle 은 ADR 만 — 코드 영향 0.
+- 후속 cycle 에서 mixin 별 facade 전환마다 본 ADR 의 step 카운터 업데이트.
+- 마지막 mixin 전환 완료 후 `# pyright: reportAttributeAccessIssue=false` 디렉티브 8개 모두 제거 가능, pyright `standard` 또는 `strict` mode 도입 차단 요인이 사라짐.
+
+---
 ## Superseded / Future Migration
 
 다음 ADR은 SaaS 전환 시 Superseded:

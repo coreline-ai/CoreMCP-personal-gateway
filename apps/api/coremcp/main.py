@@ -75,6 +75,10 @@ from coremcp.mcp_gateway.stdio_pool import (
     stdio_signature as _stdio_signature,
     validate_stdio_runtime_config as _validate_stdio_runtime_config,
 )
+from coremcp.mcp_gateway.tool_schema import (
+    tool_schema_change_summary as _tool_schema_change_summary,
+    tool_schema_diff as _tool_schema_diff,
+)
 from coremcp.mcp.capabilities import (
     DEFAULT_SERVER_CAPABILITIES,
     server_capabilities_for_default_toolbox as _server_capabilities_for_default_toolbox,
@@ -613,54 +617,6 @@ def _connection_token_prompt(token: str, expires_at: str) -> str:
         "Use this CoreMCP one-time connection token in the external MCP client. "
         f"Token: {token}. Expires at: {expires_at}."
     )
-
-
-def _tool_schema_diff(existing_tools: list[dict[str, Any]], normalized_tools: list[dict[str, Any]]) -> dict[str, Any]:
-    existing_by_name = {str(tool.get("original_name")): tool for tool in existing_tools}
-    normalized_by_name = {str(tool.get("original_name")): tool for tool in normalized_tools}
-    added_names = sorted(set(normalized_by_name) - set(existing_by_name))
-    removed_names = sorted(set(existing_by_name) - set(normalized_by_name))
-    changed_tools = []
-    for name in sorted(set(existing_by_name) & set(normalized_by_name)):
-        previous_hash = existing_by_name.get(name, {}).get("schema_hash")
-        current_hash = normalized_by_name.get(name, {}).get("schema_hash")
-        if previous_hash != current_hash:
-            changed_tools.append(
-                {
-                    "name": name,
-                    "previous_schema_hash": previous_hash,
-                    "current_schema_hash": current_hash,
-                }
-            )
-    summary = {
-        "previous_tool_count": len(existing_tools),
-        "discovered_tool_count": len(normalized_tools),
-        "changed_tool_count": len(changed_tools) + len(added_names) + len(removed_names),
-        "added_tool_count": len(added_names),
-        "removed_tool_count": len(removed_names),
-    }
-    details = {
-        "added": [
-            {
-                "name": name,
-                "schema_hash": normalized_by_name.get(name, {}).get("schema_hash"),
-            }
-            for name in added_names
-        ],
-        "removed": [
-            {
-                "name": name,
-                "schema_hash": existing_by_name.get(name, {}).get("schema_hash"),
-            }
-            for name in removed_names
-        ],
-        "changed": changed_tools,
-    }
-    return {"summary": summary, "details": details}
-
-
-def _tool_schema_change_summary(existing_tools: list[dict[str, Any]], normalized_tools: list[dict[str, Any]]) -> dict[str, int]:
-    return _tool_schema_diff(existing_tools, normalized_tools)["summary"]
 
 
 def _tool_annotation_bool(tool: dict[str, Any], key: str) -> bool:
