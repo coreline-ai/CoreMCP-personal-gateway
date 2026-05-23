@@ -732,6 +732,51 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AuditLogList */
+        AuditLogList: {
+            /** Items */
+            items: components["schemas"]["AuditLogSummary"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /**
+         * AuditLogSummary
+         * @description One row of GET /v1/audit-logs.
+         */
+        AuditLogSummary: {
+            /** Id */
+            id: string;
+            /** Request Id */
+            request_id?: string | null;
+            /** Action */
+            action: string;
+            /** Resource Type */
+            resource_type: string;
+            /** Resource Id */
+            resource_id?: string | null;
+            /** Status */
+            status?: string | null;
+            /** Error Code */
+            error_code?: string | null;
+            /** Service Id */
+            service_id?: string | null;
+            /** Service Name */
+            service_name?: string | null;
+            /** Service Slug */
+            service_slug?: string | null;
+            /** Tool Name */
+            tool_name?: string | null;
+            /** Exposed Tool Name */
+            exposed_tool_name?: string | null;
+            /** Client Type */
+            client_type?: string | null;
+            /** Client Name */
+            client_name?: string | null;
+            /** Created At */
+            created_at?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
         /** ClientTokenList */
         ClientTokenList: {
             /** Items */
@@ -772,6 +817,22 @@ export interface components {
             request_id?: string | null;
             /** Status */
             status?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * DashboardSummary
+         * @description Response from GET /v1/dashboard/summary.
+         */
+        DashboardSummary: {
+            /** Metrics */
+            metrics?: {
+                [key: string]: number;
+            };
+            /** Service Status Counts */
+            service_status_counts?: {
+                [key: string]: number;
+            };
         } & {
             [key: string]: unknown;
         };
@@ -926,6 +987,69 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /**
+         * SettingsResponse
+         * @description Response from GET /v1/settings.
+         */
+        SettingsResponse: {
+            /** Admin Token Masked */
+            admin_token_masked?: string | null;
+            /** Client Token Count */
+            client_token_count?: number | null;
+            /** Auth Mode */
+            auth_mode?: string | null;
+            /** Oauth Enabled */
+            oauth_enabled?: boolean | null;
+            /** Secret Backend */
+            secret_backend?: string | null;
+            /** Tailscale Enabled */
+            tailscale_enabled?: boolean | null;
+            /** Cache Backend */
+            cache_backend?: string | null;
+            /** App Version */
+            app_version?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /** ToolInvocationList */
+        ToolInvocationList: {
+            /** Items */
+            items: components["schemas"]["ToolInvocationSummary"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /**
+         * ToolInvocationSummary
+         * @description One row of GET /v1/tool-invocations.
+         */
+        ToolInvocationSummary: {
+            /** Id */
+            id: string;
+            /** Request Id */
+            request_id?: string | null;
+            /** Method */
+            method?: string | null;
+            /** Status */
+            status: string;
+            /** Exposed Tool Name */
+            exposed_tool_name?: string | null;
+            /** Service Id */
+            service_id?: string | null;
+            /** Service Name */
+            service_name?: string | null;
+            /** Service Slug */
+            service_slug?: string | null;
+            /** Tool Name */
+            tool_name?: string | null;
+            /** Latency Ms */
+            latency_ms?: number | null;
+            /** Error Code */
+            error_code?: string | null;
+            /** Created At */
+            created_at?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
         /** ToolOverrideList */
         ToolOverrideList: {
             /** Items */
@@ -950,8 +1074,11 @@ export interface components {
             exposed_name: string;
             /** Enabled */
             enabled: boolean;
-            /** Permission Level */
-            permission_level: string;
+            /**
+             * Permission Level
+             * @enum {string}
+             */
+            permission_level: "hidden" | "visible_only" | "callable";
             /** Updated At */
             updated_at?: string | null;
         } & {
@@ -962,8 +1089,11 @@ export interface components {
          * @description Response from POST /v1/mcp-services/{id}/tool-overrides/preset.
          */
         ToolPresetResponse: {
-            /** Preset */
-            preset: string;
+            /**
+             * Preset
+             * @enum {string}
+             */
+            preset: "readonly" | "full_access" | "dangerous_off";
             /** Items */
             items: components["schemas"]["ToolOverrideSummary"][];
             /** Counts */
@@ -2224,7 +2354,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["SettingsResponse"];
                 };
             };
         };
@@ -2244,7 +2374,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["DashboardSummary"];
                 };
             };
         };
@@ -2286,7 +2416,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ToolInvocationList"];
                 };
             };
             /** @description Validation Error */
@@ -2319,7 +2449,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["AuditLogList"];
                 };
             };
             /** @description Validation Error */

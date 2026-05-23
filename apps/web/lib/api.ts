@@ -14,6 +14,8 @@ type GeneratedClientTokenSummary = components['schemas']['ClientTokenSummary'];
 type GeneratedCodexSimulatorResponse = components['schemas']['CodexSimulatorResponse'];
 type GeneratedServiceToolSummary = components['schemas']['ServiceToolSummary'];
 type GeneratedServiceCredentialMasked = components['schemas']['ServiceCredentialMasked'];
+type GeneratedToolOverrideSummary = components['schemas']['ToolOverrideSummary'];
+type GeneratedToolPresetResponse = components['schemas']['ToolPresetResponse'];
 
 // Note: HealthResponse, SettingsResponse, DashboardSummary, ToolboxItemSummary,
 // ToolInvocationSummary, AuditLogSummary, IssueClientTokenResponse,
@@ -109,28 +111,8 @@ export interface ServiceToolSummary extends GeneratedServiceToolSummary {
 export type ToolPermissionLevel = 'hidden' | 'visible_only' | 'callable';
 export type ToolPreset = 'readonly' | 'full_access' | 'dangerous_off';
 
-export interface ToolOverrideSummary {
-  // Backend schema also exists (`ToolOverrideSummary`) but uses a widened
-  // `permission_level: string`. The frontend narrows to the union type below;
-  // a future cycle can replace this with the generated alias once backend
-  // tightens the schema with a Literal type.
-  id: string;
-  toolbox_id: string;
-  service_id: string;
-  service_tool_id: string;
-  exposed_name: string;
-  enabled: boolean;
-  permission_level: ToolPermissionLevel;
-  updated_at: string;
-}
-
-export interface ToolPresetResponse {
-  preset: ToolPreset;
-  items: ToolOverrideSummary[];
-  counts: Record<string, number>;
-  next_cursor: string | null;
-}
-
+export type ToolOverrideSummary = GeneratedToolOverrideSummary;
+export type ToolPresetResponse = GeneratedToolPresetResponse;
 export type ServiceCredentialSummary = GeneratedServiceCredentialMasked;
 
 export interface ToolboxSummary extends GeneratedToolboxSummary {

@@ -342,6 +342,55 @@ curl -fsS http://127.0.0.1:8787/ready
 
 자동 회귀: `make backup-restore-drill` 이 임시 DB 로 위 흐름의 핵심 (백업→복원→해시 일치) 을 1분 안에 검증한다. CI 의 `restore-drill` job 도 동일 검증을 PR 단계에서 자동 실행.
 
+## 5.7 Redis rate limiter 운영 (옵션)
+
+기본은 `InMemoryRateLimiter` (단일 프로세스). 멀티 워커 / 멀티 호스트 배포 시 `RedisRateLimiter` 로 전환 가능. ADR-044 참조.
+
+### 5.7.1 환경 변수
+
+```bash
+COREMCP_RATE_LIMIT_BACKEND=redis       # default "memory"
+COREMCP_RATE_LIMIT_REDIS_URL=redis://127.0.0.1:6379/0
+```
+
+URL 미설정 또는 redis-py import 실패 시 자동으로 in-memory fallback (한 번 warning 로그). 운영 중에도 `RedisRateLimiter wire failure` 키워드로 fallback 발생 확인 가능.
+
+### 5.7.2 Tailscale 위 Redis 공유 (개인 사용 권장)
+
+```bash
+# 운영 호스트 (Redis 서버)
+brew install redis
+redis-server --bind 127.0.0.1 --requirepass "$(openssl rand -hex 24)"
+tailscale serve --bg --tcp 6379 tcp://localhost:6379
+
+# CoreMCP 호스트
+export COREMCP_RATE_LIMIT_REDIS_URL=redis://:<password>@<tailnet-host>:6379/0
+export COREMCP_RATE_LIMIT_BACKEND=redis
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.coremcp.api.plist
+```
+
+ACL 은 `tailscale serve --remove` 로 항상 회수 가능. 팀/멀티 사용자는 mTLS 또는 별도 VPC + IAM 권장 — Tailscale serve 는 1인용.
+
+### 5.7.3 연결 검증
+
+```bash
+# 1) Redis 자체 ping
+redis-cli -u "$COREMCP_RATE_LIMIT_REDIS_URL" ping  # → PONG
+
+# 2) CoreMCP rate limiter 가 Redis 사용 중인지 로그에서 확인
+grep -i "RedisRateLimiter" ~/Library/Logs/coremcp/api.log | tail
+# fallback 발생 시: "RedisRateLimiter falling back to in-memory: ..."
+```
+
+### 5.7.4 장애 대응
+
+Redis 가 일시 장애일 때 `RedisRateLimiter.check()` 의 pipeline 호출이 예외를 던지면 **자동으로 InMemoryRateLimiter fallback** + warning 로그. 운영 영향 0 — 단, multi-host 정합성은 그 시간 동안 무효이므로 다음 두 가지 점검:
+
+- Redis 복구 시 자동 회복 — 별도 재기동 불필요
+- 장애 윈도우 동안의 한도 위반 의심 — `audit_logs` 와 `rate_limit_response` log 비교
+
+자동 회귀: `tests/test_redis_rate_limiter.py` 가 fakeredis 로 INCR/EXPIRE + fallback path 를 검증한다. CI 통과 = 본 운영 path 안정.
+
 ---
 
 ## 6. Tailscale 외부 노출 (옵션)

@@ -938,8 +938,8 @@ Decision:
 
 - **Step 1** — 가장 결합도 낮은 mixin 부터 facade 클래스화:
   - 1차 (**완료 2026-05-23**): `JobsRepositoryMixin` 의 host-attribute (`db`, `dumps_json`, `_row_to_dict`) 를 `if TYPE_CHECKING:` 블록 안에서 명시 선언 → `# pyright: reportAttributeAccessIssue=false` 디렉티브 제거 가능. mixin 패턴은 유지하되 type checker 가 정상 인식. `JobRepository` (facade in `repos/jobs.py`) 와 양립.
-  - 2차: `AuditRepositoryMixin` — `log_audit`, `log_invocation` 등 narrow surface
-  - 3차: `Connections / Credentials / Toolbox / Catalog / Services` (cross-mixin 호출 분석 후)
+  - 2차 (**완료 2026-05-23**): `AuditRepositoryMixin` 의 host-attribute 를 `if TYPE_CHECKING:` 블록 안에서 명시 선언. COUNT/aggregate SELECT 의 `fetchone()` 결과 None 가드 7건 추가 (`assert row is not None`) — 동작 변경 0.
+  - 3차 (**완료 2026-05-23**): `Services / Catalog / Toolbox / Credentials / Connections` 5 mixin 일괄 TYPE_CHECKING 전환. cross-mixin 메서드 (`log_audit`, `get_mcp_service`, `get_external_connection`) 도 각 mixin 의 `if TYPE_CHECKING:` block 에 stub 선언. 부가: catalog 의 `cursor.fetchall()` 결과 `list()` wrap (Iterable→Sequence). 모든 mixin 의 `# pyright: ...` 디렉티브 제거 완료.
 - **Step 2** — 각 facade 전환마다 해당 mixin 파일의 `# pyright: reportAttributeAccessIssue=false` 디렉티브 제거
 - **Step 3** — 전체 전환 완료 후 `Repository` 는 facade 들을 composition (`self.jobs`, `self.audit`, ...)으로 구성
 
@@ -961,12 +961,16 @@ Status: Accepted (2026-05-23)
 Context:
 직전 cycle (`implement_20260523_092359.md` Phase 6) 에서 pyright `basic` → `standard` 단계 상승이 0 errors 로 통과했다. 본 cycle 의 Phase 4 에서 `strict` 시도. 결과: **943 errors**.
 
-카테고리 분포 (2026-05-23):
+카테고리 분포 (2026-05-23 1차 측정 / 943 errors):
 - `reportUnknownMemberType` (496) — `dict.get()`, `app.state.X` 등 `Any` 반환에서 후속 member 사용
 - `reportUnknownVariableType` (258) — JSON parse / config dict 등 untyped value 의 변수 binding
 - `reportUnknownArgumentType` (116) — 위 두 카테고리의 함수 호출 인자 형태
 - `reportUnusedFunction` (54) — 내부 helper / test fixture 의 사용 site 가 pyright 가 못 본 데서 호출
 - `reportPrivateUsage` (10), `reportUnusedImport` (4), 기타 5
+
+**2026-05-23 2차 측정 (ADR-046 Step 2/3 mixin TYPE_CHECKING 도입 후): 943 → 387 (-59%)**:
+- `reportUnknownMemberType` (116, -380), `reportUnknownVariableType` (112, -146), `reportUnknownArgumentType` (86, -30), `reportUnusedFunction` (54, 동일), `reportPrivateUsage` (10), `reportUnusedImport` (4)
+- mixin 의 host attribute 가 type 을 갖게 되면서 cross-mixin 호출 Unknown 이 대부분 해소됨
 
 Decision:
 `typeCheckingMode = "standard"` baseline 을 유지한다. `strict` 도입은 다음 두 선행 작업이 필요:

@@ -1,17 +1,43 @@
-# pyright: reportAttributeAccessIssue=false
-# Mixin classes rely on host-provided attributes (db, dumps_json, loads_json,
-# and cross-mixin methods); the composing Repository class supplies them at
-# runtime. Type checker cannot resolve them without a circular base class.
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from coremcp.db.repository_constants import LOCAL_USER_ID
 from coremcp.db.repository_ids import new_id
 
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    import aiosqlite
+
 
 class ServicesRepositoryMixin:
-    """MCP service registry SQL operations."""
+    """MCP service registry SQL operations.
+
+    ADR-046 Step 3 (2026-05-23): host-provided attributes + cross-mixin methods
+    declared via ``if TYPE_CHECKING:`` so this module no longer needs the
+    ``reportAttributeAccessIssue=false`` directive.
+    """
+
+    if TYPE_CHECKING:
+        @property
+        def db(self) -> aiosqlite.Connection: ...
+
+        @staticmethod
+        def dumps_json(value: Any) -> str: ...
+
+        @staticmethod
+        def dumps_json_array(value: Any) -> str: ...
+
+        @staticmethod
+        def loads_json(value: Any, default: Any = None) -> Any: ...
+
+        @staticmethod
+        def _row_to_dict(
+            row: aiosqlite.Row | None, json_fields: Iterable[str] = ()
+        ) -> dict[str, Any] | None: ...
+
+        async def log_audit(self, **kwargs: Any) -> str: ...
 
     # ------------------------------------------------------------------
     # MCP services

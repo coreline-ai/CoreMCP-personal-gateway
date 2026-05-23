@@ -1,17 +1,43 @@
-# pyright: reportAttributeAccessIssue=false
-# Mixin classes rely on host-provided attributes (db, dumps_json, loads_json,
-# and cross-mixin methods); the composing Repository class supplies them at
-# runtime. Type checker cannot resolve them without a circular base class.
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from coremcp.db.repository_constants import DEFAULT_TOOLBOX_ID
 from coremcp.db.repository_ids import new_id
 
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    import aiosqlite
+
 
 class CatalogRepositoryMixin:
-    """Discovered tool/resource/prompt catalog SQL operations."""
+    """Discovered tool/resource/prompt catalog SQL operations.
+
+    ADR-046 Step 3 (2026-05-23): host attributes + cross-mixin methods declared
+    via ``if TYPE_CHECKING:``.
+    """
+
+    if TYPE_CHECKING:
+        @property
+        def db(self) -> aiosqlite.Connection: ...
+
+        @staticmethod
+        def dumps_json(value: Any) -> str: ...
+
+        @staticmethod
+        def dumps_json_array(value: Any) -> str: ...
+
+        @staticmethod
+        def loads_json(value: Any, default: Any = None) -> Any: ...
+
+        @staticmethod
+        def _row_to_dict(
+            row: aiosqlite.Row | None, json_fields: Iterable[str] = ()
+        ) -> dict[str, Any] | None: ...
+
+        async def log_audit(self, **kwargs: Any) -> str: ...
+        async def get_mcp_service(self, service_id: str) -> dict[str, Any] | None: ...
 
     async def replace_service_tools(self, service_id: str, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         await self.db.execute("UPDATE service_tools SET status = 'disabled', disabled_at = CURRENT_TIMESTAMP WHERE service_id = ?", (service_id,))
@@ -442,7 +468,7 @@ class CatalogRepositoryMixin:
             """,
             (toolbox_id, uri),
         )
-        rows = await cursor.fetchall()
+        rows = list(await cursor.fetchall())
         if len(rows) != 1:
             return None
         return self._row_to_dict(rows[0], json_fields=("annotations", "metadata_json", "stdio_args", "stdio_env"))

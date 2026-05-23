@@ -5,6 +5,12 @@ from collections.abc import Callable
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
+from coremcp.api._schemas import (
+    AuditLogList,
+    DashboardSummary,
+    SettingsResponse,
+    ToolInvocationList,
+)
 from coremcp.api.dependencies import get_repos, get_settings
 from coremcp.auth.admin import AdminTokenFileError, generate_admin_token, write_admin_token_atomic
 from coremcp.credentials import mask_secret
@@ -28,7 +34,7 @@ def register_admin_meta_routes(
             return unauthorized_response()
         return JSONResponse(await repos.repository.get_me())
 
-    @app.get("/v1/settings")
+    @app.get("/v1/settings", response_model=SettingsResponse)
     async def settings_endpoint(
         request: Request,
         settings_obj: Settings = Depends(get_settings),
@@ -50,7 +56,7 @@ def register_admin_meta_routes(
             }
         )
 
-    @app.get("/v1/dashboard/summary")
+    @app.get("/v1/dashboard/summary", response_model=DashboardSummary)
     async def dashboard_summary(request: Request, repos: RepositoryFacades = Depends(get_repos)) -> Response:
         if not verify_admin_request(request):
             return unauthorized_response()
@@ -90,7 +96,7 @@ def register_admin_meta_routes(
             headers={"Cache-Control": "no-store"},
         )
 
-    @app.get("/v1/tool-invocations")
+    @app.get("/v1/tool-invocations", response_model=ToolInvocationList)
     async def list_tool_invocations(
         request: Request,
         limit: int = 20,
@@ -101,7 +107,7 @@ def register_admin_meta_routes(
         items = await repos.audit.recent_invocations(limit=max(1, min(limit, 100)))
         return JSONResponse({"items": items, "next_cursor": None})
 
-    @app.get("/v1/audit-logs")
+    @app.get("/v1/audit-logs", response_model=AuditLogList)
     async def list_audit_logs(
         request: Request,
         limit: int = 20,

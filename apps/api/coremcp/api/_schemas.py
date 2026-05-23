@@ -9,7 +9,12 @@ wire contract.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
+
+ToolPermissionLevel = Literal["hidden", "visible_only", "callable"]
+ToolPreset = Literal["readonly", "full_access", "dangerous_off"]
 
 
 class ToolboxSummary(BaseModel):
@@ -118,7 +123,7 @@ class ToolOverrideSummary(BaseModel):
     service_tool_id: str
     exposed_name: str
     enabled: bool
-    permission_level: str
+    permission_level: ToolPermissionLevel
     updated_at: str | None = None
 
 
@@ -132,7 +137,7 @@ class ToolPresetResponse(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    preset: str
+    preset: ToolPreset
     items: list[ToolOverrideSummary]
     counts: dict[str, int]
     next_cursor: str | None = None
@@ -208,11 +213,89 @@ class CodexSimulatorResponse(BaseModel):
     status: str | None = None
 
 
+class SettingsResponse(BaseModel):
+    """Response from GET /v1/settings."""
+
+    model_config = ConfigDict(extra="allow")
+
+    admin_token_masked: str | None = None
+    client_token_count: int | None = None
+    auth_mode: str | None = None
+    oauth_enabled: bool | None = None
+    secret_backend: str | None = None
+    tailscale_enabled: bool | None = None
+    cache_backend: str | None = None
+    app_version: str | None = None
+
+
+class DashboardSummary(BaseModel):
+    """Response from GET /v1/dashboard/summary."""
+
+    model_config = ConfigDict(extra="allow")
+
+    metrics: dict[str, int] = Field(default_factory=dict)
+    service_status_counts: dict[str, int] = Field(default_factory=dict)
+
+
+class ToolInvocationSummary(BaseModel):
+    """One row of GET /v1/tool-invocations."""
+
+    model_config = ConfigDict(extra="allow")
+
+    id: str
+    request_id: str | None = None
+    method: str | None = None
+    status: str
+    exposed_tool_name: str | None = None
+    service_id: str | None = None
+    service_name: str | None = None
+    service_slug: str | None = None
+    tool_name: str | None = None
+    latency_ms: int | None = None
+    error_code: str | None = None
+    created_at: str | None = None
+
+
+class ToolInvocationList(BaseModel):
+    items: list[ToolInvocationSummary]
+    next_cursor: str | None = None
+
+
+class AuditLogSummary(BaseModel):
+    """One row of GET /v1/audit-logs."""
+
+    model_config = ConfigDict(extra="allow")
+
+    id: str
+    request_id: str | None = None
+    action: str
+    resource_type: str
+    resource_id: str | None = None
+    status: str | None = None
+    error_code: str | None = None
+    service_id: str | None = None
+    service_name: str | None = None
+    service_slug: str | None = None
+    tool_name: str | None = None
+    exposed_tool_name: str | None = None
+    client_type: str | None = None
+    client_name: str | None = None
+    created_at: str | None = None
+
+
+class AuditLogList(BaseModel):
+    items: list[AuditLogSummary]
+    next_cursor: str | None = None
+
+
 __all__ = [
+    "AuditLogList",
+    "AuditLogSummary",
     "ClientTokenList",
     "ClientTokenSummary",
     "CodexSimulatorResponse",
     "CodexSimulatorToolCall",
+    "DashboardSummary",
     "ExternalConnectionList",
     "ExternalConnectionSummary",
     "PlaygroundToolList",
@@ -222,6 +305,9 @@ __all__ = [
     "ServiceSummary",
     "ServiceToolList",
     "ServiceToolSummary",
+    "SettingsResponse",
+    "ToolInvocationList",
+    "ToolInvocationSummary",
     "ToolOverrideList",
     "ToolOverrideSummary",
     "ToolPresetResponse",

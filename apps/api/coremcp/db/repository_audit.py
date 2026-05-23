@@ -1,18 +1,39 @@
-# pyright: reportAttributeAccessIssue=false
-# Mixin classes rely on host-provided attributes (db, dumps_json, loads_json,
-# and cross-mixin methods); the composing Repository class supplies them at
-# runtime. Type checker cannot resolve them without a circular base class.
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from coremcp.logging import redact_value
 from coremcp.db.repository_constants import DEFAULT_TOOLBOX_ID, LOCAL_USER_ID
 from coremcp.db.repository_ids import new_id
 
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    import aiosqlite
+
 
 class AuditRepositoryMixin:
-    """User, audit, invocation, metrics, and dashboard SQL operations."""
+    """User, audit, invocation, metrics, and dashboard SQL operations.
+
+    ADR-046 Step 2 (2026-05-23): host-provided attributes are declared via
+    ``if TYPE_CHECKING`` so this module no longer needs the
+    ``reportAttributeAccessIssue=false`` directive.
+    """
+
+    if TYPE_CHECKING:
+        @property
+        def db(self) -> aiosqlite.Connection: ...
+
+        @staticmethod
+        def dumps_json(value: Any) -> str: ...
+
+        @staticmethod
+        def loads_json(value: Any, default: Any = None) -> Any: ...
+
+        @staticmethod
+        def _row_to_dict(
+            row: aiosqlite.Row | None, json_fields: Iterable[str] = ()
+        ) -> dict[str, Any] | None: ...
 
     # ------------------------------------------------------------------
     # User / settings
@@ -38,6 +59,7 @@ class AuditRepositoryMixin:
             "SELECT COUNT(*) AS count FROM personal_access_tokens WHERE status = 'active' AND revoked_at IS NULL"
         )
         row = await cursor.fetchone()
+        assert row is not None  # COUNT(*) always returns one row
         return int(row["count"])
 
     # ------------------------------------------------------------------
@@ -138,6 +160,7 @@ class AuditRepositoryMixin:
     async def count_invocations(self) -> int:
         cursor = await self.db.execute("SELECT COUNT(*) AS count FROM tool_invocations")
         row = await cursor.fetchone()
+        assert row is not None  # COUNT(*) always returns one row
         return int(row["count"])
 
     async def metrics_snapshot(self) -> dict[str, int]:
@@ -161,6 +184,7 @@ class AuditRepositoryMixin:
         for key, query in queries.items():
             cursor = await self.db.execute(query)
             row = await cursor.fetchone()
+            assert row is not None  # COUNT(*) always returns one row
             snapshot[key] = int(row["count"])
         return snapshot
 
@@ -190,6 +214,7 @@ class AuditRepositoryMixin:
             """
         )
         row = await cursor.fetchone()
+        assert row is not None  # aggregate SELECT always returns one row
         calls_24h = {
             "calls": int(row["calls"] or 0),
             "errors": int(row["errors"] or 0),
