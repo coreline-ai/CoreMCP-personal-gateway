@@ -65,6 +65,11 @@ typeCheckingMode = "standard"
 reportMissingImports = "error"
 reportMissingTypeStubs = false
 reportGeneralTypeIssues = "warning"
+# FastAPI route handlers (54+) and starlette private members are flagged as
+# unused / private-usage because their wiring happens via decorators or
+# typed-protocol monkey-patching. Both patterns are intentional.
+reportUnusedFunction = "none"
+reportPrivateUsage = "none"
 
 [tool.bandit]
 # B101 — `assert` statements are fine outside tests for invariant checks.

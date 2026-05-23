@@ -192,7 +192,7 @@ def include_service_crud_routes(router: APIRouter, deps: Any) -> None:
         items = await request.app.state.repos.services.list_mcp_services(limit=_bounded_service_limit(limit), status=status)
         return JSONResponse({"items": items, "next_cursor": None})
 
-    @router.post("/v1/mcp-services")
+    @router.post("/v1/mcp-services", response_model=ServiceSummary, status_code=201)
     async def create_service(request: Request) -> Response:
         if not deps.verify_admin_request(request):
             return deps.unauthorized_response()
@@ -239,7 +239,7 @@ def include_service_crud_routes(router: APIRouter, deps: Any) -> None:
             return deps.not_found("mcp_service")
         return JSONResponse(service)
 
-    @router.patch("/v1/mcp-services/{service_id}")
+    @router.patch("/v1/mcp-services/{service_id}", response_model=ServiceSummary)
     async def patch_service(request: Request, service_id: str) -> Response:
         if not deps.verify_admin_request(request):
             return deps.unauthorized_response()

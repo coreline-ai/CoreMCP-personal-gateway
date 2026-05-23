@@ -14,7 +14,7 @@ from coremcp.db.repository_connections import ConnectionsRepositoryMixin
 from coremcp.db.repository_constants import DEFAULT_TOOLBOX_ID, LOCAL_USER_ID
 from coremcp.db.repository_credentials import CredentialsRepositoryMixin
 from coremcp.db.repository_ids import new_id as new_id
-from coremcp.db.repository_jobs import JobsRepositoryMixin
+from coremcp.db.repository_jobs import JobsRepository
 from coremcp.db.repository_services import ServicesRepositoryMixin
 from coremcp.db.repository_toolbox import ToolboxRepositoryMixin
 
@@ -26,7 +26,6 @@ class Repository(
     CredentialsRepositoryMixin,
     ConnectionsRepositoryMixin,
     AuditRepositoryMixin,
-    JobsRepositoryMixin,
 ):
     """SQLite repository for the personal CoreMCP gateway.
 
@@ -39,6 +38,38 @@ class Repository(
     def __init__(self, database_path: Path) -> None:
         self.database_path = database_path
         self._db: aiosqlite.Connection | None = None
+        # ADR-046 Step 1 / Phase 2 (2026-05-23): Jobs is the first mixin to
+        # graduate to explicit composition. The remaining 6 mixins stay on
+        # the host pattern with TYPE_CHECKING stubs until they migrate too.
+        self.jobs: JobsRepository = JobsRepository(self)
+
+    # ------------------------------------------------------------------
+    # Backward-compat delegates for the old JobsRepositoryMixin surface.
+    # New code should call ``repository.jobs.<method>(...)`` directly.
+    # ------------------------------------------------------------------
+    async def create_job(self, *, kind: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        return await self.jobs.create_job(kind=kind, payload=payload)
+
+    async def update_job(
+        self,
+        job_id: str,
+        *,
+        status: str,
+        progress: float | None = None,
+        result: dict[str, Any] | None = None,
+        error: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        return await self.jobs.update_job(
+            job_id, status=status, progress=progress, result=result, error=error
+        )
+
+    async def get_job(self, job_id: str) -> dict[str, Any] | None:
+        return await self.jobs.get_job(job_id)
+
+    async def mark_stuck_jobs_failed(self, *, max_age_seconds: int, now_epoch: float | None = None) -> int:
+        return await self.jobs.mark_stuck_jobs_failed(
+            max_age_seconds=max_age_seconds, now_epoch=now_epoch
+        )
 
     async def connect(self) -> None:
         if str(self.database_path) == ":memory:":

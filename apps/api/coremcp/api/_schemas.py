@@ -213,6 +213,28 @@ class CodexSimulatorResponse(BaseModel):
     status: str | None = None
 
 
+class MeResponse(BaseModel):
+    """Response from GET /v1/me."""
+
+    model_config = ConfigDict(extra="allow")
+
+    id: str
+    email: str | None = None
+    name: str | None = None
+    locale: str | None = None
+    bootstrap_completed_at: str | None = None
+    created_at: str | None = None
+    default_toolbox_id: str | None = None
+
+
+class HealthResponse(BaseModel):
+    """Liveness / readiness response from /health, /live, /ready."""
+
+    model_config = ConfigDict(extra="allow")
+
+    status: str
+
+
 class SettingsResponse(BaseModel):
     """Response from GET /v1/settings."""
 
@@ -296,6 +318,8 @@ __all__ = [
     "CodexSimulatorResponse",
     "CodexSimulatorToolCall",
     "DashboardSummary",
+    "HealthResponse",
+    "MeResponse",
     "ExternalConnectionList",
     "ExternalConnectionSummary",
     "PlaygroundToolList",

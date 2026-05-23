@@ -374,13 +374,15 @@ ACL 은 `tailscale serve --remove` 로 항상 회수 가능. 팀/멀티 사용�
 ### 5.7.3 연결 검증
 
 ```bash
-# 1) Redis 자체 ping
-redis-cli -u "$COREMCP_RATE_LIMIT_REDIS_URL" ping  # → PONG
+# 1) Redis 자체 ping (env 가 redis 백엔드로 설정된 경우만)
+make redis-smoke   # → "redis-smoke OK: $URL → PONG"
 
 # 2) CoreMCP rate limiter 가 Redis 사용 중인지 로그에서 확인
 grep -i "RedisRateLimiter" ~/Library/Logs/coremcp/api.log | tail
 # fallback 발생 시: "RedisRateLimiter falling back to in-memory: ..."
 ```
+
+`make redis-smoke` 는 `COREMCP_RATE_LIMIT_BACKEND=memory` (기본) 일 때는 explanation 만 출력하고 exit 0. `=redis` 일 때만 실제 `redis-cli ping` 호출. CI 에 추가해도 환경 변수 미설정 머신에서 fail 하지 않음.
 
 ### 5.7.4 장애 대응
 

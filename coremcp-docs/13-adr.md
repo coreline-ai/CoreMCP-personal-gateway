@@ -937,7 +937,7 @@ Decision:
 **점진 마이그레이션** 으로 진행한다. 본 cycle 의 P5 에서는 ADR 만 작성하고 실제 코드 전환은 별도 cycle 에서:
 
 - **Step 1** — 가장 결합도 낮은 mixin 부터 facade 클래스화:
-  - 1차 (**완료 2026-05-23**): `JobsRepositoryMixin` 의 host-attribute (`db`, `dumps_json`, `_row_to_dict`) 를 `if TYPE_CHECKING:` 블록 안에서 명시 선언 → `# pyright: reportAttributeAccessIssue=false` 디렉티브 제거 가능. mixin 패턴은 유지하되 type checker 가 정상 인식. `JobRepository` (facade in `repos/jobs.py`) 와 양립.
+  - 1차 (**완료 2026-05-23**): `JobsRepositoryMixin` 의 host-attribute (`db`, `dumps_json`, `_row_to_dict`) 를 `if TYPE_CHECKING:` 블록 안에서 명시 선언 → `# pyright: reportAttributeAccessIssue=false` 디렉티브 제거. (Phase 2, 2026-05-23 추가) **mixin 패턴 완전 제거** — `JobsRepository(repository: Repository)` 명시 composition 클래스로 전환, `Repository.__bases__` 에서 `JobsRepositoryMixin` 제거, `Repository.__init__` 이 `self.jobs = JobsRepository(self)` composition. backward compat 4 delegate 메서드 (`create_job`/`update_job`/`get_job`/`mark_stuck_jobs_failed`) 로 기존 호출 site 무수정.
   - 2차 (**완료 2026-05-23**): `AuditRepositoryMixin` 의 host-attribute 를 `if TYPE_CHECKING:` 블록 안에서 명시 선언. COUNT/aggregate SELECT 의 `fetchone()` 결과 None 가드 7건 추가 (`assert row is not None`) — 동작 변경 0.
   - 3차 (**완료 2026-05-23**): `Services / Catalog / Toolbox / Credentials / Connections` 5 mixin 일괄 TYPE_CHECKING 전환. cross-mixin 메서드 (`log_audit`, `get_mcp_service`, `get_external_connection`) 도 각 mixin 의 `if TYPE_CHECKING:` block 에 stub 선언. 부가: catalog 의 `cursor.fetchall()` 결과 `list()` wrap (Iterable→Sequence). 모든 mixin 의 `# pyright: ...` 디렉티브 제거 완료.
 - **Step 2** — 각 facade 전환마다 해당 mixin 파일의 `# pyright: reportAttributeAccessIssue=false` 디렉티브 제거
@@ -971,6 +971,11 @@ Context:
 **2026-05-23 2차 측정 (ADR-046 Step 2/3 mixin TYPE_CHECKING 도입 후): 943 → 387 (-59%)**:
 - `reportUnknownMemberType` (116, -380), `reportUnknownVariableType` (112, -146), `reportUnknownArgumentType` (86, -30), `reportUnusedFunction` (54, 동일), `reportPrivateUsage` (10), `reportUnusedImport` (4)
 - mixin 의 host attribute 가 type 을 갖게 되면서 cross-mixin 호출 Unknown 이 대부분 해소됨
+
+**2026-05-23 3차 측정 (Phase 3 cycle: `reportUnusedFunction`/`reportPrivateUsage` 글로벌 ignore): 387 → 323**:
+- `reportUnknownMemberType` (116), `reportUnknownVariableType` (112), `reportUnknownArgumentType` (86), `reportUnusedImport` (4), 기타 5
+- 카테고리 ignore 의 정당성: FastAPI route 함수는 decorator 등록으로 호출 site 가 pyright 가시 영역 밖. starlette `_receive` 같은 사실상-public protocol attribute 도 마찬가지.
+- 잔여 314 errors (Unknown 3 카테고리) 는 TypedDict 전반 도입 필요 — 별도 cycle.
 
 Decision:
 `typeCheckingMode = "standard"` baseline 을 유지한다. `strict` 도입은 다음 두 선행 작업이 필요:

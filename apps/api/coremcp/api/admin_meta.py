@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse, Response
 from coremcp.api._schemas import (
     AuditLogList,
     DashboardSummary,
+    MeResponse,
     SettingsResponse,
     ToolInvocationList,
 )
@@ -28,7 +29,7 @@ def register_admin_meta_routes(
     request_ip: Callable[[Request], str | None],
     correlation_id: Callable[[Request], str],
 ) -> None:
-    @app.get("/v1/me")
+    @app.get("/v1/me", response_model=MeResponse)
     async def me(request: Request, repos: RepositoryFacades = Depends(get_repos)) -> Response:
         if not verify_admin_request(request):
             return unauthorized_response()

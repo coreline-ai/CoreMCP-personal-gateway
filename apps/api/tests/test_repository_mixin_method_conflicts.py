@@ -13,16 +13,19 @@ from __future__ import annotations
 
 import inspect
 import itertools
+from pathlib import Path
 
 from coremcp.db.repository import Repository
 from coremcp.db.repository_audit import AuditRepositoryMixin
 from coremcp.db.repository_catalog import CatalogRepositoryMixin
 from coremcp.db.repository_connections import ConnectionsRepositoryMixin
 from coremcp.db.repository_credentials import CredentialsRepositoryMixin
-from coremcp.db.repository_jobs import JobsRepositoryMixin
+from coremcp.db.repository_jobs import JobsRepository
 from coremcp.db.repository_services import ServicesRepositoryMixin
 from coremcp.db.repository_toolbox import ToolboxRepositoryMixin
 
+# Jobs graduated from mixin to composition (ADR-046 Step 1 / Phase 2,
+# 2026-05-23 cycle) — Repository.jobs is now a JobsRepository instance.
 MIXINS = [
     ServicesRepositoryMixin,
     CatalogRepositoryMixin,
@@ -30,7 +33,6 @@ MIXINS = [
     CredentialsRepositoryMixin,
     ConnectionsRepositoryMixin,
     AuditRepositoryMixin,
-    JobsRepositoryMixin,
 ]
 
 
@@ -71,3 +73,10 @@ def test_repository_combines_all_mixins() -> None:
     bases = Repository.__mro__
     for cls in MIXINS:
         assert cls in bases, f"Repository MRO is missing mixin: {cls.__name__}"
+
+
+def test_repository_composes_jobs_facade(tmp_path: Path) -> None:
+    """Jobs graduated to composition — verify the wiring is in place."""
+    repo = Repository(database_path=tmp_path / "__composition_check__.sqlite3")
+    assert isinstance(repo.jobs, JobsRepository)
+    assert repo.jobs._repo is repo  # noqa: SLF001 - assertion on composition wiring

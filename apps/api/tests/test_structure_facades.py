@@ -37,7 +37,7 @@ from coremcp.db.repository_audit import AuditRepositoryMixin
 from coremcp.db.repository_catalog import CatalogRepositoryMixin
 from coremcp.db.repository_connections import ConnectionsRepositoryMixin
 from coremcp.db.repository_credentials import CredentialsRepositoryMixin
-from coremcp.db.repository_jobs import JobsRepositoryMixin
+from coremcp.db.repository_jobs import JobsRepository
 from coremcp.db.repository_services import ServicesRepositoryMixin
 from coremcp.db.repository_toolbox import ToolboxRepositoryMixin
 from coremcp.errors import CoreMcpError, CoreMcpRuntimeError, CoreMcpValueError
@@ -76,7 +76,6 @@ REPOSITORY_DOMAIN_MIXINS = (
     CredentialsRepositoryMixin,
     ConnectionsRepositoryMixin,
     AuditRepositoryMixin,
-    JobsRepositoryMixin,
 )
 
 
@@ -212,7 +211,13 @@ def test_repository_facade_keeps_public_contract(tmp_path):
 
 
 def test_repository_keeps_w1_domain_mixin_split():
+    # Jobs graduated to composition (ADR-046 Step 1 / Phase 2, 2026-05-23).
     assert Repository.__bases__ == REPOSITORY_DOMAIN_MIXINS
+
+
+def test_repository_jobs_is_composed_facade(tmp_path):
+    repo = Repository(database_path=tmp_path / "__composition_check__.sqlite3")
+    assert isinstance(repo.jobs, JobsRepository)
 
 
 def test_repository_mro_has_no_unintended_public_callable_collisions():
