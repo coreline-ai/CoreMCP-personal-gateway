@@ -1,7 +1,7 @@
 'use client';
 
 import type { FormEvent } from 'react';
-import { useMemo, useState } from 'react';
+import { useMemo, useReducer } from 'react';
 import { getApiBaseUrl, type ExternalConnectionSummary } from '@/lib/api';
 
 interface ClientsSectionProps {
@@ -55,8 +55,16 @@ export function ClientsSection({
   onRevokeConnection
 }: ClientsSectionProps) {
   const mcpUrl = `${getApiBaseUrl().replace(/\/$/, '')}/mcp`;
-  const [copied, setCopied] = useState(false);
-  const [copyFailed, setCopyFailed] = useState(false);
+  const [copyStatus, dispatchCopy] = useReducer(
+    (_state: 'idle' | 'copied' | 'failed', action: 'COPIED' | 'FAILED' | 'RESET') => {
+      if (action === 'COPIED') return 'copied';
+      if (action === 'FAILED') return 'failed';
+      return 'idle';
+    },
+    'idle'
+  );
+  const copied = copyStatus === 'copied';
+  const copyFailed = copyStatus === 'failed';
   const generatedConfig = useMemo(() => {
     if (clientType === 'codex_cli') {
       return `make codex-install\ninfra/scripts/codex-exec-coremcp.sh "CoreMCP 도구 목록을 확인해줘"`;
@@ -73,12 +81,10 @@ export function ClientsSection({
   async function copyGeneratedConfig() {
     try {
       await navigator.clipboard.writeText(generatedConfig);
-      setCopied(true);
-      setCopyFailed(false);
-      window.setTimeout(() => setCopied(false), 1500);
+      dispatchCopy('COPIED');
+      window.setTimeout(() => dispatchCopy('RESET'), 1500);
     } catch {
-      setCopied(false);
-      setCopyFailed(true);
+      dispatchCopy('FAILED');
     }
   }
 

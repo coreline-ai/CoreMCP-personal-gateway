@@ -12,6 +12,13 @@ type GeneratedPlaygroundToolSummary = components['schemas']['PlaygroundToolSumma
 type GeneratedExternalConnectionSummary = components['schemas']['ExternalConnectionSummary'];
 type GeneratedClientTokenSummary = components['schemas']['ClientTokenSummary'];
 type GeneratedCodexSimulatorResponse = components['schemas']['CodexSimulatorResponse'];
+type GeneratedServiceToolSummary = components['schemas']['ServiceToolSummary'];
+type GeneratedServiceCredentialMasked = components['schemas']['ServiceCredentialMasked'];
+
+// Note: HealthResponse, SettingsResponse, DashboardSummary, ToolboxItemSummary,
+// ToolInvocationSummary, AuditLogSummary, IssueClientTokenResponse,
+// OneTimeConnectionTokenResponse — backend routes don't yet declare a
+// pydantic response_model. They stay as manual interfaces below.
 
 export type ApiErrorCode = 'unauthorized' | 'http_error' | 'network_error' | 'parse_error';
 
@@ -91,17 +98,8 @@ export interface McpServiceSummary extends GeneratedServiceSummary {
   validation_summary?: Record<string, unknown> | null;
 }
 
-export interface ServiceToolSummary {
-  id: string;
-  service_id: string;
-  original_name: string;
-  exposed_name?: string | null;
-  title?: string | null;
-  description?: string | null;
-  status?: string;
-  risk_level?: string | null;
-  schema_hash?: string | null;
-  validation_status?: string | null;
+export interface ServiceToolSummary extends GeneratedServiceToolSummary {
+  // Frontend-only fields not yet on the backend Pydantic schema.
   warning_count?: number | null;
   warnings?: unknown[] | null;
   input_schema_json?: Record<string, unknown> | null;
@@ -112,6 +110,10 @@ export type ToolPermissionLevel = 'hidden' | 'visible_only' | 'callable';
 export type ToolPreset = 'readonly' | 'full_access' | 'dangerous_off';
 
 export interface ToolOverrideSummary {
+  // Backend schema also exists (`ToolOverrideSummary`) but uses a widened
+  // `permission_level: string`. The frontend narrows to the union type below;
+  // a future cycle can replace this with the generated alias once backend
+  // tightens the schema with a Literal type.
   id: string;
   toolbox_id: string;
   service_id: string;
@@ -129,11 +131,7 @@ export interface ToolPresetResponse {
   next_cursor: string | null;
 }
 
-export interface ServiceCredentialSummary {
-  status: string;
-  masked: string | null;
-  updated_at: string | null;
-}
+export type ServiceCredentialSummary = GeneratedServiceCredentialMasked;
 
 export interface ToolboxSummary extends GeneratedToolboxSummary {
   // Frontend-only aggregates not yet on the backend Pydantic schema.

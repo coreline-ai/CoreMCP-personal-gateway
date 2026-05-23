@@ -1,16 +1,35 @@
-# pyright: reportAttributeAccessIssue=false
-# Mixin classes rely on host-provided attributes (db, dumps_json, loads_json,
-# and cross-mixin methods); the composing Repository class supplies them at
-# runtime. Type checker cannot resolve them without a circular base class.
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from coremcp.db.repository_ids import new_id
 
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    import aiosqlite
+
 
 class JobsRepositoryMixin:
-    """Background job SQL operations for the Repository aggregate."""
+    """Background job SQL operations for the Repository aggregate.
+
+    ADR-046 Step 1 (2026-05-23): the host-provided attributes are now declared
+    explicitly via ``if TYPE_CHECKING`` so this module no longer needs the
+    blanket ``reportAttributeAccessIssue=false`` directive. The composing
+    ``Repository`` class still supplies these attributes at runtime.
+    """
+
+    if TYPE_CHECKING:
+        @property
+        def db(self) -> aiosqlite.Connection: ...
+
+        @staticmethod
+        def dumps_json(value: Any) -> str: ...
+
+        @staticmethod
+        def _row_to_dict(
+            row: aiosqlite.Row | None, json_fields: Iterable[str] = ()
+        ) -> dict[str, Any] | None: ...
 
     async def create_job(self, *, kind: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         job_id = new_id("job")

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useReducer } from 'react';
 import type { PlaygroundToolSummary } from '@/lib/api';
 import { classNames } from '../admin-utils';
 
@@ -85,6 +85,42 @@ function isRiskyTool(tool: PlaygroundToolSummary | undefined): boolean {
   return /(delete|remove|archive|restart|create|update|write|rotate|revoke|reset)/i.test(`${tool.name} ${tool.title ?? ''} ${tool.description ?? ''}`);
 }
 
+interface PlaygroundLocalState {
+  favorites: string[];
+  previousResult: string;
+  manualMode: boolean;
+}
+
+type PlaygroundLocalAction =
+  | { type: 'TOGGLE_FAVORITE'; toolName: string }
+  | { type: 'SET_PREVIOUS_RESULT'; payload: string }
+  | { type: 'SET_MANUAL_MODE'; payload: boolean };
+
+function playgroundLocalReducer(
+  state: PlaygroundLocalState,
+  action: PlaygroundLocalAction
+): PlaygroundLocalState {
+  switch (action.type) {
+    case 'TOGGLE_FAVORITE':
+      return {
+        ...state,
+        favorites: state.favorites.includes(action.toolName)
+          ? state.favorites.filter((item) => item !== action.toolName)
+          : [...state.favorites, action.toolName]
+      };
+    case 'SET_PREVIOUS_RESULT':
+      return { ...state, previousResult: action.payload };
+    case 'SET_MANUAL_MODE':
+      return { ...state, manualMode: action.payload };
+  }
+}
+
+const initialPlaygroundLocalState: PlaygroundLocalState = {
+  favorites: [],
+  previousResult: '',
+  manualMode: false
+};
+
 export function PlaygroundSection({
   playgroundTools,
   selectedTool,
@@ -95,9 +131,9 @@ export function PlaygroundSection({
   onArgumentsJsonChange,
   onCallTool
 }: PlaygroundSectionProps) {
-  const [favorites, setFavorites] = useState<string[]>([]);
-  const [previousResult, setPreviousResult] = useState('');
-  const [manualMode, setManualMode] = useState(false);
+  const [localState, dispatchLocal] = useReducer(playgroundLocalReducer, initialPlaygroundLocalState);
+  const { favorites, previousResult, manualMode } = localState;
+  const setManualMode = (value: boolean) => dispatchLocal({ type: 'SET_MANUAL_MODE', payload: value });
 
   const orderedTools = useMemo(() => {
     return [...playgroundTools].sort((left, right) => {
@@ -150,16 +186,14 @@ export function PlaygroundSection({
   }
 
   function toggleFavorite(toolName: string) {
-    setFavorites((current) => current.includes(toolName)
-      ? current.filter((item) => item !== toolName)
-      : [...current, toolName]);
+    dispatchLocal({ type: 'TOGGLE_FAVORITE', toolName });
   }
 
   function callWithReplaySnapshot() {
     if (!canCallTool) return;
     if (riskyTool && !window.confirm('이 도구는 데이터를 변경하거나 삭제할 수 있습니다. 실제로 호출할까요?')) return;
     if (callResult && !callResult.includes('도구를 호출하는 중입니다')) {
-      setPreviousResult(callResult);
+      dispatchLocal({ type: 'SET_PREVIOUS_RESULT', payload: callResult });
     }
     onCallTool();
   }

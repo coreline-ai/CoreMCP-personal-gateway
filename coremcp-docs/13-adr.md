@@ -937,7 +937,7 @@ Decision:
 **점진 마이그레이션** 으로 진행한다. 본 cycle 의 P5 에서는 ADR 만 작성하고 실제 코드 전환은 별도 cycle 에서:
 
 - **Step 1** — 가장 결합도 낮은 mixin 부터 facade 클래스화:
-  - 1차: `JobsRepositoryMixin` → `JobsRepository(repository: Repository)` — Jobs 는 다른 mixin 메서드 호출 0
+  - 1차 (**완료 2026-05-23**): `JobsRepositoryMixin` 의 host-attribute (`db`, `dumps_json`, `_row_to_dict`) 를 `if TYPE_CHECKING:` 블록 안에서 명시 선언 → `# pyright: reportAttributeAccessIssue=false` 디렉티브 제거 가능. mixin 패턴은 유지하되 type checker 가 정상 인식. `JobRepository` (facade in `repos/jobs.py`) 와 양립.
   - 2차: `AuditRepositoryMixin` — `log_audit`, `log_invocation` 등 narrow surface
   - 3차: `Connections / Credentials / Toolbox / Catalog / Services` (cross-mixin 호출 분석 후)
 - **Step 2** — 각 facade 전환마다 해당 mixin 파일의 `# pyright: reportAttributeAccessIssue=false` 디렉티브 제거
@@ -952,6 +952,33 @@ Consequences:
 - 본 cycle 은 ADR 만 — 코드 영향 0.
 - 후속 cycle 에서 mixin 별 facade 전환마다 본 ADR 의 step 카운터 업데이트.
 - 마지막 mixin 전환 완료 후 `# pyright: reportAttributeAccessIssue=false` 디렉티브 8개 모두 제거 가능, pyright `standard` 또는 `strict` mode 도입 차단 요인이 사라짐.
+
+---
+## ADR-047: pyright `strict` mode 도입 보류 — `standard` baseline 유지
+
+Status: Accepted (2026-05-23)
+
+Context:
+직전 cycle (`implement_20260523_092359.md` Phase 6) 에서 pyright `basic` → `standard` 단계 상승이 0 errors 로 통과했다. 본 cycle 의 Phase 4 에서 `strict` 시도. 결과: **943 errors**.
+
+카테고리 분포 (2026-05-23):
+- `reportUnknownMemberType` (496) — `dict.get()`, `app.state.X` 등 `Any` 반환에서 후속 member 사용
+- `reportUnknownVariableType` (258) — JSON parse / config dict 등 untyped value 의 변수 binding
+- `reportUnknownArgumentType` (116) — 위 두 카테고리의 함수 호출 인자 형태
+- `reportUnusedFunction` (54) — 내부 helper / test fixture 의 사용 site 가 pyright 가 못 본 데서 호출
+- `reportPrivateUsage` (10), `reportUnusedImport` (4), 기타 5
+
+Decision:
+`typeCheckingMode = "standard"` baseline 을 유지한다. `strict` 도입은 다음 두 선행 작업이 필요:
+
+- **선행 1**: `dict.get()` / `app.state` / config dict 패턴을 `TypedDict` 또는 `dataclass` 로 치환 (Unknown 의 80%+ 가 여기서 비롯)
+- **선행 2**: AppContext facade 가 모든 `app.state.X` 를 typed property 로 노출 (이미 부분 완료) + `RepositoryFacades` 의 cross-mixin 호출 모두 명시 type
+- **선행 3**: 외부 라이브러리 stub 부족 (`fakeredis`, 일부 `redis`) 의 `# type: ignore` 처리
+
+Consequences:
+- `standard` 는 0 errors 유지 — CI gate 그대로.
+- `strict` 도입은 위 선행 작업 별도 cycle 후. 본 ADR 은 baseline 사유와 follow-up 점검표로 사용.
+- 신규 코드는 `standard` 수준에서 fully typed 로 작성하면 후속 `strict` 전환 비용 감소.
 
 ---
 ## Superseded / Future Migration
