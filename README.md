@@ -68,7 +68,7 @@ CoreMCP는 본인 1명이 Mac mini에서 운영하는 protected MCP gateway다. 
 
 **한 줄 가치**: AI 클라이언트마다 MCP를 따로 등록하지 않고, 한 곳에 모아 어디서나 동일한 도구함을 쓴다.
 
-### ✅ Implementation Status — 2026-05-16
+### ✅ Implementation Status — 2026-05-24
 
 - Root monorepo scaffold, `apps/api`, `apps/fake-mcp`, `apps/web`, `packages/*`, `infra/*`가 생성되었습니다.
 - P1 backend core는 Alembic 단일 schema source, client token DB hash, service registry, toolbox catalog, 실제 Fernet/Keychain credential vault, SSRF guard, validation, DB 기반 `/mcp tools/list/call`까지 구현되었습니다.
@@ -92,6 +92,10 @@ CoreMCP는 본인 1명이 Mac mini에서 운영하는 protected MCP gateway다. 
 - Codex CLI `exec` 연결 helper를 추가했습니다. `make codex-install`은 Codex 전용 client token을 발급해 `~/.coremcp/codex-client-token`에 저장하고, `codex mcp add coremcp --url ... --bearer-token-env-var COREMCP_CLIENT_TOKEN` 구성을 등록합니다.
 - Web Admin `/simulator` 는 Codex CLI exec wrapper를 실행해 연결된 AI client가 CoreMCP 도구함을 실제로 호출하는 흐름을 챗봇처럼 시뮬레이션합니다.
 - launchd fake-mcp/API/Web/backup/logrotate/refresh 실제 load smoke와 plist 검증을 통과했습니다. Reboot 검증은 실제 재부팅이 필요하며, Tailscale 검증은 현재 머신에 CLI가 없어 skipped 상태입니다.
+- **Dependency CVE audit** — `make audit-deps` (pip-audit + pnpm audit `--audit-level high`) 와 CI `dependency-audit` advisory job 을 추가했습니다. 첫 baseline (idna/starlette CVE fix) 은 ADR-048 에 기록됩니다.
+- **Generic stdio MCP onboarding** — 새 stdio MCP 한 줄 등록 macro `make register-mcp` 가 도입되어 새 도구 시도마다 별도 등록 스크립트를 만들 필요가 없습니다. 기존 `project-docs-register` / `git-workspace-register` 와 양립합니다.
+- **Security policy + Project goal docs** — 루트에 [`SECURITY.md`](./SECURITY.md) (vulnerability reporting 절차), `coremcp-docs/00-goal.md` (한 줄 목표 / 핵심 가치 / 안전 불변식) 가 추가되었습니다.
+- **Coreline Auth 모듈 외부 분리** — 인증/세션/RBAC/admin 모듈은 별도 독립 저장소 [`coreline-ai/coreline-auth-module`](https://github.com/coreline-ai/coreline-auth-module) 에서 관리됩니다. CoreMCP 저장소는 이 모듈을 import 하지 않으며, 적용 시 최소 통합 adapter 만 둡니다 ([`coremcp-docs/00-goal.md`](./coremcp-docs/00-goal.md) §독립 인증 모듈 범위).
 
 ---
 
@@ -125,7 +129,7 @@ CoreMCP는 본인 1명이 Mac mini에서 운영하는 protected MCP gateway다. 
 
 ## 📸 Web Admin Screens
 
-CoreMCP Web Admin (`http://localhost:3003`) 의 8개 주요 화면입니다. admin token 입력 후 fetch 결과 기준 캡쳐.
+CoreMCP Web Admin (`http://localhost:3003`) 의 9 개 주요 화면 — admin token 주입 후 실시간 fetch 결과 기준. **2026-05-24 재캡쳐.**
 
 ### 1. Dashboard `/`
 
@@ -235,6 +239,8 @@ infra/scripts/codex-exec-coremcp.sh "project_docs.project_summary로 README를 �
 | **Demo MCP Suite** | 8개 local demo MCP endpoint + registration payload + preset demo tools | implemented + tested |
 | **Project Docs MCP** | `/Users/hwanchoi/projects` 하위 README/Markdown read-only 검색·읽기 stdio MCP | implemented + tested |
 | **Git Workspace MCP** | `/Users/hwanchoi/projects` 하위 Git repository 상태/로그/브랜치/diff/blame/recent activity read-only 조회 stdio MCP | implemented + tested |
+| **Generic MCP onboarding** | `make register-mcp` macro 로 새 stdio MCP 한 줄 등록 (env 또는 CLI flags) | implemented |
+| **Dependency CVE audit** | `make audit-deps` (pip-audit + pnpm audit) + CI `dependency-audit` advisory job · ADR-048 baseline | implemented + CI |
 | **AI Client Simulator** | Web Admin `/simulator`에서 Codex CLI exec → CoreMCP `/mcp` tool call 흐름을 챗봇형으로 실행/관찰 | implemented + tested |
 | **MCP Registry** | private service 등록, category/homepage/docs/logo metadata, validation, schema cache + schema diff detail | implemented + tested |
 | **Toolbox** | default toolbox, item enable/disable, tool-level override(`hidden`/`visible_only`/`callable`), preset(`readonly`/`dangerous_off`/`full_access`), dynamic catalog | implemented + tested |
@@ -397,6 +403,7 @@ Codex CLI exec ──▶  /mcp tools/call
 ```text
 CoreMCP/
 ├── README.md                       # 본 문서
+├── SECURITY.md                     # 취약점 제보 절차 + 지원 범위
 ├── CLAUDE.md                       # LLM coding agent 가이드
 ├── AGENTS.md                       # 프로젝트별 agent 작업 규칙
 ├── apps/
@@ -473,10 +480,11 @@ CoreMCP/
 
 ## 📖 Documentation
 
-전체 17개 제품/구현 문서가 [`coremcp-docs/`](./coremcp-docs/)에 있습니다. Web Admin의 코드 레벨 디자인 시스템은 [`docs/design/`](./docs/design/)에 별도로 정리했습니다.
+전체 18개 제품/구현 문서가 [`coremcp-docs/`](./coremcp-docs/)에 있습니다. Web Admin의 코드 레벨 디자인 시스템은 [`docs/design/`](./docs/design/)에 별도로 정리했습니다. 보안 제보 절차는 루트 [`SECURITY.md`](./SECURITY.md) 를 참조하세요.
 
 | # | 문서 | 핵심 내용 |
 |---:|---|---|
+| 00G | [Goal](./coremcp-docs/00-goal.md) | 한 줄 목표 · 핵심 가치 · 독립 인증 모듈 범위 · 안전 불변식 |
 | 00 | [Overview](./coremcp-docs/00-overview.md) | 제품 요약, 범위, 비-목표, 핵심 용어 |
 | 01 | [Features](./coremcp-docs/01-features.md) | 포함/부분포함/제외 매트릭스 (10 카테고리) |
 | 02 | [TRD](./coremcp-docs/02-trd.md) | 기술 요구사항, MCP version, error taxonomy |
