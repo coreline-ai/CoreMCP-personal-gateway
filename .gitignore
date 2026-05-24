@@ -25,3 +25,6 @@ apps/*/dev-plan/.artifacts/
 .ruff_cache/
 .coverage
 htmlcov/
+
+# Independent module repositories
+packages/coreline-auth/

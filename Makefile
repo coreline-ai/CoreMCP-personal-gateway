@@ -6,7 +6,7 @@ FERNET_KEY_FILE ?= $(HOME)/.coremcp/data/secrets.key
 BACKUP_ARCHIVE ?= $(HOME)/.coremcp/backups/coremcp-cli-export.tar
 CLIENT_NAME ?= coremcp-cli
 
-.PHONY: bootstrap run run-local stop status test test-api test-fake test-demo test-project-docs test-git-workspace demo-run lint build smoke ops-smoke external-env-validate soak-check mobile-qa-checklist route-smoke cli-doctor cli-service-list cli-token-issue cli-backup-export cli-backup-import-dry-run backup-restore-drill redis-smoke tailscale-acl-validate audit-deps register-mcp project-docs-register git-workspace-register codex-install codex-smoke codex-exec
+.PHONY: bootstrap run run-local stop status test test-api test-fake test-demo test-project-docs test-git-workspace test-coreline-auth demo-run lint build smoke ops-smoke external-env-validate soak-check mobile-qa-checklist route-smoke cli-doctor cli-service-list cli-token-issue cli-backup-export cli-backup-import-dry-run backup-restore-drill redis-smoke tailscale-acl-validate audit-deps register-mcp project-docs-register git-workspace-register codex-install codex-smoke codex-exec
 
 bootstrap:
 	infra/scripts/bootstrap-local.sh
@@ -41,6 +41,9 @@ test-project-docs:
 
 test-git-workspace:
 	cd apps/git-workspace-mcp && uv run pytest
+
+test-coreline-auth:
+	@if [ -d packages/coreline-auth ]; then cd packages/coreline-auth && make test; else echo "packages/coreline-auth is an independent ignored repo; clone coreline-ai/coreline-auth-module to run this target."; fi
 
 demo-run:
 	cd apps/demo-mcp-suite && uv run demo-mcp-suite

@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { headers } from 'next/headers';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -10,11 +11,13 @@ export const dynamic = 'force-dynamic';
 
 const themeBootScript = `(function(){try{var s=localStorage.getItem('coremcp_theme')||'dark';var t=s==='system'?(window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'):s;var c=document.documentElement.classList;if(t==='dark'){c.add('dark');}else{c.remove('dark');}document.documentElement.style.colorScheme=t;}catch(e){document.documentElement.classList.add('dark');document.documentElement.style.colorScheme='dark';}})();`;
 
-export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+  const nonce = (await headers()).get('x-nonce') ?? undefined;
+
   return (
     <html lang="ko" suppressHydrationWarning>
       <head>
-        <script dangerouslySetInnerHTML={{ __html: themeBootScript }} />
+        <script nonce={nonce} dangerouslySetInnerHTML={{ __html: themeBootScript }} />
       </head>
       <body>{children}</body>
     </html>
